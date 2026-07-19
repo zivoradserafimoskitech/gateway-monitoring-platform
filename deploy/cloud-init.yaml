@@ -1,0 +1,9 @@
+#cloud-config
+# Paste this into Hetzner Cloud -> Create Server -> "Cloud config" box.
+# Ubuntu 24.04. The server installs the full Enertrek stack on first boot
+# (~5-8 min). Credentials land in /root/DEPLOY_INFO.txt
+package_update: true
+packages: [git, curl]
+runcmd:
+  - curl -fsSL https://raw.githubusercontent.com/zivoradserafimoskitech/gateway-monitoring-platform/main/deploy/deploy.sh -o /root/deploy.sh
+  - bash /root/deploy.sh > /var/log/enertrek-deploy.log 2>&1
