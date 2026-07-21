@@ -34,12 +34,21 @@ services:
   emqx:
     image: emqx/emqx:5.8
     ports:
-      - "1883:1883"   # MQTT (gateways connect here — expose via TLS proxy in production)
-      - "8883:8883"   # MQTTS
-      - "18083:18083" # dashboard (admin / public — change immediately)
+      - "1883:1883"   # MQTT (credentials mandatory; prefer 8883 for field gateways)
+      - "8883:8883"   # MQTTS (EMQX default self-signed certs)
+      - "18083:18083" # dashboard (bound to firewall-closed port; SSH tunnel only)
     environment:
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_ADMIN:-admin}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_ADMIN_PASSWORD:-public}
+      # Mandatory auth: clients must present a username/password stored in the
+      # built-in database (users created by deploy.sh via the dashboard API).
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: sha256
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION: suffix
+      # Default-deny ACL: anything not explicitly allowed is rejected.
+      EMQX_AUTHORIZATION__NO_MATCH: deny
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: built_in_database
     volumes:
       - emqx-data:/opt/emqx/data
     restart: unless-stopped
