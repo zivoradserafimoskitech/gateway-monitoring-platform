@@ -7,6 +7,15 @@ import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { reportSchedules, sites } from "@db/schema";
 import { runSchedule } from "../reports/scheduler";
+import { assertOrgWrite, orgWhere, stampOrg } from "../lib/org-scope";
+import type { User } from "@db/schema";
+
+async function assertScheduleOrg(user: User | null, id: number): Promise<void> {
+  const db = getDb();
+  const rows = await db.select({ orgId: reportSchedules.orgId }).from(reportSchedules).where(eq(reportSchedules.id, id)).limit(1);
+  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: `Schedule ${id} not found` });
+  assertOrgWrite(user, rows[0].orgId, "Schedule");
+}
 
 const scheduleInput = z.object({
   siteId: z.number().nullable().optional(), // null = all sites (fleet report)
@@ -25,9 +34,9 @@ async function assertSite(siteId: number | null | undefined): Promise<void> {
 }
 
 export const reportSchedulesRouter = createRouter({
-  list: authed.query(async () => {
+  list: authed.query(async ({ ctx }) => {
     const db = getDb();
-    return db.select().from(reportSchedules).orderBy(reportSchedules.id);
+    return db.select().from(reportSchedules).where(orgWhere(ctx.user, reportSchedules.orgId)).orderBy(reportSchedules.id);
   }),
 
   create: operator.input(scheduleInput).mutation(async ({ input, ctx }) => {
@@ -35,14 +44,15 @@ export const reportSchedulesRouter = createRouter({
     const db = getDb();
     const res = await db
       .insert(reportSchedules)
-      .values({ ...input, siteId: input.siteId ?? null, createdBy: ctx.user?.id ?? null })
+      .values({ ...input, siteId: input.siteId ?? null, createdBy: ctx.user?.id ?? null, orgId: stampOrg(ctx.user) })
       .$returningId();
     return { id: res[0].id };
   }),
 
   update: operator
     .input(z.object({ id: z.number(), patch: scheduleInput.partial() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await assertScheduleOrg(ctx.user, input.id);
       await assertSite(input.patch.siteId);
       const db = getDb();
       const res = await db.update(reportSchedules).set(input.patch).where(eq(reportSchedules.id, input.id));
@@ -52,14 +62,16 @@ export const reportSchedulesRouter = createRouter({
       return { ok: true };
     }),
 
-  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    await assertScheduleOrg(ctx.user, input.id);
     const db = getDb();
     await db.delete(reportSchedules).where(eq(reportSchedules.id, input.id));
     return { ok: true };
   }),
 
   // Immediate generate + send over the CURRENT period to date (testing path).
-  runNow: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  runNow: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    await assertScheduleOrg(ctx.user, input.id);
     const db = getDb();
     const rows = await db.select().from(reportSchedules).where(eq(reportSchedules.id, input.id)).limit(1);
     if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: `Schedule ${input.id} not found` });

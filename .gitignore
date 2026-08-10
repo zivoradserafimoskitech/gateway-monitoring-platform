@@ -42,3 +42,4 @@ coverage/
 # v7/C3: TLS private keys never leave the host
 certs/
 data/
+test-results/

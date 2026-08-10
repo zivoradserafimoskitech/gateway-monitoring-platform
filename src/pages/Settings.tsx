@@ -22,6 +22,7 @@ import {
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
+import { OrganizationsCard } from "@/components/OrganizationsCard";
 import type { RegisterDef } from "@contracts/modbus";
 
 export default function Settings() {
@@ -34,6 +35,8 @@ export default function Settings() {
         <h1 className="text-2xl font-bold tracking-tight">{t.settings.title}</h1>
         <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
       </div>
+      {/* v8/D2: organizations — superadmin only */}
+      <OrganizationsCard />
       {(profiles.data ?? []).map((p) => (
         <ProfileCard
           key={p.id}

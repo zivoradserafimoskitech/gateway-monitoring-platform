@@ -117,7 +117,7 @@ async function main() {
     probe("schedule created via ems.schedules.create", scheduleId > 0, created);
 
     const schedCmd = await waitFor(async () => {
-      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && Math.abs((c.controlValue ?? 0) - 2.5) < 1e-9);
+      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && Math.abs((c.controlValue ?? 0) - 2.5) < 1e-9 && new Date(c.createdAt as unknown as string).getTime() >= t0.getTime() - 2000);
       return rows[0] ?? null;
     });
     probe("controller issued schedule setpoint (userId null, 2.5 kW)", schedCmd?.status === "ok", schedCmd && { status: schedCmd.status, v: schedCmd.controlValue, result: schedCmd.result });
@@ -162,7 +162,7 @@ async function main() {
     probe("peak-shaving config created", peakId > 0, pc);
 
     const shaveCmd = await waitFor(async () => {
-      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && Math.abs((c.controlValue ?? 0) - 5) < 1e-9);
+      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && Math.abs((c.controlValue ?? 0) - 5) < 1e-9 && new Date(c.createdAt as unknown as string).getTime() >= t0.getTime() - 2000);
       return rows[0] ?? null;
     });
     probe(
@@ -174,7 +174,7 @@ async function main() {
     // import collapses → stop command (0 kW), hysteresis path
     await db.execute(sql`insert into telemetry (meter_id, ts, active_power_kw) values (${srcId}, ${utcStr(new Date())}, 0)`);
     const stopCmd = await waitFor(async () => {
-      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && (c.controlValue ?? -1) === 0);
+      const rows = (await autoCmds()).filter((c) => c.controlKey === "activePowerKw" && (c.controlValue ?? -1) === 0 && new Date(c.createdAt as unknown as string).getTime() >= t0.getTime() - 2000);
       return rows[0] ?? null;
     });
     probe("peak shaving: stop command (0 kW) below threshold − hysteresis", stopCmd?.status === "ok", stopCmd && { status: stopCmd.status, v: stopCmd.controlValue });

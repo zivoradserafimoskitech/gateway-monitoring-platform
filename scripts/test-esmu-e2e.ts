@@ -16,7 +16,7 @@ import "dotenv/config";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { and, desc, eq, inArray, like } from "drizzle-orm";
 import { getDb } from "../api/queries/connection";
-import { meters, gateways, alarmRules, alarms } from "../db/schema";
+import { meters, gateways, alarmRules, alarms, orgs, telemetry, telemetryHourly } from "../db/schema";
 import { getTelemetryStore } from "../api/telemetry";
 import { startPollerService, getPollerStatus } from "../api/poller/service";
 import { invalidateRulesCache } from "../api/mqtt/handlers";
@@ -66,7 +66,16 @@ async function main() {
   }
   // Clean previous ESMU-T rows only (name-scoped; demo fleet untouched)
   const old = await db.select({ id: meters.id }).from(meters).where(like(meters.name, "ESMU-T %"));
-  if (old.length) await db.delete(meters).where(inArray(meters.id, old.map((d) => d.id)));
+  if (old.length) {
+    const oldIds = old.map((d) => d.id);
+    await db.delete(telemetry).where(inArray(telemetry.meterId, oldIds)).catch(() => undefined);
+    await db.delete(telemetryHourly).where(inArray(telemetryHourly.meterId, oldIds)).catch(() => undefined);
+    await db.delete(alarms).where(inArray(alarms.meterId, oldIds)).catch(() => undefined);
+    await db.delete(meters).where(inArray(meters.id, oldIds));
+  }
+  await db.delete(alarmRules).where(like(alarmRules.name, "ESMU-T %")).catch(() => undefined);
+  const defaultOrg = await db.select().from(orgs).where(eq(orgs.name, "Default Org")).limit(1);
+  const orgId = defaultOrg[0]?.id ?? 1;
 
   const maxRow = await db
     .select({ modbusAddress: meters.modbusAddress })
@@ -80,6 +89,7 @@ async function main() {
     const isStack = dev.profile.model === "esmu-bams-stack";
     await db.insert(meters).values({
       gatewayId: gwId,
+      orgId,
       name: `ESMU-T ${isStack ? "stack" : `string-${dev.unitId - 1}`} (unit ${dev.unitId})`,
       model: dev.profile.model,
       deviceType: "bess",
@@ -161,11 +171,11 @@ async function main() {
   console.log("4. alarm rule tests");
   const [faultRule] = await db
     .insert(alarmRules)
-    .values({ name: "ESMU-T BMS fault state", metric: "bmsStatusCode", operator: "gt", threshold: 7, severity: "critical", meterId: stackRow.id })
+    .values({ name: "ESMU-T BMS fault state", metric: "bmsStatusCode", operator: "gt", threshold: 7, severity: "critical", meterId: stackRow.id, orgId })
     .$returningId();
   const [socRule] = await db
     .insert(alarmRules)
-    .values({ name: "ESMU-T string low SOC", metric: "socPercent", operator: "lt", threshold: 30, severity: "warning", meterId: s1.id })
+    .values({ name: "ESMU-T string low SOC", metric: "socPercent", operator: "lt", threshold: 30, severity: "warning", meterId: s1.id, orgId })
     .$returningId();
   invalidateRulesCache();
 

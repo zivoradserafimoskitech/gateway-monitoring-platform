@@ -10,6 +10,7 @@ import type { DeviceType } from "@contracts/devices";
 import { getTelemetryStore } from "../telemetry";
 import { testTcpConnection } from "../poller/test-connection";
 import { clearMeterCache } from "../mqtt/handlers";
+import { assertOrgRead, assertOrgWrite, gatewayOrg, meterOrg, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
 
 // Direct Modbus-TCP devices have no physical gateway; they hang off this
 // system row so foreign keys and fleet queries keep working unchanged.
@@ -38,15 +39,17 @@ async function getOrCreateDirectGateway(): Promise<number> {
 }
 
 export const metersRouter = createRouter({
-  list: authed.query(async () => {
+  list: authed.query(async ({ ctx }) => {
     const db = getDb();
     // v6/R7: effective site = meter's own binding first, else the gateway's.
+    // v8/D2: non-superadmin sees only their org's devices.
     const rows = await db
       .select({ meter: meters, gatewayName: gateways.name, gatewayUid: gateways.uid, siteName: sql<string | null>`coalesce(${metersSite.name}, ${gwSite.name})` })
       .from(meters)
       .leftJoin(gateways, eq(meters.gatewayId, gateways.id))
       .leftJoin(gwSite, eq(gateways.siteId, gwSite.id))
       .leftJoin(metersSite, eq(meters.siteId, metersSite.id))
+      .where(orgWhere(ctx.user, meters.orgId))
       .orderBy(desc(meters.createdAt));
     return rows.map((r) => ({
       ...r.meter,
@@ -83,10 +86,13 @@ export const metersRouter = createRouter({
         pollIntervalSec: z.number().int().min(5).max(3600).default(60),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const isTcp = !!input.host;
       const gatewayId = input.gatewayId ?? (await getOrCreateDirectGateway());
+      // v8/D2: the parent gateway (and explicit site) must belong to the caller's org.
+      assertOrgWrite(ctx.user, await gatewayOrg(gatewayId), "Gateway");
+      if (input.siteId != null) assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
 
       // v6/R4: the model must match a device profile — otherwise the poller
       // and MQTT decode silently fall back to the PEM3000 default map and
@@ -154,6 +160,7 @@ export const metersRouter = createRouter({
           port: input.host ? (input.port ?? 502) : null,
           unitId: input.host ? (input.unitId ?? 1) : null,
           pollIntervalSec: input.pollIntervalSec,
+          orgId: stampOrg(ctx.user), // v8/D2
         })
         .$returningId();
       const rows = await db.select().from(meters).where(eq(meters.id, inserted[0].id)).limit(1);
@@ -219,7 +226,8 @@ export const metersRouter = createRouter({
         pollIntervalSec: z.number().int().min(5).max(3600).optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      assertOrgWrite(ctx.user, await meterOrg(input.id), "Device");
       const db = getDb();
       const { id, ...patch } = input;
       if (patch.model) {
@@ -246,7 +254,8 @@ export const metersRouter = createRouter({
       return rows[0];
     }),
 
-  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    assertOrgWrite(ctx.user, await meterOrg(input.id), "Device");
     const db = getDb();
     // Cascade (v4 review #1): telemetry AND alarms, or they orphan forever.
     await db.delete(telemetry).where(eq(telemetry.meterId, input.id));
@@ -256,7 +265,8 @@ export const metersRouter = createRouter({
     return { ok: true };
   }),
 
-  latest: authed.input(z.object({ meterId: z.number() })).query(async ({ input }) => {
+  latest: authed.input(z.object({ meterId: z.number() })).query(async ({ input, ctx }) => {
+    assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device"); // v8/D2
     const row = await getTelemetryStore().latest(input.meterId);
     if (!row) return null;
     // Shape-compatible with the old telemetry table row the frontend expects,
@@ -291,7 +301,8 @@ export const metersRouter = createRouter({
         buckets: z.number().int().min(10).max(500).default(120),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
+      assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device"); // v8/D2
       const spanSec = Math.max(60, Math.floor((input.to.getTime() - input.from.getTime()) / 1000));
       const bucketSec = Math.max(10, Math.floor(spanSec / input.buckets));
       // #20: chart series follows the device's PRIMARY_POWER_KEY contract

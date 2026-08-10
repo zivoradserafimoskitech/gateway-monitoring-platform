@@ -199,3 +199,25 @@ lazy API boot (curl /api/trpc/ping first); vite binds IPv6 localhost;
 kill-by-port pattern (lsof -tiTCP:PORT) never pkill; sims on 5021/5022 and
 broker on 1883 must stay alive; remote TiDB — destructive scripts need
 ALLOW_UNSAFE_PROD=1; i18n keys in BOTH en.ts and mk.ts.
+
+## v8 CLOSEOUT — 2026-08-11 (ALL DONE)
+
+- D1 EMS strategies — DONE (probe 9/9, run record 07-50).
+- D2 multi-tenancy — DONE (probe 9/9 + nested regressions, record 09-50).
+- D3 scheduled reports — DONE (probe 6/6, record 08-50).
+- D4 SCADA single-line diagram — DONE (record 07-15).
+- D5 device management/OTA — DONE (probe 6/6, record 09-20).
+- D6 HA — DONE (probe 5/5, record 22-50; external broker $share, healthz/
+  readyz, compose 2-replica + EMQX cluster, replica-safe scheduler claim).
+- D7 CI/CD — DONE (Playwright 4/4, coverage gate, audit allowlist, record 10-20).
+- D8 protocol expansion + D9 operator docs — DONE (record 07-25).
+- ERP integration (volttrade-erp) — DONE both sides (erp-sim 18/18, record 08-20).
+- D10 final regression — DONE, ALL PASS (record 23-55): tsc/build/vitest 25/25,
+  coverage gate, Playwright 4/4, ESMU e2e 6/6 ×2, every v1–v8 probe green,
+  fleet healthy (0 null org_id, 17 meters streaming).
+- Probe hardening (D10): rest-energy (a)/(b2), ems freshness filter, esmu-e2e
+  org-stamp + cleanup — assertions only, product code untouched.
+- Remaining delivery steps: final GitHub push (main), website_version_manager
+  build_version, rsync archive → /mnt/agents/work/enertrek-cloud, final
+  report in Macedonian. User-side: deploy ERP edge functions per
+  docs/enertrek-integration.md; revoke the GitHub PAT used for the push.

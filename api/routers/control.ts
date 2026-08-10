@@ -7,12 +7,14 @@ import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { commands, meters } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog } from "../control/execute";
+import { assertOrgRead, assertOrgWrite, meterOrg } from "../lib/org-scope";
 
 export const controlRouter = createRouter({
   // Whitelist for one device (drives the UI control panel).
   controllableFor: authed
     .input(z.object({ meterId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
+      assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device"); // v8/D2
       const db = getDb();
       const rows = await db.select().from(meters).where(eq(meters.id, input.meterId)).limit(1);
       if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
@@ -32,6 +34,7 @@ export const controlRouter = createRouter({
       const rows = await db.select().from(meters).where(eq(meters.id, input.meterId)).limit(1);
       const meter = rows[0];
       if (!meter) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
+      assertOrgWrite(ctx.user, meter.orgId, "Device"); // v8/D2
       try {
         return await executeAndLog(meter, input.key, input.value, ctx.user?.id ?? null);
       } catch (err) {
@@ -44,7 +47,8 @@ export const controlRouter = createRouter({
 
   history: authed
     .input(z.object({ meterId: z.number(), limit: z.number().min(1).max(100).default(20) }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
+      assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device"); // v8/D2
       const db = getDb();
       return db
         .select({

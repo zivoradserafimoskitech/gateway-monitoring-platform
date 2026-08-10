@@ -12,7 +12,7 @@
 // The tick and every schedule run are individually try/caught — the loop
 // never dies. Files land in data/reports/; delivery via api/lib/mailer.
 import fs from "node:fs";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { reportSchedules, sites } from "@db/schema";
 import type { ReportSchedule } from "@db/schema";
@@ -21,11 +21,15 @@ import { queryEnergyReport } from "./energy-query";
 import { generateReportFile } from "./generate";
 import { sendMail } from "../lib/mailer";
 
-const TICK_MIN = Math.max(1, parseInt(process.env.REPORT_TICK_MIN || "5", 10));
+const TICK_MIN = parseInt(process.env.REPORT_TICK_MIN || "5", 10);
 let timer: NodeJS.Timeout | null = null;
 
 export function startReportLoop(): void {
   if (timer) return;
+  if (TICK_MIN <= 0) {
+    console.log("[reports] disabled via REPORT_TICK_MIN<=0"); // v8/D6: probe/secondary-replica switch
+    return;
+  }
   timer = setInterval(() => {
     reportTick().catch((err) => console.error("[reports] tick failed:", err instanceof Error ? err.message : err));
   }, TICK_MIN * 60_000);
@@ -128,6 +132,7 @@ function isDue(s: ReportSchedule, now: Date, tz: string): boolean {
 export interface RunResult {
   scheduleId: number;
   path: string;
+  filename: string;
   bytes: number;
   transport: string;
   period: string;
@@ -167,7 +172,7 @@ export async function runSchedule(s: ReportSchedule, opts: { current: boolean })
     transport = res.transport;
   }
   await db.update(reportSchedules).set({ lastRunAt: new Date() }).where(eq(reportSchedules.id, s.id));
-  return { scheduleId: s.id, path: file.path, bytes: file.bytes, transport, period: period.label, recipients: recipients.length };
+  return { scheduleId: s.id, path: file.path, filename: file.filename, bytes: file.bytes, transport, period: period.label, recipients: recipients.length };
 }
 
 export async function reportTick(): Promise<void> {
@@ -190,6 +195,17 @@ export async function reportTick(): Promise<void> {
           tzCache.set(s.siteId, tz);
         }
         if (!isDue(s, now, tz)) continue;
+        // v8/D6: multi-replica at-most-once claim. Two replicas both pass
+        // isDue in the same minute — atomically stamp last_run_at with a
+        // conditional UPDATE guarded on the period start; exactly one replica
+        // wins the row lock in TiDB and proceeds. The loser sees 0 affected
+        // rows and skips. Trade-off (documented in docs/ha.md): if the winner
+        // then crashes mid-send, that period's email is lost rather than
+        // double-sent — acceptable for report mail.
+        const period = reportPeriod(s.frequency, now, tz, false);
+        const utc = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+        const claimed = await db.execute(sql`UPDATE report_schedules SET last_run_at = ${utc(now)} WHERE id = ${s.id} AND (last_run_at IS NULL OR last_run_at < ${utc(period.from)})`);
+        if (Number((claimed[0] as { affectedRows?: number }).affectedRows ?? 0) === 0) continue;
         const res = await runSchedule(s, { current: false });
         console.log(`[reports] schedule ${s.id} "${s.name}" → ${res.path} (${res.bytes} B, ${res.transport})`);
       } catch (err) {

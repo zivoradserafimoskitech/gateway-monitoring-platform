@@ -1,0 +1,27 @@
+{
+  "id": "v8-d2-multi-tenancy",
+  "version": "v8",
+  "stage": "D2 — multi-tenancy (org isolation)",
+  "ts": "2026-08-11T09:50:00Z",
+  "implementedBy": "BE subagent (chain step 5)",
+  "deliverables": [
+    "db: orgs + org_id on 11 tables + users.is_superadmin (migration 0012, idempotent backfill to Default Org, admin id 1 superadmin; re-run verified)",
+    "api/lib/org-scope.ts (orgWhere/assertOrgWrite/stampOrg), middleware.superadmin guard",
+    "scoping matrix: sites/gateways/meters/alarms/dashboard/reports/ems/ota/apiKeys/auth/control + REST /api/v1 (key's orgId); by-id foreign read=404, write=403, superadmin transparent, open demo mode unrestricted",
+    "orgs router (superadmin: create/list with counts/assignUser + cache eviction)",
+    "OrganizationsCard on Settings (superadmin-only) + i18n EN/MK",
+    "scripts/probe-v8-multitenancy.ts"
+  ],
+  "securityFindings": [
+    "dashboard cache was global — per-org cache key fixed (would leak counts across orgs)"
+  ],
+  "documentedLeftovers": "dashboard.powerTrend fleet aggregate, auth.auditLog, raw SQL in dailyReport/energyIntervals (router-level scoping instead) — commented in code",
+  "checks": [
+    { "cmd": "probe-v8-multitenancy.ts", "expect": "9/9", "result": "PASS (backfill; Org B isolation 0-visible + 403; reassignment visibility; 404 no-leak; superadmin full fleet; nested regressions; cleanup+restore)" },
+    { "cmd": "probe-v7-auth.py", "expect": "12/12", "result": "PASS" },
+    { "cmd": "probe-v7-control.ts", "expect": "9/9", "result": "PASS" },
+    { "cmd": "probe-v8-rest-energy.ts", "expect": "10/10", "result": "PASS" },
+    { "cmd": "npx tsc --noEmit + vitest", "expect": "clean, 25/25", "result": "PASS" }
+  ],
+  "result": "PASS"
+}

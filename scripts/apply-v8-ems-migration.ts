@@ -11,7 +11,7 @@ async function main() {
   const stmts = readFileSync(file, "utf8").split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
   for (const s of stmts) {
     try { await db.execute(sql.raw(s)); console.log("ok:", s.slice(0, 50).replace(/\n/g, " ")); }
-    catch (e) { const m = e instanceof Error ? e.message : String(e);
+    catch (e) { const m = [e instanceof Error ? e.message : String(e), (e as { cause?: { message?: string } })?.cause?.message ?? ""].join(" ");
       if (/already exists|Duplicate/i.test(m)) console.log("skip:", s.slice(0, 50).replace(/\n/g, " ")); else throw e; }
   }
   process.exit(0);

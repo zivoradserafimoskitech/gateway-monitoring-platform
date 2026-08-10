@@ -9,7 +9,8 @@ import { inspectAttr } from 'kimi-plugin-inspect-react'
 export default defineConfig({
   plugins: [
     // v7/C9: /metrics must reach the Hono app in dev too (Prometheus scrape).
-    devServer({ entry: "api/boot.ts", exclude: [/^\/(?!api\/|metrics$).*$/] }),
+    // v8/D6: /healthz + /readyz likewise (unauthenticated k8s-style probes).
+    devServer({ entry: "api/boot.ts", exclude: [/^\/(?!api\/|metrics$|healthz$|readyz$).*$/] }),
     inspectAttr(), react()],
   server: {
     port: 3000,

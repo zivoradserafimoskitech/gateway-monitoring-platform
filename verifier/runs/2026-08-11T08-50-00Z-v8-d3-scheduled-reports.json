@@ -1,0 +1,27 @@
+{
+  "id": "v8-d3-scheduled-reports",
+  "version": "v8",
+  "stage": "D3 — scheduled reports (auto PDF/XLSX via email)",
+  "ts": "2026-08-11T08-50:00Z",
+  "implementedBy": "BE subagent (chain step 3)",
+  "deliverables": [
+    "db: report_schedules (migration 0010, applied)",
+    "api/reports/: energy-query.ts (shared tRPC+generator), generate.ts (xlsx pkg + hand-rolled PDF-1.4), scheduler.ts (site-local due rule, DST-exact, previous-period delivery, runNow current-period)",
+    "api/lib/mailer.ts (SMTP_URL/SMTP_* via optional nodemailer, EMAIL_TRANSPORT=log fallback)",
+    "api/routers/reports-schedules.ts (list/create/update/remove/runNow)",
+    "UI: ReportSchedulesCard on Reports.tsx + i18n EN/MK",
+    "scripts/probe-v8-reports.ts"
+  ],
+  "checks": [
+    { "cmd": "npx tsc --noEmit", "result": "PASS" },
+    { "cmd": "probe-v8-reports.ts", "expect": "6/6", "result": "PASS (xlsx 24654B PK-parses, 36 rows, TOTAL row; pdf 4186B %PDF-1.4..%%EOF; log transport invoked; lastRunAt set; viewer FORBIDDEN)" },
+    { "cmd": "vitest", "expect": "25/25", "result": "PASS" },
+    { "cmd": "cleanup", "expect": "0 schedule rows, files removed", "result": "PASS" }
+  ],
+  "notes": [
+    "npm install: xlsx@0.18.5 (SheetJS) — new dependency",
+    "site-1 inverter/BESS import/export cells empty in dailyReport (JSON-only counters, pre-existing D3-out-of-scope)",
+    "dev server env now: EMS_TICK_S=5 EMAIL_TRANSPORT=log (unset for real SMTP)"
+  ],
+  "result": "PASS"
+}

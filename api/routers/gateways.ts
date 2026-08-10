@@ -6,12 +6,14 @@ import { gateways, meters, sites, commands, telemetry, alarms } from "@db/schema
 import { defaultTopicPrefix, defaultTransport } from "@contracts/topics";
 import { sendReadNow, getMqttStatus, evictGatewayCache } from "../mqtt/service";
 import { clearMeterCache, isDuplicateKey } from "../mqtt/handlers";
+import { assertOrgRead, assertOrgWrite, gatewayOrg, orgWhere, stampOrg } from "../lib/org-scope";
 
 export const gatewaysRouter = createRouter({
   mqttStatus: authed.query(() => getMqttStatus()),
 
-  list: authed.query(async () => {
+  list: authed.query(async ({ ctx }) => {
     const db = getDb();
+    // v8/D2: non-superadmin sees only their org's gateways.
     const rows = await db
       .select({
         gateway: gateways,
@@ -20,14 +22,52 @@ export const gatewaysRouter = createRouter({
       })
       .from(gateways)
       .leftJoin(sites, eq(gateways.siteId, sites.id))
+      .where(orgWhere(ctx.user, gateways.orgId))
       .orderBy(desc(gateways.createdAt));
     return rows.map((r) => ({ ...r.gateway, siteName: r.siteName, meterCount: Number(r.meterCount) }));
   }),
 
-  get: authed.input(z.object({ id: z.number() })).query(async ({ input }) => {
+  // v8/D5: heartbeat diagnostics — cheap queries, no loops. lastSeenAt +
+  // samples/min over the last 5 min (telemetry rows across the gateway's
+  // meters), poller stats for TCP/direct gateways, in-flight OTA jobs.
+  diagnostics: authed.input(z.object({ id: z.number() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    const gwRows = await db.select().from(gateways).where(eq(gateways.id, input.id)).limit(1);
+    const gw = gwRows[0];
+    if (!gw) throw new Error("Gateway not found");
+    assertOrgRead(ctx.user, gw.orgId, "Gateway");
+    const since = new Date(Date.now() - 5 * 60_000).toISOString().slice(0, 19).replace("T", " ");
+    const countRows = await db.execute(sql`
+      select count(*) as n
+      from telemetry t
+      join meters m on m.id = t.meter_id
+      where m.gateway_id = ${input.id} and t.ts >= ${since}`);
+    const samples5min = Number((countRows as unknown as [Array<{ n: number }>])[0][0]?.n ?? 0);
+    const { getPollerStatus } = await import("../poller/service");
+    const { activeOtaJobs } = await import("../ota/manager");
+    let poller: ReturnType<typeof getPollerStatus>["devices"] | null = null;
+    if (gw.transport === "tcp") {
+      const idRows = await db.select({ id: meters.id }).from(meters).where(eq(meters.gatewayId, input.id));
+      const ids = new Set(idRows.map((r) => r.id));
+      poller = getPollerStatus().devices.filter((d) => ids.has(d.id));
+    }
+    return {
+      lastSeenAt: gw.lastSeenAt,
+      status: gw.status,
+      firmwareVersion: gw.firmwareVersion,
+      configVersion: gw.configVersion,
+      samples5min,
+      msgPerMin: Math.round((samples5min / 5) * 10) / 10,
+      poller,
+      activeOtaJobs: await activeOtaJobs(input.id),
+    };
+  }),
+
+  get: authed.input(z.object({ id: z.number() })).query(async ({ input, ctx }) => {
     const db = getDb();
     const gw = await db.select().from(gateways).where(eq(gateways.id, input.id)).limit(1);
     if (!gw[0]) throw new Error("Gateway not found");
+    assertOrgRead(ctx.user, gw[0].orgId, "Gateway");
     const meterRows = await db
       .select()
       .from(meters)
@@ -65,7 +105,7 @@ export const gatewaysRouter = createRouter({
           .optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const existing = await db.select().from(gateways).where(eq(gateways.uid, input.uid)).limit(1);
       if (existing[0]) throw new Error("A gateway with this UID already exists");
@@ -80,6 +120,7 @@ export const gatewaysRouter = createRouter({
             transport: defaultTransport(input.model),
             topicPrefix: input.topicPrefix?.trim() || defaultTopicPrefix(input.model),
             siteId: input.siteId ?? null,
+            orgId: stampOrg(ctx.user), // v8/D2
           })
           .$returningId();
       } catch (err) {
@@ -102,7 +143,8 @@ export const gatewaysRouter = createRouter({
         firmware: z.string().max(64).optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      assertOrgWrite(ctx.user, await gatewayOrg(input.id), "Gateway");
       const db = getDb();
       const { id, ...patch } = input;
       await db.update(gateways).set(patch).where(eq(gateways.id, id));
@@ -111,7 +153,8 @@ export const gatewaysRouter = createRouter({
       return rows[0];
     }),
 
-  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  remove: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    assertOrgWrite(ctx.user, await gatewayOrg(input.id), "Gateway");
     const db = getDb();
     // Full cascade (v4 review #1): meters' telemetry + alarms must go with them,
     // otherwise rows orphan permanently (no FK constraints in the schema).
@@ -134,10 +177,11 @@ export const gatewaysRouter = createRouter({
 
   readNow: operator
     .input(z.object({ gatewayId: z.number(), meterId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const rows = await db.select().from(gateways).where(eq(gateways.id, input.gatewayId)).limit(1);
       if (!rows[0]) throw new Error("Gateway not found");
+      assertOrgWrite(ctx.user, rows[0].orgId, "Gateway");
       return sendReadNow(rows[0], input.meterId);
     }),
 });

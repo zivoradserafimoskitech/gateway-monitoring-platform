@@ -1,0 +1,31 @@
+{
+  "id": "v8-d6-ha",
+  "version": "v8",
+  "stage": "D6 — High availability (external broker, health endpoints, replicas, docs)",
+  "ts": "2026-08-10T22-50-00Z",
+  "implementedBy": "BE subagent (backend chain)",
+  "deliverables": [
+    "api/mqtt/service.ts: $share/enertrek/# shared subscription when MQTT_URL set (EMQX → single delivery per uplink); MQTT_SHARED_SUB=0 override; plain # for aedes/dev",
+    "api/boot.ts: GET /healthz (always 200) + GET /readyz (DB SELECT 1 + broker connected → 200 {status,components} else 503+reason), mounted outside /api/trpc auth",
+    "vite.config.ts: exclude regex extended metrics$|healthz$|readyz$",
+    "api/lib/observability.ts: enertrek_mqtt_external_broker 0|1 metric",
+    "api/reports/scheduler.ts: replica-safe dedup — atomic conditional UPDATE report_schedules SET last_run_at WHERE (last_run_at IS NULL OR < period_start) before send (TiDB row lock, exactly one replica wins; at-most-once)",
+    "api/ems/controller.ts + scheduler: EMS_TICK_S<=0 / REPORT_TICK_MIN<=0 kill-switches (were clamped)",
+    "docker-compose.prod.yml: app-1/app-2 (YAML anchor) behind nginx least_conn (deploy/nginx.conf), /readyz healthcheck gating depends_on, EMQX static 2-node cluster, per-replica WAL volumes (never shared)",
+    "docs/ha.md: mermaid architecture, rolling deploy, state audit table, duplicate-loop analysis, honest limits (TCP poller POLLER_ENABLED=0 on all but one replica)",
+    "scripts/probe-v8-ha.ts: second instance :3100 + second broker :1884, external-broker ingest proof, process-group teardown, full cleanup"
+  ],
+  "checks": [
+    { "cmd": "npx tsx scripts/probe-v8-ha.ts", "expect": "5/5", "result": "PASS — (a) healthz/readyz 200 :3000; (b) readyz db+broker components; (c) second instance :3100 ready vs external aedes :1884, G30 uplink ingested (mqtt_messages_in_total=1, external_broker=1, auto-provisioned gateway); (d) :3000 unaffected after teardown" },
+    { "cmd": "npm test", "expect": "25/25", "result": "PASS" },
+    { "cmd": "tsc -b", "result": "PASS (clean)" }
+  ],
+  "notes": [
+    "Replica-safety: MQTT $share guarded; report scheduler atomic-claim guarded; EMS/OTA/retention idempotent-or-documented; per-replica RAM dedup residuals documented in docs/ha.md",
+    "Residual risk: $share not exercisable against aedes (probe used MQTT_SHARED_SUB=0) — first real EMQX test should confirm suback; standard EMQX feature, low risk",
+    "/readyz 503 during ~10s mqtt reconnect after boot — compose start_period 30s covers",
+    "Compose syntax hand-checked (no docker in sandbox)",
+    "Gate rule: server started before D6 vite.config.ts/boot.ts edits served SPA fallback on /healthz — orchestrator restarted dev server before D10 validation"
+  ],
+  "result": "PASS"
+}

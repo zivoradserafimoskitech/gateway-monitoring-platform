@@ -136,6 +136,14 @@ async function onMessage(topic: string, payload: Buffer): Promise<void> {
     if (!gateway) return;
     await markSeen(gateway);
 
+    // v8/D5: OTA ack frames (d2g/<uid>/ota) are management traffic, not
+    // telemetry — route to the OTA manager before the telemetry decoders.
+    if (topic.endsWith("/ota")) {
+      const { handleOtaAck } = await import("../ota/manager");
+      await handleOtaAck(gateway, payload);
+      return;
+    }
+
     if (gateway.transport === "transparent") {
       const result = await handleC30Frame(gateway, payload);
       if (!result.decoded) {
@@ -317,9 +325,17 @@ export async function startMqttService(): Promise<MqttService> {
     console.log(`[mqtt] connected to ${connectUrl}`);
     // Subscribe to everything — custom G30 topic prefixes are user-defined,
     // so a wildcard is the safest way to catch d2g/#, matis/# and anything else.
-    client.subscribe(["#"], (err) => {
+    // v8/D6: with an EXTERNAL broker (HA multi-replica), use a shared
+    // subscription so each telemetry message is delivered to exactly ONE app
+    // replica (EMQX supports $share). The embedded dev broker (aedes) does
+    // not — keep the plain wildcard there; MQTT_SHARED_SUB=0 also forces the
+    // plain wildcard for external brokers without $share support (e.g. aedes
+    // used as a stand-in in tests).
+    const useShared = !!process.env.MQTT_URL && process.env.MQTT_SHARED_SUB !== "0";
+    const sub = useShared ? "$share/enertrek/#" : "#";
+    client.subscribe([sub], (err) => {
       if (err) console.error("[mqtt] subscribe error:", err.message);
-      else console.log("[mqtt] subscribed to all topics");
+      else console.log(`[mqtt] subscribed to ${sub}`);
     });
   });
   client.on("message", (topic, payload) => {
@@ -370,6 +386,24 @@ export async function sendControlFrame(gateway: Gateway, frame: Buffer): Promise
     ),
   ]);
   return { topic, hex };
+}
+
+// v8/D5: publish an OTA cmd frame (JSON) on the gateway's downlink ota topic.
+// The device acks on d2g/<uid>/ota — handled by ota/manager.ts.
+export async function publishOtaCmd(gateway: Gateway, frame: Record<string, unknown>): Promise<{ topic: string }> {
+  const svc = globalThis.__enertrekMqtt;
+  if (!svc) throw new Error("MQTT service not running");
+  if (!svc.client.connected) throw new Error("MQTT broker is not connected — cannot send OTA frame");
+  const topic = `g2d/${gateway.uid}/ota`;
+  await Promise.race([
+    new Promise<void>((resolve, reject) => {
+      svc.client.publish(topic, JSON.stringify(frame), { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+    }),
+    new Promise<void>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("Timed out publishing OTA frame (10s)")), 10_000)
+    ),
+  ]);
+  return { topic };
 }
 
 // ─── Downlink commands (C30) ─────────────────────────────────────────────────

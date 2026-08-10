@@ -1,0 +1,29 @@
+{
+  "id": "v8-d5-device-management",
+  "version": "v8",
+  "stage": "D5 — device management: OTA + remote config + heartbeat diagnostics",
+  "ts": "2026-08-11T09:20:00Z",
+  "implementedBy": "BE subagent (chain step 4)",
+  "deliverables": [
+    "db: gateways.firmwareVersion + configVersion, ota_jobs (migration 0011, applied)",
+    "api/ota/manager.ts (pending→sent→ack|failed, 15s sweep, 60s ack timeout, 3 attempts, version bumps on ack)",
+    "api/mqtt/service.ts publishOtaCmd + */ota ack interception (no import cycle)",
+    "protocol: g2d/<uid>/ota cmd JSON, d2g/<uid>/ota ack JSON (g2d/d2g convention)",
+    "api/routers/ota.ts (list/create/cancel), gateways.diagnostics (lastSeen, msgPerMin, poller stats, active jobs)",
+    "scripts/simulator.ts minimal OTA extension (g2d/+/ota subscribe, config apply, firmware version+url validation, 300ms ack)",
+    "UI: DeviceManagementCard on GatewayDetail + i18n EN/MK",
+    "scripts/probe-v8-ota.ts"
+  ],
+  "checks": [
+    { "cmd": "probe-v8-ota.ts", "expect": "6/6", "result": "PASS (config job ack + configVersion 2; firmware ack + version 1.4.2; diagnostics msgPerMin=34 + TCP poller stats; TCP firmware clear failure; viewer FORBIDDEN)" },
+    { "cmd": "npx tsc --noEmit", "result": "PASS" },
+    { "cmd": "vitest", "expect": "25/25", "result": "PASS" },
+    { "cmd": "cleanup", "expect": "0 ota rows, temp gateway removed", "result": "PASS" }
+  ],
+  "notes": [
+    "MQTT demo simulator was down — restarted by agent (demo mode)",
+    "zod v4 fix: z.record(z.string(), z.unknown())",
+    "dev env: EMS_TICK_S=5 EMAIL_TRANSPORT=log"
+  ],
+  "result": "PASS"
+}

@@ -1,0 +1,27 @@
+{
+  "id": "v8-d7-ci-cd",
+  "version": "v8",
+  "stage": "D7 — CI/CD quality gates",
+  "ts": "2026-08-11T10-20:00Z",
+  "implementedBy": "D7 subagent + orchestrator gate (stranded import fix)",
+  "deliverables": [
+    ".github/workflows/ci.yml (quality job: tsc -b, coverage, build, audit gate w/ documented 2-ID allowlist for xlsx advisories; e2e job gated to workflow_dispatch — TiDB is privatelink-only)",
+    "playwright.config.ts + tests/e2e/login.spec.ts (4 specs)",
+    "vitest.config.ts coverage thresholds (21/19/11/5 vs measured 26.23/24.35/16.75/10.46)",
+    "package.json devDeps: @playwright/test 1.62.1, @vitest/coverage-v8 4.1.10; scripts test:coverage/test:e2e",
+    "docs/ci.md (pipeline, secrets, coverage, audit policy, scale-smoke placeholder)",
+    ".gitignore: test-results/"
+  ],
+  "checks": [
+    { "cmd": "npx playwright test", "expect": "4/4", "result": "PASS (3× runs: login, admin flow, viewer FORBIDDEN -32003 via page.evaluate, wrong password error)" },
+    { "cmd": "npm test", "expect": "25/25", "result": "PASS" },
+    { "cmd": "vitest --coverage", "expect": "exit 0 vs thresholds", "result": "PASS" },
+    { "cmd": "tsc -b / npm run build / YAML", "result": "PASS" }
+  ],
+  "notes": [
+    "audit: 7 vulns — 6 moderate dev-only + 1 high xlsx (no upstream fix) → gate fails on any NEW high outside the 2-ID allowlist",
+    "FUSE mount: coverage tmp routed to os.tmpdir() (CI=1 → ./coverage lcov)",
+    "gate fix by orchestrator: stranded gatewayOrg import in ota.ts removed, tsc clean"
+  ],
+  "result": "PASS"
+}

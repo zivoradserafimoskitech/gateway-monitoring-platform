@@ -172,3 +172,57 @@
 - Per-point run records: `runs/*-v7-c{3,5,6,8,9,10,11,12}-*.json` (all PASS).
 - Incidents: node_modules/tsx overlay-FS corruption (repaired, WAL hardened);
   2 stale notify-probe alarms + rules cleaned; temp probe gateway removed.
+
+## v8 — mega-edition: EMS, multi-tenancy, HA, reports, OTA, SCADA, CI/CD, protocols, ERP (2026-08-11)
+
+Acceptance criteria: `v8/acceptance.md` (D1–D10). Per-point run records:
+`runs/*-v8-*.json` (all PASS).
+
+- D1 EMS active control: `ems_schedules` (DoW mask, tz-aware windows, DST-correct)
+  + `ems_peak_shaving` (threshold/hysteresis/max discharge); controller loop
+  (EMS_TICK_S, SOC guards, 5-min idempotency) via executeAndLog(userId null)
+  → C12 interlock + commands audit; EmsPanel UI (EN/MK).
+- D2 multi-tenancy: `orgs` + org_id on 11 tables + superadmin; org-scope lib
+  (reads 404 / writes 403, no existence leak); open demo mode unrestricted;
+  per-org dashboard cache; REST v1 scoped to key's org; migration 0012.
+- D3 scheduled reports: `report_schedules` (daily/weekly/monthly, xlsx|pdf,
+  recipients, site-local due rule, period-dedup), hand-rolled PDF-1.4 writer,
+  mailer (SMTP_URL or log transport), previous-period delivery.
+- D4 SCADA single-line diagram: pure-SVG SiteDiagram (PCC→breaker→meter→busbar
+  →branches, power-sign arrows, alarm/offline states), route + i18n.
+- D5 device management/OTA: `ota_jobs` state machine (pending→sent→ack|failed,
+  sweep, ack timeout, attempts), `g2d/<uid>/ota` + `d2g/<uid>/ota` ack,
+  gateways.diagnostics, simulator ack support; DeviceManagementCard UI.
+- D6 HA: external broker mode (`MQTT_URL`, `$share/enertrek/#` on EMQX),
+  `/healthz` + `/readyz` (db+broker components), docker-compose.prod.yml
+  (2 app replicas + nginx least_conn + 2-node EMQX cluster, per-replica WAL),
+  report-scheduler atomic claim (replica-safe), `docs/ha.md` with honest
+  duplicate-loop analysis + kill-switches (EMS_TICK_S/REPORT_TICK_MIN ≤ 0).
+- D7 CI/CD: `.github/workflows/ci.yml` (tsc -b, coverage gate, build, audit
+  gate with documented 2-ID xlsx allowlist; e2e gated to workflow_dispatch —
+  TiDB is privatelink-only), Playwright 4 specs, coverage thresholds.
+- D8 protocol expansion: `scripts/seed-sunspec.ts` (common + inverter 103/111,
+  argv[1]-guarded main), `api/protocols/adapter.ts` registry; `docs/protocols.md`.
+- D9 operator docs: commissioning, runbook-operators, sla, architecture,
+  protocols, ci, ha, api-v1 (updated).
+- ERP integration (volttrade-erp): REST-pull contract — `GET /api/v1/devices`,
+  `GET /api/v1/devices/:id/energy?from&to&bucketMin` (counter-reset-safe deltas,
+  raw/hourly retention split, UTC floor..ceil grid, gaps→nulls), `GET .../latest`;
+  Deno edge functions sync-enertrek-meters (15 min) + sync-enertrek-assets
+  (5 min) with pg_cron+pg_net; `docs/enertrek-integration.md` (ERP repo).
+- D10 final regression: `runs/2026-08-10T23-55-00Z-v8-d10-final-regression.json`
+  — tsc clean, build ok, vitest 25/25, coverage gate PASS (26.23/24.35/16.75/
+  10.46), Playwright 4/4, ESMU e2e 6/6 ×2, ALL v8 probes green (ems 9/9,
+  rest-energy 10/10, erp-sim 18/18, reports 6/6, ota 6/6, multitenancy 9/9
+  incl. nested v7-auth 12/12 + v7-control 9/9 + rest-energy 10/10, ha 5/5),
+  v7+v6 probe battery green (backup, counter-reset, observability, notify 5/5,
+  notify2, rest-api, timezone, retention 7/7, tls, wal, registration 13/13,
+  v6-mqtt, c30-stride; dedup SKIP — no active alarm); fleet healthy (4+1 gw,
+  18 meters, 0 null org_id, 4625 rows/h). Verdict: PASS.
+- Probe hardening during D10 (assertion/harness only — product code correct):
+  rest-energy (a) reset-bucket tolerance + (b2) settled-hour window; ems
+  freshness filter on command waits; esmu-e2e org-stamp + artifact cleanup.
+- Incidents: stale dev server served SPA on /healthz after D6 vite edits
+  (gate rule re-confirmed: restart after every api/vite-config edit);
+  Playwright browser 1234 installed; retention probe ran with scoped
+  ALLOW_UNSAFE_PROD=1 (cutoff predates all production rows).

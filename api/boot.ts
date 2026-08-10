@@ -5,13 +5,15 @@ import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./router";
 import { createContext } from "./context";
 import { env } from "./lib/env";
-import { startMqttService } from "./mqtt/service";
+import { startMqttService, getMqttStatus } from "./mqtt/service";
 import { startPollerService } from "./poller/service";
 import { startEscalationLoop } from "./alarms/notify";
 import { metricsText, httpRequestDone, startWatchdogLoop } from "./lib/observability";
 import crypto from "node:crypto";
 
-// Start MQTT ingestion (embedded broker unless MQTT_URL points to an external one).
+// Start MQTT ingestion. The app is always a broker CLIENT: it connects to the
+// external broker at MQTT_URL when set (HA mode — no embedded broker), else to
+// the local dev broker (scripts/broker.ts) on 127.0.0.1:1883.
 // Failures must not take down the HTTP API.
 startMqttService().catch((err) => {
   console.error("[mqtt] failed to start:", err instanceof Error ? err.message : err);
@@ -36,6 +38,9 @@ try {
   // v8/D3: scheduled reports (generate + email).
   const { startReportLoop } = await import("./reports/scheduler");
   startReportLoop();
+  // v8/D5: OTA job manager (dispatch + ack-timeout sweep).
+  const { startOtaLoop } = await import("./ota/manager");
+  startOtaLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }
@@ -61,6 +66,32 @@ app.use("/api/*", async (c, next) => {
 app.get("/metrics", async (c) => {
   c.header("content-type", "text/plain; version=0.0.4; charset=utf-8");
   return c.body(await metricsText());
+});
+
+// v8/D6: liveness — process is up. Always 200, unauthenticated, dependency-free.
+app.get("/healthz", (c) => c.json({ status: "ok" }));
+
+// v8/D6: readiness — DB reachable AND broker connected. 503 + reason otherwise.
+// Used by the nginx/compose healthcheck so replicas join the pool only when
+// they can actually serve.
+app.get("/readyz", async (c) => {
+  let db = "ok";
+  try {
+    const { getDb } = await import("./queries/connection");
+    const { sql } = await import("drizzle-orm");
+    await getDb().execute(sql`SELECT 1`);
+  } catch (err) {
+    db = `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const mqtt = getMqttStatus();
+  const broker = mqtt.running && mqtt.connected ? "ok" : "disconnected";
+  if (db === "ok" && broker === "ok") {
+    return c.json({ status: "ready", components: { db, broker, brokerMode: mqtt.externalBroker ? "external" : "embedded-dev" } });
+  }
+  return c.json(
+    { status: "not ready", reason: db !== "ok" ? db : `broker ${broker}`, components: { db, broker, brokerMode: mqtt.externalBroker ? "external" : "embedded-dev" } },
+    503,
+  );
 });
 
 // Optional bearer-token guard for real deployments (v4 F-01): when API_TOKEN is

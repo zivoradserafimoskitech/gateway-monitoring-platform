@@ -9,13 +9,13 @@
 // Auth: `Authorization: Bearer etk_...` with a non-revoked key. Keys are
 // managed via the tRPC apiKeys router (admin) — see docs/api-v1.md.
 import { Hono } from "hono";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
 import { getTelemetryStore } from "../telemetry";
 
-type Vars = { Variables: { apiKey: { id: number; name: string; role: string } } };
+type Vars = { Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null } } };
 export const restV1 = new Hono<Vars>();
 
 restV1.use("*", async (c, next) => {
@@ -25,13 +25,19 @@ restV1.use("*", async (c, next) => {
   if (!key) {
     return c.json({ error: "Unauthorized — a valid Bearer API key is required (etk_...)" }, 401);
   }
-  c.set("apiKey", { id: key.id, name: key.name, role: key.role });
+  c.set("apiKey", { id: key.id, name: key.name, role: key.role, orgId: key.orgId });
   await next();
 });
 
+// v8/D2 multitenancy: every REST read is scoped to the key's org (keys are
+// backfilled to Default Org, so legacy integrations are unaffected).
 restV1.get("/sites", async (c) => {
   const db = getDb();
-  const rows = await db.select().from(sites).orderBy(sites.name);
+  const rows = await db
+    .select()
+    .from(sites)
+    .where(eq(sites.orgId, c.get("apiKey").orgId ?? -1))
+    .orderBy(sites.name);
   return c.json({ sites: rows });
 });
 
@@ -56,6 +62,7 @@ restV1.get("/devices", async (c) => {
     })
     .from(meters)
     .leftJoin(gateways, eq(meters.gatewayId, gateways.id))
+    .where(eq(meters.orgId, c.get("apiKey").orgId ?? -1))
     .orderBy(meters.id);
   // v6 coalesce rule: a meter's effective site = own site ?? gateway's site.
   const withSite = rows.map((r) => ({ ...r, effectiveSiteId: r.siteId ?? r.gatewaySiteId ?? null }));
@@ -66,7 +73,7 @@ restV1.get("/devices/:id/latest", async (c) => {
   const id = Number(c.req.param("id"));
   if (!Number.isFinite(id)) return c.json({ error: "invalid device id" }, 400);
   const db = getDb();
-  const dev = await db.select({ id: meters.id }).from(meters).where(eq(meters.id, id)).limit(1);
+  const dev = await db.select({ id: meters.id }).from(meters).where(and(eq(meters.id, id), eq(meters.orgId, c.get("apiKey").orgId ?? -1))).limit(1);
   if (dev.length === 0) return c.json({ error: "device not found" }, 404);
   const row = await getTelemetryStore().latest(id);
   // v8/D2 contract shape { deviceId, ts, values }; the legacy `latest` wrapper
@@ -96,7 +103,7 @@ restV1.get("/devices/:id/energy", async (c) => {
     return c.json({ error: "bucketMin must be an integer in 15..1440" }, 400);
   }
   const db = getDb();
-  const dev = await db.select({ id: meters.id }).from(meters).where(eq(meters.id, id)).limit(1);
+  const dev = await db.select({ id: meters.id }).from(meters).where(and(eq(meters.id, id), eq(meters.orgId, c.get("apiKey").orgId ?? -1))).limit(1);
   if (dev.length === 0) return c.json({ error: "device not found" }, 404);
 
   const rows = await getTelemetryStore().energyIntervals(id, new Date(fromMs), new Date(toMs), bucketMin);
@@ -130,45 +137,38 @@ restV1.get("/alarms", async (c) => {
   const valid = ["active", "acknowledged", "resolved", "all"];
   if (!valid.includes(status)) return c.json({ error: `status must be one of ${valid.join("|")}` }, 400);
   const db = getDb();
-  const query = db
-    .select({
-      id: alarms.id,
-      meterId: alarms.meterId,
-      gatewayId: alarms.gatewayId,
-      metric: alarms.metric,
-      value: alarms.value,
-      threshold: alarms.threshold,
-      severity: alarms.severity,
-      message: alarms.message,
-      status: alarms.status,
-      triggeredAt: alarms.triggeredAt,
-      acknowledgedAt: alarms.acknowledgedAt,
-      resolvedAt: alarms.resolvedAt,
-    })
+  // v8/D2: scope to the key's org through the meter (or the gateway for
+  // meter-less alarms).
+  const org = c.get("apiKey").orgId ?? -1;
+  const [mRows, gRows] = await Promise.all([
+    db.select({ id: meters.id }).from(meters).where(eq(meters.orgId, org)),
+    db.select({ id: gateways.id }).from(gateways).where(eq(gateways.orgId, org)),
+  ]);
+  const mIds = mRows.map((r) => r.id);
+  const gIds = gRows.map((r) => r.id);
+  const orgScope =
+    mIds.length || gIds.length
+      ? or(mIds.length ? inArray(alarms.meterId, mIds) : undefined, gIds.length ? and(isNull(alarms.meterId), inArray(alarms.gatewayId, gIds)) : undefined)
+      : eq(alarms.meterId, -1);
+  const cols = {
+    id: alarms.id,
+    meterId: alarms.meterId,
+    gatewayId: alarms.gatewayId,
+    metric: alarms.metric,
+    value: alarms.value,
+    threshold: alarms.threshold,
+    severity: alarms.severity,
+    message: alarms.message,
+    status: alarms.status,
+    triggeredAt: alarms.triggeredAt,
+    acknowledgedAt: alarms.acknowledgedAt,
+    resolvedAt: alarms.resolvedAt,
+  };
+  const rows = await db
+    .select(cols)
     .from(alarms)
+    .where(and(status === "all" ? undefined : eq(alarms.status, status as "active" | "acknowledged" | "resolved"), orgScope))
     .orderBy(desc(alarms.triggeredAt))
     .limit(500);
-  const rows =
-    status === "all"
-      ? await query
-      : await db
-          .select({
-            id: alarms.id,
-            meterId: alarms.meterId,
-            gatewayId: alarms.gatewayId,
-            metric: alarms.metric,
-            value: alarms.value,
-            threshold: alarms.threshold,
-            severity: alarms.severity,
-            message: alarms.message,
-            status: alarms.status,
-            triggeredAt: alarms.triggeredAt,
-            acknowledgedAt: alarms.acknowledgedAt,
-            resolvedAt: alarms.resolvedAt,
-          })
-          .from(alarms)
-          .where(eq(alarms.status, status as "active" | "acknowledged" | "resolved"))
-          .orderBy(desc(alarms.triggeredAt))
-          .limit(500);
   return c.json({ alarms: rows });
 });

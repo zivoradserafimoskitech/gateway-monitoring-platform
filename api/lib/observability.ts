@@ -59,6 +59,11 @@ export async function metricsText(): Promise<string> {
     "# HELP enertrek_mqtt_connected MQTT client connection state (1=connected)",
     "# TYPE enertrek_mqtt_connected gauge",
     `enertrek_mqtt_connected ${mqtt.running && mqtt.connected ? 1 : 0}`,
+    // v8/D6: broker topology — 1 when MQTT_URL points at an external broker (HA
+    // mode, shared subscription), 0 for the local embedded-dev broker.
+    "# HELP enertrek_mqtt_external_broker MQTT broker topology (1=external via MQTT_URL, 0=local embedded-dev)",
+    "# TYPE enertrek_mqtt_external_broker gauge",
+    `enertrek_mqtt_external_broker ${mqtt.externalBroker ? 1 : 0}`,
     "# HELP enertrek_mqtt_messages_in_total MQTT telemetry messages received",
     "# TYPE enertrek_mqtt_messages_in_total counter",
     `enertrek_mqtt_messages_in_total ${mqtt.running ? (mqtt.messagesIn ?? 0) : 0}`,

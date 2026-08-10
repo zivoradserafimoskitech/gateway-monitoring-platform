@@ -302,6 +302,43 @@ async function main() {
     }, 10000);
 
     client.subscribe(`g2d/${C30_UID}`);
+    // v8/D5: OTA management channel — any gateway uid (incl. temp probe
+    // gateways): cmd on g2d/<uid>/ota, ack back on d2g/<uid>/ota.
+    client.subscribe(`g2d/+/ota`);
+  });
+
+  // v8/D5: OTA cmd handler — cmd g2d/<uid>/ota → ack d2g/<uid>/ota.
+  const otaState = new Map<string, { firmwareVersion: string; config: Record<string, unknown> }>();
+  client.on("message", (topic, payload) => {
+    const m = /^g2d\/([^/]+)\/ota$/.exec(topic);
+    if (!m) return;
+    const uid = m[1];
+    let frame: { jobId?: number; type?: string; payload?: Record<string, unknown> };
+    try {
+      frame = JSON.parse(payload.toString("utf8"));
+    } catch {
+      console.log(`[sim] OTA: non-JSON frame on ${topic} — ignored`);
+      return;
+    }
+    const st = otaState.get(uid) ?? { firmwareVersion: "1.0.0", config: {} };
+    otaState.set(uid, st);
+    let ack: Record<string, unknown>;
+    if (frame.type === "firmware") {
+      const version = typeof frame.payload?.version === "string" ? frame.payload.version : null;
+      if (!version || !frame.payload?.url) {
+        ack = { jobId: frame.jobId, status: "failed", error: "firmware payload requires {version, url}" };
+      } else {
+        st.firmwareVersion = version;
+        ack = { jobId: frame.jobId, status: "ack", firmwareVersion: version };
+      }
+    } else if (frame.type === "config") {
+      Object.assign(st.config, frame.payload ?? {});
+      ack = { jobId: frame.jobId, status: "ack" };
+    } else {
+      ack = { jobId: frame.jobId, status: "failed", error: `unknown job type ${frame.type}` };
+    }
+    console.log(`[sim] OTA cmd uid=${uid} type=${frame.type} job=${frame.jobId} → ${ack.status}`);
+    setTimeout(() => client.publish(`d2g/${uid}/ota`, JSON.stringify(ack), { qos: 1 }), 300);
   });
 
   client.on("message", (topic, payload) => {

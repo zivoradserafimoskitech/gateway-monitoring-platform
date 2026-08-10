@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { DeviceManagementCard } from "@/components/DeviceManagementCard";
 
 export default function GatewayDetail() {
   const { id } = useParams<{ id: string }>();
@@ -179,6 +180,9 @@ export default function GatewayDetail() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* v8/D5: firmware/config versions, heartbeat diagnostics, OTA jobs */}
+      <DeviceManagementCard gatewayId={gatewayId} />
 
       <Card>
         <CardHeader>

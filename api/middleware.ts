@@ -86,3 +86,18 @@ function requireRole(roles: Array<"admin" | "operator" | "viewer">) {
 export const authed = t.procedure.use(requireRole(["admin", "operator", "viewer"]));
 export const operator = t.procedure.use(requireRole(["admin", "operator"]));
 export const admin = t.procedure.use(requireRole(["admin"]));
+
+// v8/D2: superadmin-only (org management). Open demo mode (user null) passes,
+// consistent with the RBAC bypass.
+export const superadmin = t.procedure.use(
+  t.middleware(({ ctx, next }) => {
+    if (!authBypass()) {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Login required" });
+      const isSuper = ctx.user.isSuperadmin === true || (ctx.user.isSuperadmin as unknown) === 1;
+      if (ctx.user.role !== "admin" || !isSuper) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Requires superadmin" });
+      }
+    }
+    return next();
+  }),
+);

@@ -15,6 +15,7 @@ import {
   revokeSession,
   verifyPassword,
 } from "../lib/auth";
+import { assertOrgWrite, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
 
 // When the app is served embedded (platform preview iframe) over HTTPS, the
 // session cookie is third-party: SameSite=Lax is never sent on fetch, so the
@@ -70,7 +71,7 @@ export const authRouter = createRouter({
     if (!ctx.user) return { authRequired, user: null };
     return {
       authRequired,
-      user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, role: ctx.user.role },
+      user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, role: ctx.user.role, orgId: ctx.user.orgId, isSuperadmin: ctx.user.isSuperadmin },
     };
   }),
 
@@ -86,10 +87,12 @@ export const authRouter = createRouter({
     }),
 
   // ─── Admin: user management ─────────────────────────────────────────────
-  users: admin.query(async () => {
+  users: admin.query(async ({ ctx }) => {
+    // v8/D2: non-superadmin admin sees only users of their own org.
     const rows = await getDb()
-      .select({ id: users.id, email: users.email, name: users.name, role: users.role, disabled: users.disabled, createdAt: users.createdAt })
+      .select({ id: users.id, email: users.email, name: users.name, role: users.role, disabled: users.disabled, orgId: users.orgId, isSuperadmin: users.isSuperadmin, createdAt: users.createdAt })
       .from(users)
+      .where(orgWhere(ctx.user, users.orgId))
       .orderBy(desc(users.createdAt));
     return rows;
   }),
@@ -101,9 +104,10 @@ export const authRouter = createRouter({
         name: z.string().min(1).max(255),
         password: z.string().min(8).max(128),
         role: z.enum(["admin", "operator", "viewer"]).default("viewer"),
+        orgId: z.number().optional(), // v8/D2: superadmin may choose; others get their own org stamped
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const inserted = await db
         .insert(users)
@@ -112,6 +116,7 @@ export const authRouter = createRouter({
           name: input.name,
           passwordHash: hashPassword(input.password),
           role: input.role,
+          orgId: stampOrg(ctx.user, input.orgId),
         })
         .$returningId();
       return { id: inserted[0].id };
@@ -126,7 +131,8 @@ export const authRouter = createRouter({
         password: z.string().min(8).max(128).optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      assertOrgWrite(ctx.user, await userOrg(input.id), "User"); // v8/D2
       const db = getDb();
       const patch: Record<string, unknown> = {};
       if (input.role) patch.role = input.role;

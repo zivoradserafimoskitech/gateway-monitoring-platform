@@ -43,13 +43,17 @@ import type { ControllableDef, ControllableMap } from "../control/execute";
 import { getTelemetryStore } from "../telemetry";
 import { tzOffsetMs } from "../lib/tz";
 
-const TICK_S = Math.max(2, parseInt(process.env.EMS_TICK_S || "30", 10));
+const TICK_S = parseInt(process.env.EMS_TICK_S || "30", 10);
 export const EMS_IDEMPOTENCY_MS = 5 * 60 * 1000;
 
 let timer: NodeJS.Timeout | null = null;
 
 export function startEmsLoop(): void {
   if (timer) return;
+  if (TICK_S <= 0) {
+    console.log("[ems] disabled via EMS_TICK_S<=0"); // v8/D6: probe/secondary-replica switch
+    return;
+  }
   timer = setInterval(() => {
     emsTick().catch((err) => console.error("[ems] tick failed:", err instanceof Error ? err.message : err));
   }, TICK_S * 1000);

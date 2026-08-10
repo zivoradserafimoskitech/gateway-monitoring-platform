@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/table";
 import { Download, Play } from "lucide-react";
 import { csvCell } from "@/lib/csv";
+import { ReportSchedulesCard } from "@/components/ReportSchedulesCard";
 
 function toInputDate(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -148,6 +149,9 @@ export default function Reports() {
       </Card>
 
       {!report.data && <p className="text-sm text-slate-500">{t.reports.selectScope}</p>}
+
+      {/* v8/D3: scheduled reports (generate + email on a schedule) */}
+      <ReportSchedulesCard />
 
       {report.data && (
         <>

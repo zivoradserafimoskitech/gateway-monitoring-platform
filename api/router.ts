@@ -11,6 +11,8 @@ import { notificationsRouter } from "./routers/notifications";
 import { apiKeysRouter } from "./routers/api-keys";
 import { controlRouter } from "./routers/control";
 import { emsRouter } from "./routers/ems";
+import { otaRouter } from "./routers/ota";
+import { orgsRouter } from "./routers/orgs";
 
 export const appRouter = createRouter({
   ping: publicQuery.query(() => ({ ok: true, ts: Date.now() })),
@@ -27,6 +29,8 @@ export const appRouter = createRouter({
   apiKeys: apiKeysRouter,
   control: controlRouter,
   ems: emsRouter,
+  ota: otaRouter,
+  orgs: orgsRouter,
 });
 
 export type AppRouter = typeof appRouter;

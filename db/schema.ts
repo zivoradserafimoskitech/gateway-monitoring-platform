@@ -16,15 +16,21 @@ import {
 } from "drizzle-orm/mysql-core";
 
 // ─── Sites ───────────────────────────────────────────────────────────────────
-export const sites = mysqlTable("sites", {
-  id: serial("id").primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),
-  address: varchar("address", { length: 500 }),
-  // v7/C8: IANA timezone — site-scope reports bucket days at LOCAL midnight
-  // (DST handled per day via Intl-computed boundaries).
-  timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+export const sites = mysqlTable(
+  "sites",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    address: varchar("address", { length: 500 }),
+    // v7/C8: IANA timezone — site-scope reports bucket days at LOCAL midnight
+    // (DST handled per day via Intl-computed boundaries).
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("sites_org_idx").on(t.orgId)],
+);
 export type Site = typeof sites.$inferSelect;
 export type InsertSite = typeof sites.$inferInsert;
 
@@ -48,9 +54,15 @@ export const gateways = mysqlTable(
     lastSeenAt: timestamp("last_seen_at"),
     rssi: int("rssi"),
     firmware: varchar("firmware", { length: 64 }),
+    // v8/D5: device management — reported firmware version (set on firmware
+    // OTA ack) and config revision (bumped on every acked config push).
+    firmwareVersion: text("firmware_version"),
+    configVersion: int("config_version").notNull().default(1),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("gateways_uid_unique").on(t.uid), index("gateways_site_idx").on(t.siteId)],
+  (t) => [uniqueIndex("gateways_uid_unique").on(t.uid), index("gateways_site_idx").on(t.siteId), index("gateways_org_idx").on(t.orgId)],
 );
 export type Gateway = typeof gateways.$inferSelect;
 export type InsertGateway = typeof gateways.$inferInsert;
@@ -85,11 +97,14 @@ export const meters = mysqlTable(
     pollIntervalSec: int("poll_interval_sec").notNull().default(60),
     status: mysqlEnum("status", ["online", "offline"]).notNull().default("offline"),
     lastSeenAt: timestamp("last_seen_at"),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
     index("meters_gateway_idx").on(t.gatewayId),
     index("meters_site_idx").on(t.siteId),
+    index("meters_org_idx").on(t.orgId),
     uniqueIndex("meters_gw_addr_unique").on(t.gatewayId, t.modbusAddress),
   ],
 );
@@ -157,19 +172,25 @@ export const telemetryHourly = mysqlTable(
 export type TelemetryHourly = typeof telemetryHourly.$inferSelect;
 
 // ─── Alarm rules ─────────────────────────────────────────────────────────────
-export const alarmRules = mysqlTable("alarm_rules", {
-  id: serial("id").primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),
-  // metric key, e.g. voltageL1, activePowerKw, frequencyHz, powerFactor, gatewayOffline
-  metric: varchar("metric", { length: 64 }).notNull(),
-  operator: mysqlEnum("operator", ["gt", "lt"]).notNull(),
-  threshold: double("threshold").notNull(),
-  severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
-  // null meterId => applies to all meters
-  meterId: bigint("meter_id", { mode: "number", unsigned: true }),
-  enabled: boolean("enabled").notNull().default(true),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+export const alarmRules = mysqlTable(
+  "alarm_rules",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // metric key, e.g. voltageL1, activePowerKw, frequencyHz, powerFactor, gatewayOffline
+    metric: varchar("metric", { length: 64 }).notNull(),
+    operator: mysqlEnum("operator", ["gt", "lt"]).notNull(),
+    threshold: double("threshold").notNull(),
+    severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
+    // null meterId => applies to all meters
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }),
+    enabled: boolean("enabled").notNull().default(true),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("alarm_rules_org_idx").on(t.orgId)],
+);
 export type AlarmRule = typeof alarmRules.$inferSelect;
 export type InsertAlarmRule = typeof alarmRules.$inferInsert;
 
@@ -264,6 +285,21 @@ export const commands = mysqlTable(
 export type Command = typeof commands.$inferSelect;
 export type InsertCommand = typeof commands.$inferInsert;
 
+// ─── Multi-tenancy (v8 D2) ───────────────────────────────────────────────────
+// Every tenant-owned row carries org_id (backfilled to "Default Org"). The
+// superadmin (users.is_superadmin) sees all orgs; everyone else only their own.
+export const orgs = mysqlTable(
+  "orgs",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("orgs_name_unique").on(t.name)],
+);
+export type Org = typeof orgs.$inferSelect;
+export type InsertOrg = typeof orgs.$inferInsert;
+
 // ─── Auth & RBAC (v7 C1) ─────────────────────────────────────────────────────
 export const users = mysqlTable(
   "users",
@@ -275,9 +311,12 @@ export const users = mysqlTable(
     passwordHash: varchar("password_hash", { length: 255 }).notNull(),
     role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
     disabled: int("disabled").notNull().default(0), // 0 active, 1 disabled
+    // v8/D2: home org; isSuperadmin sees/manages all orgs.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    isSuperadmin: boolean("is_superadmin").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("users_email_unique").on(t.email)],
+  (t) => [uniqueIndex("users_email_unique").on(t.email), index("users_org_idx").on(t.orgId)],
 );
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
@@ -327,11 +366,13 @@ export const apiKeys = mysqlTable(
     prefix: varchar("prefix", { length: 16 }).notNull(),
     role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
     createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    // v8/D2: owning org — REST reads are scoped to it.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     lastUsedAt: timestamp("last_used_at"),
     revokedAt: timestamp("revoked_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("api_keys_hash_unique").on(t.keyHash)],
+  (t) => [uniqueIndex("api_keys_hash_unique").on(t.keyHash), index("api_keys_org_idx").on(t.orgId)],
 );
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type InsertApiKey = typeof apiKeys.$inferInsert;
@@ -409,9 +450,11 @@ export const emsSchedules = mysqlTable(
     targetSoc: double("target_soc"),
     enabled: boolean("enabled").notNull().default(true),
     createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("ems_sched_meter_idx").on(t.meterId)],
+  (t) => [index("ems_sched_meter_idx").on(t.meterId), index("ems_sched_org_idx").on(t.orgId)],
 );
 export type EmsSchedule = typeof emsSchedules.$inferSelect;
 export type InsertEmsSchedule = typeof emsSchedules.$inferInsert;
@@ -430,12 +473,15 @@ export const emsPeakShaving = mysqlTable(
     hysteresisKw: double("hysteresis_kw").notNull().default(0),
     maxDischargeKw: double("max_discharge_kw").notNull(),
     enabled: boolean("enabled").notNull().default(true),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
     index("ems_peak_source_idx").on(t.sourceMeterId),
     index("ems_peak_bess_idx").on(t.bessMeterId),
     index("ems_peak_site_idx").on(t.siteId),
+    index("ems_peak_org_idx").on(t.orgId),
   ],
 );
 export type EmsPeakShaving = typeof emsPeakShaving.$inferSelect;
@@ -458,9 +504,39 @@ export const reportSchedules = mysqlTable(
     enabled: boolean("enabled").notNull().default(true),
     lastRunAt: timestamp("last_run_at"),
     createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("report_sched_site_idx").on(t.siteId)],
+  (t) => [index("report_sched_site_idx").on(t.siteId), index("report_sched_org_idx").on(t.orgId)],
 );
 export type ReportSchedule = typeof reportSchedules.$inferSelect;
 export type InsertReportSchedule = typeof reportSchedules.$inferInsert;
+
+// ─── v8/D5: device management — OTA jobs ─────────────────────────────────────
+// Delivery: MQTT gateways get a JSON cmd frame on g2d/<uid>/ota and ack on
+// d2g/<uid>/ota (api/ota/manager.ts); TCP/direct gateways get config pushes via
+// the C12 whitelisted FC6 path (firmware OTA is not applicable there).
+// Status: pending → sent → ack | failed (ack timeout 60 s, ≤ 3 attempts, or
+// negative ack / unsupported operation).
+export const otaJobs = mysqlTable(
+  "ota_jobs",
+  {
+    id: serial("id").primaryKey(),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }).notNull(),
+    type: mysqlEnum("type", ["firmware", "config"]).notNull(),
+    payload: json("payload").notNull(), // firmware: {version,url?}; config: {pollIntervalMs?} | {controlKey,value,meterId?} for TCP
+    status: mysqlEnum("status", ["pending", "sent", "ack", "failed"]).notNull().default("pending"),
+    attempts: int("attempts").notNull().default(0),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    // v8/D2: owning org.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    sentAt: timestamp("sent_at"),
+    ackAt: timestamp("ack_at"),
+    error: text("error"),
+  },
+  (t) => [index("ota_jobs_gateway_idx").on(t.gatewayId), index("ota_jobs_org_idx").on(t.orgId)],
+);
+export type OtaJob = typeof otaJobs.$inferSelect;
+export type InsertOtaJob = typeof otaJobs.$inferInsert;

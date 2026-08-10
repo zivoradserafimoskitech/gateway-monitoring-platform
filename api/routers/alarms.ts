@@ -1,9 +1,40 @@
 import { z } from "zod";
-import { eq, desc, sql } from "drizzle-orm";
+import { and, eq, desc, isNull, or, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { alarms, alarmRules, meters, gateways } from "@db/schema";
 import { invalidateRulesCache } from "../mqtt/handlers";
+import { assertOrgWrite, isSuper, meterOrg, orgWhere, stampOrg } from "../lib/org-scope";
+import type { User } from "@db/schema";
+
+// v8/D2: the alarms table has no org_id of its own — scope through the
+// meter's org, or the gateway's org for meter-less alarms (e.g. gateway offline).
+function alarmOrgCond(user: User | null) {
+  if (isSuper(user)) return undefined;
+  const org = user!.orgId ?? -1;
+  return or(eq(meters.orgId, org), and(isNull(alarms.meterId), eq(gateways.orgId, org)));
+}
+
+async function alarmOrg(id: number): Promise<number | null | undefined> {
+  const db = getDb();
+  const rows = await db
+    .select({ meterOrg: meters.orgId, gatewayOrg: gateways.orgId })
+    .from(alarms)
+    .leftJoin(meters, eq(alarms.meterId, meters.id))
+    .leftJoin(gateways, eq(alarms.gatewayId, gateways.id))
+    .where(eq(alarms.id, id))
+    .limit(1);
+  if (!rows[0]) return undefined;
+  return rows[0].meterOrg ?? rows[0].gatewayOrg;
+}
+
+async function assertRuleOrg(user: User | null, id: number): Promise<void> {
+  const db = getDb();
+  const rows = await db.select({ orgId: alarmRules.orgId }).from(alarmRules).where(eq(alarmRules.id, id)).limit(1);
+  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Rule not found" });
+  assertOrgWrite(user, rows[0].orgId, "Rule");
+}
 
 export const alarmsRouter = createRouter({
   list: authed
@@ -15,33 +46,40 @@ export const alarmsRouter = createRouter({
         })
         .optional(),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
-      const base = db
+      const conds = [alarmOrgCond(ctx.user), input?.status ? eq(alarms.status, input.status) : undefined].filter(
+        (c) => c !== undefined,
+      );
+      const rows = await db
         .select({ alarm: alarms, meterName: meters.name, gatewayName: gateways.name })
         .from(alarms)
         .leftJoin(meters, eq(alarms.meterId, meters.id))
         .leftJoin(gateways, eq(alarms.gatewayId, gateways.id))
+        .where(conds.length ? and(...conds) : undefined)
         .orderBy(desc(alarms.triggeredAt))
         .limit(input?.limit ?? 100);
-      const rows = input?.status ? await base.where(eq(alarms.status, input.status)) : await base;
       return rows.map((r) => ({ ...r.alarm, meterName: r.meterName, gatewayName: r.gatewayName }));
     }),
 
-  counts: authed.query(async () => {
+  counts: authed.query(async ({ ctx }) => {
     const db = getDb();
     // #14: aggregate in SQL — the old version pulled EVERY alarm row into
     // memory on every dashboard poll.
     const rows = await db
       .select({ status: alarms.status, n: sql<number>`count(*)` })
       .from(alarms)
+      .leftJoin(meters, eq(alarms.meterId, meters.id))
+      .leftJoin(gateways, eq(alarms.gatewayId, gateways.id))
+      .where(alarmOrgCond(ctx.user))
       .groupBy(alarms.status);
     const counts = { active: 0, acknowledged: 0, resolved: 0 };
     for (const r of rows) counts[r.status] = Number(r.n);
     return counts;
   }),
 
-  acknowledge: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  acknowledge: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    assertOrgWrite(ctx.user, await alarmOrg(input.id), "Alarm");
     const db = getDb();
     await db
       .update(alarms)
@@ -50,7 +88,8 @@ export const alarmsRouter = createRouter({
     return { ok: true };
   }),
 
-  resolve: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  resolve: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    assertOrgWrite(ctx.user, await alarmOrg(input.id), "Alarm");
     const db = getDb();
     await db
       .update(alarms)
@@ -60,12 +99,13 @@ export const alarmsRouter = createRouter({
   }),
 
   // ─── Rules ─────────────────────────────────────────────────────────────
-  listRules: authed.query(async () => {
+  listRules: authed.query(async ({ ctx }) => {
     const db = getDb();
     const rows = await db
       .select({ rule: alarmRules, meterName: meters.name })
       .from(alarmRules)
       .leftJoin(meters, eq(alarmRules.meterId, meters.id))
+      .where(orgWhere(ctx.user, alarmRules.orgId))
       .orderBy(desc(alarmRules.createdAt));
     return rows.map((r) => ({ ...r.rule, meterName: r.meterName }));
   }),
@@ -84,7 +124,9 @@ export const alarmsRouter = createRouter({
         meterId: z.number().nullable().optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      // v8/D2: a meter-bound rule must target a device in the caller's org.
+      if (input.meterId != null) assertOrgWrite(ctx.user, await meterOrg(input.meterId), "Device");
       const db = getDb();
       const inserted = await db
         .insert(alarmRules)
@@ -95,6 +137,7 @@ export const alarmsRouter = createRouter({
           threshold: input.threshold,
           severity: input.severity,
           meterId: input.meterId ?? null,
+          orgId: stampOrg(ctx.user),
         })
         .$returningId();
       invalidateRulesCache();
@@ -103,14 +146,16 @@ export const alarmsRouter = createRouter({
 
   toggleRule: operator
     .input(z.object({ id: z.number(), enabled: z.boolean() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await assertRuleOrg(ctx.user, input.id);
       const db = getDb();
       await db.update(alarmRules).set({ enabled: input.enabled }).where(eq(alarmRules.id, input.id));
       invalidateRulesCache();
       return { ok: true };
     }),
 
-  deleteRule: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  deleteRule: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    await assertRuleOrg(ctx.user, input.id);
     const db = getDb();
     await db.delete(alarmRules).where(eq(alarmRules.id, input.id));
     return { ok: true };

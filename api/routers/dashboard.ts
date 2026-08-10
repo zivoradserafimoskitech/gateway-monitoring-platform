@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc, isNull, or } from "drizzle-orm";
 import { createRouter, authed } from "../middleware";
 import { getDb } from "../queries/connection";
 import { gateways, meters, alarms, sites } from "@db/schema";
 import { getTelemetryStore } from "../telemetry";
 import { PRIMARY_POWER_KEY, ENERGY_COUNTER_KEY } from "@contracts/devices";
 import type { DeviceType } from "@contracts/devices";
+import { isSuper, orgWhere } from "../lib/org-scope";
 
 interface Overview {
   gatewaysOnline: number;
@@ -20,24 +21,36 @@ interface Overview {
 
 // Overview aggregates across the whole fleet — cache briefly so dashboard
 // polling (5 s × many open tabs) doesn't multiply fleet-wide scans.
-let overviewCache: { at: number; data: Overview } | null = null;
+// v8/D2: cached PER ORG (superadmin key "all") — a shared cache would leak
+// cross-tenant counts between concurrent users of different orgs.
+const overviewCache = new Map<string, { at: number; data: Overview }>();
 
 export const dashboardRouter = createRouter({
-  overview: authed.query(async () => {
-    if (overviewCache && Date.now() - overviewCache.at < 10_000) return overviewCache.data;
+  overview: authed.query(async ({ ctx }) => {
+    const cacheKey = isSuper(ctx.user) ? "all" : String(ctx.user?.orgId ?? -1);
+    const hit = overviewCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < 10_000) return hit.data;
 
     const db = getDb();
     const store = getTelemetryStore();
     // #8: "today" is the UTC calendar day everywhere (was server-local midnight).
     const dayStart = new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000);
+    const alarmOrgCond = isSuper(ctx.user)
+      ? eq(alarms.status, "active")
+      : and(eq(alarms.status, "active"), or(eq(meters.orgId, ctx.user?.orgId ?? -1), and(isNull(alarms.meterId), eq(gateways.orgId, ctx.user?.orgId ?? -1))));
 
     // Set-based fleet summaries — constant query count regardless of fleet size.
     const [gwRows, meterRows, alarmRows, siteRows, latestByMeter, firstEnergyByMeter] =
       await Promise.all([
-        db.select().from(gateways),
-        db.select().from(meters),
-        db.select().from(alarms).where(eq(alarms.status, "active")),
-        db.select().from(sites),
+        db.select().from(gateways).where(orgWhere(ctx.user, gateways.orgId)),
+        db.select().from(meters).where(orgWhere(ctx.user, meters.orgId)),
+        db
+          .select({ id: alarms.id })
+          .from(alarms)
+          .leftJoin(meters, eq(alarms.meterId, meters.id))
+          .leftJoin(gateways, eq(alarms.gatewayId, gateways.id))
+          .where(alarmOrgCond),
+        db.select().from(sites).where(orgWhere(ctx.user, sites.orgId)),
         store.latestAll(),
         store.firstEnergyAll(dayStart),
       ]);
@@ -74,7 +87,7 @@ export const dashboardRouter = createRouter({
       totalPowerKw: Math.round(totalPowerKw * 100) / 100,
       energyTodayKwh: Math.round(energyTodayKwh * 100) / 100,
     };
-    overviewCache = { at: Date.now(), data };
+    overviewCache.set(cacheKey, { at: Date.now(), data });
     return data;
   }),
 
@@ -100,13 +113,18 @@ export const dashboardRouter = createRouter({
         }));
     }),
 
-  recentAlarms: authed.query(async () => {
+  recentAlarms: authed.query(async ({ ctx }) => {
     const db = getDb();
+    // v8/D2: scope through meter org (or gateway org for meter-less alarms).
+    const cond = isSuper(ctx.user)
+      ? undefined
+      : or(eq(meters.orgId, ctx.user?.orgId ?? -1), and(isNull(alarms.meterId), eq(gateways.orgId, ctx.user?.orgId ?? -1)));
     const rows = await db
       .select({ alarm: alarms, meterName: meters.name, gatewayName: gateways.name })
       .from(alarms)
       .leftJoin(meters, eq(alarms.meterId, meters.id))
       .leftJoin(gateways, eq(alarms.gatewayId, gateways.id))
+      .where(cond)
       .orderBy(desc(alarms.triggeredAt))
       .limit(8);
     return rows.map((r) => ({ ...r.alarm, meterName: r.meterName, gatewayName: r.gatewayName }));
