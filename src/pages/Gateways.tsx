@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Trash2 } from "lucide-react";
+import { Network, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Gateways() {
@@ -218,11 +218,14 @@ function SiteManager() {
   const utils = trpc.useUtils();
   const sites = trpc.sites.list.useQuery();
   const [name, setName] = useState("");
+  const [timezone, setTimezone] = useState("UTC");
   const create = trpc.sites.create.useMutation({
     onSuccess: () => {
       utils.sites.list.invalidate();
       setName("");
+      setTimezone("UTC");
     },
+    onError: (e) => toast.error(e.message),
   });
   return (
     <div className="space-y-3">
@@ -233,10 +236,22 @@ function SiteManager() {
           placeholder={t.settings.addSite}
           className="max-w-xs"
         />
+        <Select value={timezone} onValueChange={setTimezone}>
+          <SelectTrigger className="w-44">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {["UTC", "Europe/Skopje", "Europe/Belgrade", "Europe/Zagreb", "Europe/Sofia", "Europe/Athens", "Europe/Berlin", "Europe/London", "America/New_York", "America/Chicago", "Asia/Dubai", "Asia/Tokyo"].map((tz) => (
+              <SelectItem key={tz} value={tz}>
+                {tz}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button
           variant="outline"
           disabled={!name.trim() || create.isPending}
-          onClick={() => create.mutate({ name: name.trim() })}
+          onClick={() => create.mutate({ name: name.trim(), timezone })}
         >
           <Plus className="mr-1 h-4 w-4" /> {t.common.add}
         </Button>
@@ -245,6 +260,15 @@ function SiteManager() {
         {(sites.data ?? []).map((s) => (
           <li key={s.id} className="rounded-full bg-slate-100 px-3 py-1 text-sm">
             {s.name}
+            {s.timezone && s.timezone !== "UTC" && (
+              <span className="ml-1.5 text-xs text-slate-500">{s.timezone}</span>
+            )}
+            <Link
+              to={`/sites/${s.id}/diagram`}
+              className="ml-1.5 inline-flex items-center gap-1 text-xs text-emerald-700 hover:underline"
+            >
+              <Network className="h-3 w-3" /> {t.diagram.openDiagram}
+            </Link>
           </li>
         ))}
         {(sites.data ?? []).length === 0 && <li className="text-sm text-slate-500">{t.common.noData}</li>}

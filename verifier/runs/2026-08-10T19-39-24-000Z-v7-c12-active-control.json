@@ -1,0 +1,12 @@
+{
+  "version": "v7",
+  "stage": "C12-active-control",
+  "ts": "2026-08-10T19:39:24.613524+00:00",
+  "probes": {
+    "scripts/probe-v7-control.ts": "ALL PASS 9/9 (whitelist visible; execute 55.5% FC6 write + read-back verified; independent sim read 40100==555; out-of-range BAD_REQUEST; non-whitelisted rejected; viewer FORBIDDEN no bus traffic; offline device failed+logged; commands trail with userId; audit: success/FAILED/DENIED all recorded)"
+  },
+  "implementation": "device_profiles.controllable whitelist + commands extended (userId/controlKey/controlValue/result, status+ok, meter idx) migration 0008; api/control/execute.ts (whitelist+range validation, FC6 TCP write with read-back, C30 downlink frame, G30 reject, executeAndLog); api/routers/control.ts (controllableFor authed, execute operator, history authed); simulator setRegister into image (FC6/FC16); ControlPanel.tsx on MeterDetail (role-gated); middleware audits FAILED + DENIED mutations (C1 hardening)",
+  "tsc": "clean",
+  "build": "ok",
+  "result": "PASS"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "v7-login-iframe-cookie-fix",
+  "version": "v7",
+  "stage": "post-delivery hotfix — login impossible from platform preview",
+  "ts": "2026-08-11T06:30:00Z",
+  "reported": "User: не можам да се најавам (cannot log in) via the version-card preview",
+  "rootCause": "Session cookie was SameSite=Lax without Secure. The platform preview embeds the app cross-site (iframe over HTTPS); browsers never send Lax cookies on cross-site fetch, so login succeeded (200 + Set-Cookie) but the next auth.me arrived without the cookie and the SPA bounced back to /login.",
+  "fix": "api/routers/auth.ts — isSecureReq() detects HTTPS (x-forwarded-proto / req.url); secure requests get 'SameSite=None; Secure; Partitioned' (CHIPS), plain-http dev keeps SameSite=Lax. Applied to login + logout cookie writers.",
+  "checks": [
+    { "cmd": "curl http login (no fwd header)", "expect": "SameSite=Lax", "result": "PASS" },
+    { "cmd": "curl http login with x-forwarded-proto: https", "expect": "SameSite=None; Secure; Partitioned", "result": "PASS" },
+    { "cmd": "npx tsc --noEmit", "result": "PASS" },
+    { "cmd": "npm run build", "result": "PASS" },
+    { "cmd": "probe-v7-auth.py", "expect": "12/12", "result": "PASS (12/12)" }
+  ],
+  "result": "PASS"
+}

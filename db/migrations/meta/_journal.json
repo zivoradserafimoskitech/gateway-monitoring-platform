@@ -1,0 +1,83 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1786376684537,
+      "tag": "0000_true_princess_powerful",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1786377525390,
+      "tag": "0001_stiff_luckman",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1786379826083,
+      "tag": "0002_meter_site",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1786382264606,
+      "tag": "0003_v7_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1786382920178,
+      "tag": "0004_v7_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1786384189585,
+      "tag": "0005_v7_site_tz",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1786385735371,
+      "tag": "0006_v7-telemetry-hourly",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1786387526554,
+      "tag": "0007_v7-api-keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1786387993147,
+      "tag": "0008_v7-control",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1786394457419,
+      "tag": "0009_v8-ems",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1786396132218,
+      "tag": "0010_v8-report-schedules",
+      "breakpoints": true
+    }
+  ]
+}

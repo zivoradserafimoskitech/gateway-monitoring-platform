@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { eq, desc } from "drizzle-orm";
-import { createRouter, publicQuery } from "../middleware";
+import { createRouter, authed } from "../middleware";
 import { getDb } from "../queries/connection";
 import { gateways, meters, alarms, sites } from "@db/schema";
 import { getTelemetryStore } from "../telemetry";
+import { PRIMARY_POWER_KEY, ENERGY_COUNTER_KEY } from "@contracts/devices";
+import type { DeviceType } from "@contracts/devices";
 
 interface Overview {
   gatewaysOnline: number;
@@ -21,13 +23,13 @@ interface Overview {
 let overviewCache: { at: number; data: Overview } | null = null;
 
 export const dashboardRouter = createRouter({
-  overview: publicQuery.query(async () => {
+  overview: authed.query(async () => {
     if (overviewCache && Date.now() - overviewCache.at < 10_000) return overviewCache.data;
 
     const db = getDb();
     const store = getTelemetryStore();
-    const dayStart = new Date();
-    dayStart.setHours(0, 0, 0, 0);
+    // #8: "today" is the UTC calendar day everywhere (was server-local midnight).
+    const dayStart = new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000);
 
     // Set-based fleet summaries — constant query count regardless of fleet size.
     const [gwRows, meterRows, alarmRows, siteRows, latestByMeter, firstEnergyByMeter] =
@@ -44,12 +46,21 @@ export const dashboardRouter = createRouter({
     let energyTodayKwh = 0;
     for (const m of meterRows) {
       const latest = latestByMeter.get(m.id);
-      if (latest?.values.activePowerKw != null && m.status === "online") {
-        totalPowerKw += latest.values.activePowerKw;
+      // #13: follow the device-type contracts — a BESS contributes battery
+      // power and discharge energy, not the meter-column defaults.
+      const dt = m.deviceType as DeviceType;
+      const pk = PRIMARY_POWER_KEY[dt] ?? "activePowerKw";
+      const ek = ENERGY_COUNTER_KEY[dt] ?? "energyImportKwh";
+      if (latest?.values[pk] != null && m.status === "online") {
+        totalPowerKw += latest.values[pk];
       }
       const first = firstEnergyByMeter.get(m.id);
-      if (latest?.values.energyImportKwh != null && first != null) {
-        energyTodayKwh += Math.max(0, latest.values.energyImportKwh - first);
+      if (latest?.values[ek] != null && first != null) {
+        // v7/C7: counter reset/meter swap today → counter now sits BELOW the
+        // day's first reading; the post-reset reading itself is the best
+        // estimate of today's production (clamping to 0 would hide it).
+        const v = latest.values[ek];
+        energyTodayKwh += v >= first ? v - first : v;
       }
     }
 
@@ -69,7 +80,7 @@ export const dashboardRouter = createRouter({
 
   // Fleet-wide power trend: store returns per-meter bucket averages,
   // we sum across meters per bucket here.
-  powerTrend: publicQuery
+  powerTrend: authed
     .input(z.object({ hours: z.number().min(1).max(168).default(24) }).optional())
     .query(async ({ input }) => {
       const hours = input?.hours ?? 24;
@@ -89,7 +100,7 @@ export const dashboardRouter = createRouter({
         }));
     }),
 
-  recentAlarms: publicQuery.query(async () => {
+  recentAlarms: authed.query(async () => {
     const db = getDb();
     const rows = await db
       .select({ alarm: alarms, meterName: meters.name, gatewayName: gateways.name })

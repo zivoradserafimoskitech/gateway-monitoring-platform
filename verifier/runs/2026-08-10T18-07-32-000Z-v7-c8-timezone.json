@@ -1,0 +1,11 @@
+{
+  "version": "v7",
+  "stage": "C8-per-site-timezone",
+  "ts": "2026-08-10T18:07:32.455225+00:00",
+  "probes": {
+    "scripts/probe-v7-timezone.ts": "ALL PASS (tz math; UTC splits straddling hours into 2 days; Skopje-local bucketing groups all four readings into local 2026-08-04 = 30 kWh)"
+  },
+  "bugFoundAndFixed": "mysql2 serializes raw sql`` Date params in the Node process TZ (Asia/Shanghai +8h) while drizzle column writes store naive UTC - CASE bucket boundaries AND the dailyReport where-window were silently shifted +8h. Fixed by passing naive-UTC strings (utcStr helper) for all raw-sql Date params in mysql-store.dailyReport. Timescale store already correct (toISOString + ::timestamptz).",
+  "tsc": "clean",
+  "result": "PASS"
+}

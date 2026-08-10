@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/table";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
+import { DeviceTypeBadge } from "@/components/shared";
 import type { RegisterDef } from "@contracts/modbus";
 
 export default function Settings() {
@@ -34,7 +35,17 @@ export default function Settings() {
         <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
       </div>
       {(profiles.data ?? []).map((p) => (
-        <ProfileCard key={p.id} id={p.id} model={p.model} label={p.label} initialMap={p.registerMap as RegisterDef[]} />
+        <ProfileCard
+          key={p.id}
+          id={p.id}
+          model={p.model}
+          label={p.label}
+          brand={p.brand}
+          deviceType={p.deviceType}
+          protocol={p.protocol}
+          source={p.source}
+          initialMap={p.registerMap as RegisterDef[]}
+        />
       ))}
     </div>
   );
@@ -44,11 +55,19 @@ function ProfileCard({
   id,
   model,
   label,
+  brand,
+  deviceType,
+  protocol,
+  source,
   initialMap,
 }: {
   id: number;
   model: string;
   label: string;
+  brand: string | null;
+  deviceType: string;
+  protocol: string;
+  source: string;
   initialMap: RegisterDef[];
 }) {
   const { t } = useI18n();
@@ -72,7 +91,26 @@ function ProfileCard({
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
-          <CardTitle>{model}</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            {brand ? `${brand} ` : ""}
+            {model}
+            <DeviceTypeBadge type={deviceType} />
+            <span
+              className={
+                "rounded-full px-2 py-0.5 text-[10px] font-medium " +
+                (source === "vendor"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : source === "community"
+                    ? "bg-sky-100 text-sky-700"
+                    : "bg-slate-200 text-slate-500")
+              }
+            >
+              {source}
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-500">
+              {protocol}
+            </span>
+          </CardTitle>
           <p className="mt-1 text-xs text-slate-500">{label}</p>
         </div>
         <Button size="sm" className="gap-2" disabled={save.isPending} onClick={() => save.mutate({ id, registerMap: map })}>

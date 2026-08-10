@@ -39,3 +39,6 @@ build/
 # Test coverage
 coverage/
 .nyc_output/
+# v7/C3: TLS private keys never leave the host
+certs/
+data/

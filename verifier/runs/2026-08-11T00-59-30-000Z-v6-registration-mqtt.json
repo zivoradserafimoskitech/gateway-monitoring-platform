@@ -1,0 +1,20 @@
+{
+  "run": "v6-registration-mqtt",
+  "at": "2026-08-11T00:59:30.000Z",
+  "scope": "verifier/v6/acceptance.md B1-B8",
+  "results": {
+    "B1_audit_doc": "PASS — verifier/v6/registration-audit.md (R1-R10 with dispositions)",
+    "B2_gateway_validation": "PASS — uid/topicPrefix charset + friendly duplicate; probes 6/6",
+    "B3_meter_validation": "PASS — model-in-profiles, host regex, site exists; probes 4/4",
+    "B4_site_binding": "PASS — meters.site_id migration applied; list coalesce; reports coalesce; UI selector; site delete unbinds; probes 3/3",
+    "B5_mqtt_pv_bess": "PASS — G30 open-key passthrough live probe: huawei-sun2000 + victron-gx full telemetry persisted, W->kW conversion, rogue key dropped, auto-provision type/brand",
+    "B6_c30_stride": "PASS — crafted FC4 frame bus unit 3 @3100 decoded+persisted (maxChargePowerKw 99.9)",
+    "B7_regression": "PASS — tsc clean; build OK; vitest 25/25; ESMU e2e 6/6; fleet 17/17 online; registration probes 13/13",
+    "B8_records": "PASS — this record + fixes.md + README index + plan.md closeout + version + archive"
+  },
+  "notes": [
+    "probe artifact: stray PEM3000 @addr255 (1-byte slave overflow) found and removed with telemetry",
+    "MQTT_AUTO_PROVISION remains off for unknown gateways; meter auto-provisioning on known gateways unchanged",
+    "R6 accepted: phases display-only, no profile metadata"
+  ]
+}

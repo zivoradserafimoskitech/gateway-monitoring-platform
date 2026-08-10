@@ -10,13 +10,34 @@
 export type RegisterType = "float32" | "u32" | "i32" | "u16" | "i16";
 
 export interface RegisterDef {
-  key: MetricKey;
+  // Open string key — the 14 meter MetricKeys plus device-type keys
+  // (see contracts/devices.ts). Alarm rules and storage accept any key.
+  key: string;
   label: string;
-  address: number; // register address (0-based)
+  address: number; // register address (0-based PDU)
   functionCode: 3 | 4; // 3 = holding, 4 = input
   type: RegisterType;
   scale: number; // multiply raw value by this
   unit: string;
+  // true = 32-bit values arrive with swapped 16-bit words (CDAB) — SolarEdge,
+  // Growatt and several others. Decoder swaps before interpreting.
+  wordSwap?: boolean;
+  // Optional additive offset applied AFTER scaling: value = raw * scale + offset.
+  // Needed by protocols with biased registers (e.g. ESMU/BAMS: current at
+  // 0.1 A/bit with −1600 A offset, temperature at 1 °C/bit with −40 °C offset).
+  offset?: number;
+  // Optional per-unit address shift for multi-object devices behind one TCP
+  // endpoint (e.g. ESMU/BAMS ESBCM strings: string N lives at unit N+1, block
+  // base = map address + (unitId − firstUnit) × stride). The poller and the
+  // simulator both apply the shift; map addresses are written for firstUnit.
+  addressStride?: { firstUnit: number; stride: number };
+}
+
+// Applies the optional per-unit address shift (see RegisterDef.addressStride).
+export function shiftedAddress(def: RegisterDef, unitId: number | null | undefined): number {
+  const s = def.addressStride;
+  if (!s || unitId == null || unitId < s.firstUnit) return def.address;
+  return def.address + (unitId - s.firstUnit) * s.stride;
 }
 
 export const METRICS = [
@@ -55,8 +76,21 @@ export const METRIC_UNITS: Record<MetricKey, string> = {
   demandKw: "kW",
 };
 
-export const ALARM_METRICS = [...METRICS, "gatewayOffline"] as const;
+// Alarm rule metrics are open-ended strings; this list feeds the UI dropdown.
+import { INVERTER_METRICS, BESS_METRICS, WEATHER_METRICS } from "./devices";
+
+export const ALARM_METRICS = [
+  ...METRICS,
+  ...INVERTER_METRICS,
+  ...BESS_METRICS,
+  ...WEATHER_METRICS,
+  "gatewayOffline",
+] as const;
 export type AlarmMetric = (typeof ALARM_METRICS)[number];
+
+// Provenance of a device profile's register map (shown in UI; verify per project)
+export const PROFILE_SOURCES = ["vendor", "community", "template"] as const;
+export type ProfileSource = (typeof PROFILE_SOURCES)[number];
 
 export const METER_MODELS = ["SEM2250", "SEM3250", "PEM3000"] as const;
 export type MeterModel = (typeof METER_MODELS)[number];

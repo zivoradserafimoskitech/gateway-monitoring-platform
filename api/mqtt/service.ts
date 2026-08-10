@@ -9,15 +9,16 @@
 // topic (auto-provisions unknown gateways), then decoded as G30 JSON or C30 raw
 // Modbus RTU depending on the gateway's transport.
 import mqtt, { type MqttClient } from "mqtt";
-import { eq, and, lt } from "drizzle-orm";
+import { eq, and, lt, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { gateways, meters, alarms, alarmRules, commands } from "@db/schema";
 import type { Gateway } from "@db/schema";
 import { defaultTopicPrefix, defaultTransport, downlinkTopic } from "@contracts/topics";
-import { handleG30Message, handleC30Frame, getRegisterMaps, meterCache } from "./handlers";
+import { handleG30Message, handleC30Frame, getRegisterMaps, meterCache, isDuplicateKey } from "./handlers";
 import { buildReadRequest, registerSpan } from "../modbus";
 import { getTelemetryStats } from "../telemetry";
 import { markGatewaySeen } from "./liveness";
+import { offlineThresholdMs } from "./offline";
 
 const OFFLINE_AFTER_MS = 120_000;
 const SWEEP_INTERVAL_MS = 30_000;
@@ -51,9 +52,32 @@ async function findGatewayByUid(uid: string): Promise<Gateway | null> {
   return gw;
 }
 
-async function ensureGateway(uid: string, topic: string): Promise<Gateway> {
+// Routers must call this after gateway update/delete — otherwise the 5-min
+// cache keeps serving stale (or deleted) rows to the ingestion path (#16).
+export function evictGatewayCache(uid?: string): void {
+  if (uid === undefined) {
+    gwCache.clear();
+    return;
+  }
+  gwCache.delete(uid);
+}
+
+// UIDs rejected while auto-provisioning is disabled (log-once throttle).
+const deniedUids = new Set<string>();
+
+async function ensureGateway(uid: string, topic: string): Promise<Gateway | null> {
   const existing = await findGatewayByUid(uid);
   if (existing) return existing;
+
+  // Auto-provisioning can be disabled so rogue devices can't inject
+  // themselves into the fleet merely by publishing with a fresh UID.
+  if ((process.env.MQTT_AUTO_PROVISION ?? "1") !== "1") {
+    if (!deniedUids.has(uid)) {
+      deniedUids.add(uid);
+      console.warn(`[mqtt] auto-provision disabled; ignoring unknown gateway uid=${uid}`);
+    }
+    return null;
+  }
 
   // Auto-provision: a gateway we've never seen just published to us.
   const firstSeg = topic.split("/")[0];
@@ -109,6 +133,7 @@ async function onMessage(topic: string, payload: Buffer): Promise<void> {
     const uid = uidFromAnyTopic(topic);
     if (!uid) return;
     const gateway = await ensureGateway(uid, topic);
+    if (!gateway) return;
     await markSeen(gateway);
 
     if (gateway.transport === "transparent") {
@@ -134,12 +159,28 @@ async function offlineSweep(): Promise<void> {
     const db = getDb();
     const cutoff = new Date(Date.now() - OFFLINE_AFTER_MS);
 
-    const staleGateways = await db
+    // Gateways inherit the slowest poll interval of their meters (#2): a
+    // gateway whose devices report hourly must not flap at the 120 s floor.
+    const maxIntervalRows = await db
+      .select({ gatewayId: meters.gatewayId, maxInterval: sql<number>`max(${meters.pollIntervalSec})` })
+      .from(meters)
+      .groupBy(meters.gatewayId);
+    const gwMaxInterval = new Map<number, number>(
+      maxIntervalRows.map((r) => [r.gatewayId, Number(r.maxInterval) || 60]),
+    );
+    const onlineGateways = await db
       .select()
       .from(gateways)
       .where(and(eq(gateways.status, "online"), lt(gateways.lastSeenAt, cutoff)));
+    const staleGateways = onlineGateways.filter(
+      (gw) =>
+        Date.now() - new Date(gw.lastSeenAt!).getTime() >
+        offlineThresholdMs(gwMaxInterval.get(gw.id) ?? 60),
+    );
     for (const gw of staleGateways) {
       await db.update(gateways).set({ status: "offline" }).where(eq(gateways.id, gw.id));
+      // #7: an acknowledged alarm still represents an ongoing condition —
+      // count it as "existing" or a restart/ack would spawn duplicates.
       const existing = await db
         .select()
         .from(alarms)
@@ -147,31 +188,52 @@ async function offlineSweep(): Promise<void> {
           and(
             eq(alarms.gatewayId, gw.id),
             eq(alarms.metric, "gatewayOffline"),
-            eq(alarms.status, "active"),
+            inArray(alarms.status, ["active", "acknowledged"]),
           ),
         )
         .limit(1);
       if (!existing[0]) {
-        await db.insert(alarms).values({
-          gatewayId: gw.id,
-          metric: "gatewayOffline",
-          severity: "critical",
-          message: `Gateway ${gw.name} (${gw.uid}) went offline`,
-          status: "active",
-          triggeredAt: new Date(),
-        });
+        try {
+          await db.insert(alarms).values({
+            gatewayId: gw.id,
+            metric: "gatewayOffline",
+            severity: "critical",
+            message: `Gateway ${gw.name} (${gw.uid}) went offline`,
+            status: "active",
+            triggeredAt: new Date(),
+          });
+        } catch (err) {
+          // #7: another sweep/evaluator won the race (unique active_dedup_key)
+          if (!isDuplicateKey(err)) throw err;
+        }
       }
     }
 
-    const staleMeters = await db
-      .select()
+    // Per-device thresholds (#2): a meter on a 3600 s poll interval must not
+    // flap offline at the 120 s floor — threshold = max(120s, 2.5×interval).
+    const onlineMeters = await db
+      .select({
+        id: meters.id,
+        lastSeenAt: meters.lastSeenAt,
+        pollIntervalSec: meters.pollIntervalSec,
+      })
       .from(meters)
-      .where(and(eq(meters.status, "online"), lt(meters.lastSeenAt, cutoff)));
-    for (const m of staleMeters) {
-      await db.update(meters).set({ status: "offline" }).where(eq(meters.id, m.id));
+      .where(eq(meters.status, "online"));
+    const nowMs = Date.now();
+    const staleMeterIds = onlineMeters
+      .filter(
+        (m) =>
+          m.lastSeenAt !== null &&
+          nowMs - new Date(m.lastSeenAt).getTime() > offlineThresholdMs(m.pollIntervalSec),
+      )
+      .map((m) => m.id);
+    for (let i = 0; i < staleMeterIds.length; i += 500) {
+      const chunk = staleMeterIds.slice(i, i + 500);
+      await db.update(meters).set({ status: "offline" }).where(inArray(meters.id, chunk));
     }
 
     // Auto-resolve offline alarms for gateways that are back online
+    // (#7: acknowledged ones too — the condition is over either way)
     const backOnline = await db
       .select({ alarmId: alarms.id })
       .from(alarms)
@@ -179,7 +241,7 @@ async function offlineSweep(): Promise<void> {
       .where(
         and(
           eq(alarms.metric, "gatewayOffline"),
-          eq(alarms.status, "active"),
+          inArray(alarms.status, ["active", "acknowledged"]),
           eq(gateways.status, "online"),
         ),
       );
@@ -216,7 +278,7 @@ async function warmCaches(): Promise<void> {
   const gwRows = await db.select().from(gateways);
   for (const gw of gwRows) gwCache.set(gw.uid, { at: Date.now(), gw });
   const meterRows = await db.select().from(meters);
-  for (const m of meterRows) meterCache.set(`${m.gatewayId}:${m.modbusAddress}`, m);
+  for (const m of meterRows) meterCache.set(`${m.gatewayId}:${m.modbusAddress}`, { at: Date.now(), meter: m });
   console.log(`[mqtt] caches warmed: ${gwRows.length} gateways, ${meterRows.length} meters`);
 }
 
@@ -290,6 +352,26 @@ export function getMqttStatus() {
   };
 }
 
+// v7/C12: publish a raw Modbus frame (e.g. FC6 control write) to a C30
+// gateway's downlink topic. Command logging is the caller's job
+// (control/execute.ts records user + result; sendReadNow logs its own).
+export async function sendControlFrame(gateway: Gateway, frame: Buffer): Promise<{ topic: string; hex: string }> {
+  const svc = globalThis.__enertrekMqtt;
+  if (!svc) throw new Error("MQTT service not running");
+  if (!svc.client.connected) throw new Error("MQTT broker is not connected — cannot send control frame");
+  const topic = downlinkTopic(gateway.uid);
+  const hex = frame.toString("hex");
+  await Promise.race([
+    new Promise<void>((resolve, reject) => {
+      svc.client.publish(topic, frame, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+    }),
+    new Promise<void>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("Timed out publishing control frame (10s)")), 10_000)
+    ),
+  ]);
+  return { topic, hex };
+}
+
 // ─── Downlink commands (C30) ─────────────────────────────────────────────────
 export async function sendReadNow(gateway: Gateway, meterId: number): Promise<{ topic: string; hex: string }> {
   const svc = globalThis.__enertrekMqtt;
@@ -313,9 +395,17 @@ export async function sendReadNow(gateway: Gateway, meterId: number): Promise<{ 
   const topic = downlinkTopic(gateway.uid);
   const hex = frame.toString("hex");
 
-  await new Promise<void>((resolve, reject) => {
-    svc.client.publish(topic, frame, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
-  });
+  if (!svc.client.connected) throw new Error("MQTT broker is not connected — cannot send on-demand read");
+  // Publish with a hard timeout: if the broker connection stalls, the
+  // publish callback never fires and this would otherwise hang forever.
+  await Promise.race([
+    new Promise<void>((resolve, reject) => {
+      svc.client.publish(topic, frame, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+    }),
+    new Promise<void>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("Timed out publishing read-now command (10s)")), 10_000)
+    ),
+  ]);
   await db.insert(commands).values({
     gatewayId: gateway.id,
     meterId: meter.id,

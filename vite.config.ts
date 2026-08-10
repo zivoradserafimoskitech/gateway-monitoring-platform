@@ -8,7 +8,8 @@ import { inspectAttr } from 'kimi-plugin-inspect-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
-    devServer({ entry: "api/boot.ts", exclude: [/^\/(?!api\/).*$/] }),
+    // v7/C9: /metrics must reach the Hono app in dev too (Prometheus scrape).
+    devServer({ entry: "api/boot.ts", exclude: [/^\/(?!api\/|metrics$).*$/] }),
     inspectAttr(), react()],
   server: {
     port: 3000,

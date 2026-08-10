@@ -1,0 +1,12 @@
+{
+  "version": "v7",
+  "stage": "C6-persisted-queue-wal",
+  "ts": "2026-08-10T18:29:31.300788+00:00",
+  "probes": {
+    "scripts/probe-v7-wal.ts": "ALL PASS (crash-before-flush: 3 rows in pending.jsonl, 0 in DB; next-boot replay delivers 3 rows + segment deleted; failing store: batch gives up after RETRY_MAX but WAL segment survives; replay recovers 2 rows)",
+    "vitest": "25/25 (BatchWriter refactor backward-compatible, WAL off by default in tests)"
+  },
+  "implementation": "BatchWriter WAL: synchronous append to pending.jsonl on push, segment rotation f-<ts>-<seq>.jsonl at flush, unlink only after successful insert, replayWal() on boot; at-least-once semantics documented; TELEMETRY_WAL_DIR env (empty disables)",
+  "tsc": "clean",
+  "result": "PASS"
+}

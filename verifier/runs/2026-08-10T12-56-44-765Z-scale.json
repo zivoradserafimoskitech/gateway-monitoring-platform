@@ -1,0 +1,60 @@
+{
+  "command": "npx tsx scripts/verify-scale.ts (during 500-gw MQTT + 30-plant TCP load)",
+  "criteria": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5"
+  ],
+  "results": [
+    {
+      "check": "S3 latestAll latency at scale",
+      "pass": true,
+      "detail": "1226/460/436 ms over 9612 devices (limit 3000 ms)"
+    },
+    {
+      "check": "S1 scale gateways reporting (MQTT)",
+      "pass": false,
+      "detail": "0/500 gateways fresh (<120s)"
+    },
+    {
+      "check": "S1 scale meters fresh (MQTT)",
+      "pass": false,
+      "detail": "0/8000 meters fresh"
+    },
+    {
+      "check": "S2 scale PV/BESS devices reporting (TCP)",
+      "pass": true,
+      "detail": "110/110 devices fresh (90 inverters + 20 BESS on 30 plants)"
+    },
+    {
+      "check": "S2 poller failure rate",
+      "pass": true,
+      "detail": "110 devices, 1320 polls, 0 failures (0.00%)"
+    },
+    {
+      "check": "S4 app process healthy",
+      "pass": true,
+      "detail": "app RSS 195 MB (baseline 454 MB at load start)"
+    },
+    {
+      "check": "S5 SOC alarms fired at scale",
+      "pass": true,
+      "detail": "20/20 scale SOC rules active, 0 misattributed"
+    }
+  ],
+  "context": {
+    "fleetSize": 9612,
+    "latestAllMs": [
+      1226,
+      460,
+      436
+    ],
+    "scaleGateways": 500,
+    "scaleMeters": 8000,
+    "sclDevices": 110,
+    "rssMb": 195
+  },
+  "summary": "5/7 checks passed"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "v7-login-bearer-token-fix",
+  "version": "v7",
+  "stage": "post-delivery hotfix 2 — login still impossible from platform preview",
+  "ts": "2026-08-11T06:45:00Z",
+  "reported": "User: не може пак / ништо не се случува при клик на Најава (Chrome, вгнезден preview)",
+  "rootCause": "SameSite=None; Secure; Partitioned cookie fix (run 06-30) was insufficient — the embedded preview context still does not propagate the session cookie back on fetch, so login succeeds but auth.me stays anonymous and the SPA silently returns to /login. First-party flow verified working in a real browser (browser automation against localhost:3000: login → dashboard OK).",
+  "fix": [
+    "api/routers/auth.ts: login response body now includes the session token",
+    "src/providers/trpc.tsx: setSessionToken/getSessionToken (localStorage + in-memory fallback for sandboxed storage); every tRPC request sends x-session-token when a token is stored",
+    "api/context.ts: session resolution = cookie first, then x-session-token header (validated ^[a-f0-9]{64}$)",
+    "Login.tsx stores token on success; Layout.tsx sign-out clears it",
+    "Cookie flow untouched — first-party usage unchanged"
+  ],
+  "checks": [
+    { "cmd": "login via API → response contains token", "result": "PASS" },
+    { "cmd": "auth.me with ONLY x-session-token header (no cookie)", "expect": "admin user", "result": "PASS" },
+    { "cmd": "auth.me with forged 64-hex token", "expect": "user null", "result": "PASS" },
+    { "cmd": "real-browser first-party login (localhost:3000)", "expect": "dashboard loads", "result": "PASS" },
+    { "cmd": "npx tsc --noEmit", "result": "PASS" },
+    { "cmd": "npm run build", "result": "PASS" },
+    { "cmd": "probe-v7-auth.py", "expect": "12/12", "result": "PASS (12/12)" }
+  ],
+  "result": "PASS"
+}

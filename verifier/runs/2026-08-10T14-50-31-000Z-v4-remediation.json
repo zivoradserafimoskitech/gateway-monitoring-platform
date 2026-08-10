@@ -1,0 +1,49 @@
+{
+  "run": "v4-remediation-regression",
+  "at": "2026-08-10T14:50:31Z",
+  "scope": "v4 acceptance criteria V3+V4: security/engineering fixes applied, regression after fixes",
+  "fixes": [
+    ".dockerignore excludes .env/secrets (F-05)",
+    "tRPC errorFormatter strips stack in production (F-06)",
+    "bodyLimit 2MB + optional API_TOKEN Bearer guard (F-09, F-01)",
+    "frontend sends VITE_API_TOKEN (F-01)",
+    "broker optional MQTT_USERNAME/PASSWORD auth + MQTT_BIND_HOST (F-02, F-15)",
+    "simulator passes MQTT creds (F-02)",
+    "compose.prod: ${VAR:?} secrets, admin ports on 127.0.0.1 (F-07)",
+    "CSV formula-injection guard csvCell() (F-08)",
+    "registerDefSchema: offset + addressStride (Eng #6)",
+    "gateways.remove + meters.remove cascade deletes (Eng #1)",
+    "liveness coalescer per-chunk delete (Eng #15)",
+    "sendReadNow connected-check + 10s timeout (Eng #17)",
+    "MQTT_AUTO_PROVISION=0 gate (F-03 / Eng #4)",
+    "repair-orphans.ts executed",
+    "npm audit fix (non-breaking)"
+  ],
+  "results": {
+    "repairOrphans": {
+      "telemetryOrphansRemoved": 22290,
+      "alarmOrphansByMeterRemoved": 20,
+      "alarmOrphansByRuleRemoved": 0,
+      "strayTestGatewayRemoved": 1,
+      "remainingTelemetryOrphans": 0,
+      "remainingAlarmOrphans": 0,
+      "immortalAlarms_90003_30001_remaining": 0
+    },
+    "npmAudit": { "before": "21 vulns (12 high)", "after": "6 moderate, dev-tooling only (hono serve-static Windows-only; esbuild via drizzle-kit, breaking fix declined)" },
+    "tsc": "clean",
+    "build": "ok (vite build 14.5s)",
+    "probes": {
+      "bodyLimit_3MB_POST": 413,
+      "API_TOKEN_no_token": 401,
+      "API_TOKEN_wrong_token": 401,
+      "API_TOKEN_correct_token": 200,
+      "broker_auth_anonymous": "REJECTED Not authorized",
+      "broker_auth_bad_creds": "REJECTED Not authorized",
+      "broker_auth_good_creds": "CONNECTED"
+    },
+    "esmuE2e": "ALL 6 CHECKS PASSED (3 objects x 11 polls, 0 failures; stride/offset/FC3 decode; fault+low-SOC alarms fired and auto-resolved)",
+    "demoFleet": "14/14 devices online after provision-esmu-demo reset (db: 4 gateways, 14 meters)"
+  },
+  "notes": "dev daemons were reaped between turns; all five restarted via setsid and re-verified. npm audit endpoint unsupported on configured mirror; used registry.npmjs.org.",
+  "verdict": "PASS"
+}

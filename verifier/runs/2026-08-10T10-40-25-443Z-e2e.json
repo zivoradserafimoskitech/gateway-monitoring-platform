@@ -1,0 +1,132 @@
+{
+  "command": "npx tsx scripts/test-pv-e2e.ts",
+  "criteria": [
+    "C5",
+    "C6",
+    "C7"
+  ],
+  "results": [
+    {
+      "check": "C5 all simulated devices reporting",
+      "pass": true,
+      "detail": "6/6 devices have telemetry (4 inverters + 2 BESS)"
+    },
+    {
+      "check": "C5 decoded values sane",
+      "pass": false,
+      "detail": "Victron Energy INV-4: activePowerKw=undefined"
+    },
+    {
+      "check": "C5 wordSwap decode (SolarEdge float CDAB)",
+      "pass": true,
+      "detail": "SolarEdge frequencyHz=50.0152 (expect ~50)"
+    },
+    {
+      "check": "C6 faultCode alarm fired",
+      "pass": true,
+      "detail": "E2E inverter fault: faultCode = 32 (> 0)"
+    },
+    {
+      "check": "C6 low-SOC alarm fired",
+      "pass": true,
+      "detail": "E2E low SOC: socPercent = 20 (< 30)"
+    },
+    {
+      "check": "C6 alarms auto-resolved",
+      "pass": true,
+      "detail": "0 still active"
+    },
+    {
+      "check": "C7 latestAll latency",
+      "pass": true,
+      "detail": "112 ms over 9 devices"
+    }
+  ],
+  "poller": [
+    {
+      "id": 30001,
+      "name": "SMA INV-1",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 1,
+      "model": "sma-sunspec",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:22.419Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 30002,
+      "name": "SolarEdge INV-2",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 2,
+      "model": "solaredge-sunspec",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:22.805Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 30003,
+      "name": "Huawei INV-3",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 3,
+      "model": "huawei-sun2000",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:22.439Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 30004,
+      "name": "Victron Energy INV-4",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 4,
+      "model": "victron-gx",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:22.511Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 30005,
+      "name": "BYD BESS-5",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 5,
+      "model": "byd-battery-box",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:23.165Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 30006,
+      "name": "Pylontech BESS-6",
+      "host": "127.0.0.1",
+      "port": 5021,
+      "unitId": 6,
+      "model": "pylontech-bess",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T10:40:22.978Z",
+      "lastError": null,
+      "backoffMs": 0
+    }
+  ],
+  "summary": "6/7 checks passed"
+}

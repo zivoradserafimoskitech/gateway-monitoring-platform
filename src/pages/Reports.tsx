@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Download, Play } from "lucide-react";
+import { csvCell } from "@/lib/csv";
 
 function toInputDate(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -58,12 +59,12 @@ export default function Reports() {
     for (const m of r.meters) {
       for (const d of m.days) {
         lines.push(
-          [m.meter.name, d.day, d.importKwh ?? "", d.exportKwh ?? "", d.maxDemandKw ?? "", d.avgPowerFactor ?? ""].join(
-            ",",
-          ),
+          [m.meter.name, d.day, d.importKwh ?? "", d.exportKwh ?? "", d.maxDemandKw ?? "", d.avgPowerFactor ?? ""]
+            .map(csvCell)
+            .join(","),
         );
       }
-      lines.push([m.meter.name, "TOTAL", m.totalImportKwh, m.totalExportKwh, m.maxDemandKw, ""].join(","));
+      lines.push([m.meter.name, "TOTAL", m.totalImportKwh, m.totalExportKwh, m.maxDemandKw, ""].map(csvCell).join(","));
     }
     return lines.join("\n");
   }, [report.data]);
@@ -203,9 +204,27 @@ export default function Reports() {
                     {m.days.map((d) => (
                       <TableRow key={d.day}>
                         <TableCell>{d.day}</TableCell>
-                        <TableCell className="text-right">{fmt(d.importKwh, 1)}</TableCell>
+                        <TableCell className="text-right">
+                          {fmt(d.importKwh, 1)}
+                          {/* v7/C7: counter reset/meter swap detected this day — totals
+                              are sums of non-negative deltas; flag the estimate. */}
+                          {d.counterReset && (
+                            <span className="ml-1 text-xs text-amber-600" title={t.reports.counterResetNote}>
+                              ↺
+                            </span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">{fmt(d.exportKwh, 1)}</TableCell>
-                        <TableCell className="text-right">{fmt(d.maxDemandKw, 1)}</TableCell>
+                        <TableCell className="text-right">
+                          {fmt(d.maxDemandKw, 1)}
+                          {/* #21: demand derived from active power (device has
+                              no demand register) — label it, don't blend it. */}
+                          {d.demandDerived && (
+                            <span className="ml-1 text-xs text-amber-600" title="Derived from active power — no demand register samples">
+                              ≈
+                            </span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">{fmt(d.avgPowerFactor, 3)}</TableCell>
                         <TableCell className="text-right">{d.samples}</TableCell>
                       </TableRow>

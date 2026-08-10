@@ -9,7 +9,9 @@
 // Activated by setting: TELEMETRY_STORE=timescale + TIMESCALE_URL=postgres://...
 import { Pool } from "pg";
 import type {
+  DailyReportOpts,
   DailyReportRow,
+  EnergyIntervalBucket,
   HistoryPoint,
   TelemetryRow,
   TelemetryStore,
@@ -34,6 +36,9 @@ const COLS = [
   "energy_export_kwh",
   "demand_kw",
   "raw",
+  // v5 finding #5: the Timescale store used to DROP the open values map —
+  // switching stores silently lost every inverter/BESS/weather register.
+  "values_json",
 ] as const;
 
 export class TimescaleTelemetryStore implements TelemetryStore {
@@ -66,6 +71,7 @@ export class TimescaleTelemetryStore implements TelemetryStore {
         r.values.energyExportKwh ?? null,
         r.values.demandKw ?? null,
         r.raw === undefined ? null : JSON.stringify(r.raw),
+        JSON.stringify(r.values),
       );
       return `(${COLS.map((_, j) => `$${base + j + 1}`).join(",")})`;
     });
@@ -82,6 +88,9 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     );
     const r = rows[0];
     if (!r) return null;
+    // Same merge rule as the MySQL store: fixed columns first, values_json
+    // (open key map) wins on conflicts so corrected decodes propagate.
+    const json = (r.values_json ?? {}) as Record<string, number>;
     return {
       meterId: r.meter_id,
       ts: r.ts,
@@ -100,6 +109,7 @@ export class TimescaleTelemetryStore implements TelemetryStore {
         energyImportKwh: r.energy_import_kwh ?? undefined,
         energyExportKwh: r.energy_export_kwh ?? undefined,
         demandKw: r.demand_kw ?? undefined,
+        ...json,
       },
     };
   }
@@ -107,26 +117,41 @@ export class TimescaleTelemetryStore implements TelemetryStore {
   async latestAll(): Promise<Map<number, TelemetryRow>> {
     // DISTINCT ON + the (meter_id, ts desc) index = one index row per meter
     const { rows } = await this.pool.query(
-      `select distinct on (meter_id) meter_id, ts, active_power_kw, energy_import_kwh
+      `select distinct on (meter_id) meter_id, ts, active_power_kw, energy_import_kwh, values_json
        from telemetry order by meter_id, ts desc`,
     );
     const map = new Map<number, TelemetryRow>();
     for (const r of rows) {
+      const json = (r.values_json ?? {}) as Record<string, number>;
       map.set(r.meter_id, {
         meterId: r.meter_id,
         ts: r.ts,
         values: {
-          activePowerKw: r.active_power_kw ?? undefined,
-          energyImportKwh: r.energy_import_kwh ?? undefined,
+          ...json,
+          activePowerKw: r.active_power_kw ?? json.activePowerKw,
+          energyImportKwh: r.energy_import_kwh ?? json.energyImportKwh,
         },
       });
     }
     return map;
   }
 
-  async history(meterId: number, from: Date, to: Date, bucketSec: number): Promise<HistoryPoint[]> {
+  async history(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    // #20: primary power key — column fast path, values_json for the rest.
+    const key = powerKey && /^[A-Za-z0-9_]+$/.test(powerKey) ? powerKey : "activePowerKw";
+    const powerExpr =
+      key === "activePowerKw"
+        ? `avg(active_power_kw)`
+        : `avg((values_json->>'${key}')::double precision)`;
     const { rows } = await this.pool.query(
       `select (extract(epoch from time_bucket($4 * interval '1 second', ts)))::bigint as bucket,
+              ${powerExpr} as "powerKw",
               avg(active_power_kw) as "activePowerKw",
               avg(voltage_l1) as "voltageL1",
               avg(current_l1) as "currentL1",
@@ -141,6 +166,7 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     );
     return rows.map((r) => ({
       ts: new Date(Number(r.bucket) * 1000),
+      powerKw: r.powerKw === null ? null : Number(r.powerKw),
       activePowerKw: r.activePowerKw === null ? null : Number(r.activePowerKw),
       voltageL1: r.voltageL1 === null ? null : Number(r.voltageL1),
       currentL1: r.currentL1 === null ? null : Number(r.currentL1),
@@ -178,36 +204,104 @@ export class TimescaleTelemetryStore implements TelemetryStore {
   }
 
   async firstEnergyAll(since: Date): Promise<Map<number, number>> {
+    // #13: counter key per device type — column for meters, values_json
+    // counters for inverters (energyTotalKwh) and BESS (dischargeEnergyTotalKwh).
     const { rows } = await this.pool.query(
-      `select distinct on (meter_id) meter_id, energy_import_kwh
-       from telemetry where ts >= $1 and energy_import_kwh is not null
+      `select distinct on (meter_id) meter_id,
+         coalesce(energy_import_kwh,
+                  (values_json->>'energyTotalKwh')::double precision,
+                  (values_json->>'dischargeEnergyTotalKwh')::double precision) as e
+       from telemetry where ts >= $1
        order by meter_id, ts asc`,
       [since],
     );
     const map = new Map<number, number>();
-    for (const r of rows) map.set(r.meter_id, Number(r.energy_import_kwh));
+    for (const r of rows) if (r.e !== null) map.set(r.meter_id, Number(r.e));
     return map;
   }
 
-  async dailyReport(meterId: number, from: Date, to: Date): Promise<DailyReportRow[]> {
-    // Served by the continuous aggregate — constant-time regardless of raw volume.
+  async dailyReport(meterId: number, from: Date, to: Date, opts?: DailyReportOpts): Promise<DailyReportRow[]> {
+    // v7/C7: same non-negative-delta logic as the MySQL store (window function
+    // over raw rows — the continuous aggregate's min/max can't express resets).
+    // Days are UTC epoch buckets (#8 parity with the MySQL store).
+    const bucket = opts?.dayBuckets?.length
+      ? "case " +
+        opts.dayBuckets
+          .map((b) => `when ts >= '${b.startUtc.toISOString()}'::timestamptz and ts < '${b.endUtc.toISOString()}'::timestamptz then '${b.label}'`)
+          .join(" ") +
+        " else null end"
+      : "floor(extract(epoch from ts) / 86400)";
     const { rows } = await this.pool.query(
-      `select to_char(day, 'YYYY-MM-DD') as day,
-              e_min, e_max, x_min, x_max, max_demand, avg_pf, samples
-       from telemetry_daily
-       where meter_id = $1 and day >= $2::timestamptz and day <= $3::timestamptz
-       order by day`,
+      `with ordered as (
+         select ts, energy_import_kwh as e, energy_export_kwh as x,
+                lag(energy_import_kwh) over (order by ts) as e_prev,
+                lag(energy_export_kwh) over (order by ts) as x_prev,
+                coalesce(demand_kw, active_power_kw) as demand,
+                demand_kw as demand_raw, power_factor as pf
+         from telemetry
+         where meter_id = $1 and ts >= $2::timestamptz and ts <= $3::timestamptz
+       )
+       select ${bucket} as "dayBucket",
+              sum(greatest(e - e_prev, 0)) as "importKwh",
+              sum(greatest(x - x_prev, 0)) as "exportKwh",
+              bool_or(e - e_prev < -0.001 or x - x_prev < -0.001) as "counterReset",
+              max(demand) as "maxDemand",
+              count(demand_raw) as "demandSamples",
+              avg(pf) as "avgPf",
+              count(*) as samples
+       from ordered
+       group by "dayBucket"
+       order by "dayBucket"`,
+      [meterId, from, to],
+    );
+    const localMode = !!opts?.dayBuckets?.length;
+    return rows.filter((r) => r.dayBucket !== null).map((r) => ({
+      day: localMode ? String(r.dayBucket) : new Date(Number(r.dayBucket) * 86_400_000).toISOString().slice(0, 10),
+      importKwh: r.importKwh === null ? null : Math.round(Number(r.importKwh) * 100) / 100,
+      exportKwh: r.exportKwh === null ? null : Math.round(Number(r.exportKwh) * 100) / 100,
+      maxDemandKw: r.maxDemand === null ? null : Math.round(Number(r.maxDemand) * 100) / 100,
+      // #21: derived-from-active-power marker (no demand samples that day)
+      demandDerived: Number(r.demandSamples ?? 0) === 0 && r.maxDemand !== null,
+      counterReset: r.counterReset === true,
+      avgPowerFactor: r.avgPf === null ? null : Math.round(Number(r.avgPf) * 1000) / 1000,
+      samples: Number(r.samples),
+    }));
+  }
+
+  // v8/D2: settlement energy intervals (same shape/semantics as the MySQL
+  // store). Timescale keeps raw rows for the whole API window (31 d max vs the
+  // 90 d retention policy), so a single raw query covers every range.
+  async energyIntervals(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {
+    const bucketSec = bucketMin * 60;
+    const { rows } = await this.pool.query(
+      `with ordered as (
+         select ts,
+                coalesce(energy_import_kwh, (values_json->>'energyImportKwh')::double precision) as e,
+                coalesce(energy_export_kwh, (values_json->>'energyExportKwh')::double precision) as x,
+                lag(coalesce(energy_import_kwh, (values_json->>'energyImportKwh')::double precision)) over (order by ts) as e_prev,
+                lag(coalesce(energy_export_kwh, (values_json->>'energyExportKwh')::double precision)) over (order by ts) as x_prev,
+                coalesce(active_power_kw, (values_json->>'activePowerKw')::double precision) as p
+         from telemetry
+         where meter_id = $1 and ts >= $2::timestamptz and ts <= $3::timestamptz
+       )
+       select floor(extract(epoch from ts) / ${bucketSec}) as b,
+              sum(greatest(e - e_prev, 0)) as "importKwh",
+              sum(greatest(x - x_prev, 0)) as "exportKwh",
+              bool_or(e - e_prev < -0.001 or x - x_prev < -0.001) as "counterReset",
+              avg(p) as "avgPower",
+              count(*) as samples
+       from ordered
+       group by b
+       order by b`,
       [meterId, from, to],
     );
     return rows.map((r) => ({
-      day: r.day,
-      importKwh:
-        r.e_min === null || r.e_max === null ? null : Math.round((Number(r.e_max) - Number(r.e_min)) * 100) / 100,
-      exportKwh:
-        r.x_min === null || r.x_max === null ? null : Math.round((Number(r.x_max) - Number(r.x_min)) * 100) / 100,
-      maxDemandKw: r.max_demand === null ? null : Math.round(Number(r.max_demand) * 100) / 100,
-      avgPowerFactor: r.avg_pf === null ? null : Math.round(Number(r.avg_pf) * 1000) / 1000,
+      bucketStartSec: Number(r.b) * bucketSec,
+      importKwh: r.importKwh === null ? null : Math.round(Number(r.importKwh) * 1000) / 1000,
+      exportKwh: r.exportKwh === null ? null : Math.round(Number(r.exportKwh) * 1000) / 1000,
+      avgPowerKw: r.avgPower === null ? null : Math.round(Number(r.avgPower) * 1000) / 1000,
       samples: Number(r.samples),
+      estimated: r.counterReset === true,
     }));
   }
 

@@ -1,0 +1,45 @@
+{
+  "id": "v8-erp-integration",
+  "version": "v8",
+  "stage": "VoltTrade-ERP integration — both sides of the wire",
+  "ts": "2026-08-11T08:20:00Z",
+  "context": "ERP (github.com/zivoradserafimoskitech/volttrade-erp, Lovable+Supabase) expects metering data; its legacy sync-kimi-meters assumed direct Timescale access — impossible (TiDB behind Alibaba privatelink). Integration via REST /api/v1 + etk_ API key (C11).",
+  "enertrekSide": {
+    "implementedBy": "BE subagent (chain step 2)",
+    "deliverables": [
+      "GET /api/v1/devices/:id/energy (settlement intervals: UTC grid floor..ceil, counter-reset-safe deltas via lag()+greatest(), retention split raw/hourly, quality measured|estimated, 31-day cap, bucketMin 15..1440)",
+      "GET /api/v1/devices — contract fields id/name/model/deviceType/siteId/gatewayId/status (+ extras)",
+      "GET /api/v1/devices/:id/latest — flat {deviceId,ts,values} (+ legacy wrapper kept)",
+      "api/telemetry: energyIntervals on both mysql + timescale stores",
+      "docs/api-v1.md 'Energy intervals (ERP / billing)' section"
+    ],
+    "checks": [
+      { "cmd": "probe-v8-rest-energy.ts", "result": "PASS 10/10 (incl. real publisher outage null-buckets + counter-reset estimated bucket)" },
+      { "cmd": "probe-v7-rest-api.py regression", "result": "PASS 10/10" }
+    ]
+  },
+  "erpSide": {
+    "implementedBy": "ERP subagent in /mnt/agents/work/volttrade-erp",
+    "deliverables": [
+      "supabase/functions/sync-enertrek-meters/index.ts (REST variant of sync-kimi-meters: /latest→meter_readings, /energy→consumption_readings, kimi_meter_id mapping, x-cron-secret hatch)",
+      "supabase/functions/sync-enertrek-assets/index.ts (REST variant of sync-asset-telemetry: external_ref=device id, /energy→asset_telemetry, /latest→asset_telemetry_latest, BESS/PV key mapping)",
+      "supabase/migrations/20260811120000_enertrek_sync_schedule.sql (pg_cron+pg_net: meters */15min, assets */5min, guarded on app.settings.*)",
+      "SyncHealth.tsx + GatewayDetail.tsx wired to new functions",
+      "docs/enertrek-integration.md (full setup guide)"
+    ],
+    "checks": [
+      { "cmd": "standalone tsc --strict against stubbed Deno/createClient", "result": "PASS (zero errors)" },
+      { "cmd": "upsert conflict targets exist in migrations", "result": "PASS (4/4 verified)" }
+    ]
+  },
+  "endToEnd": {
+    "cmd": "probe-v8-erp-sim.py (replicates the Deno fetch+parse against the LIVE API)",
+    "result": "PASS 18/18",
+    "incidents": [
+      "stale vite module: running server (PID 5133, 45min old) returned 404 for the on-disk /energy route — dev-server restart fixed; gate rule reconfirmed: restart after EVERY api edit",
+      "probe asserted ==8 buckets for 2h/15m — contract is floor..ceil grid (8..9 correct); assertion fixed"
+    ]
+  },
+  "deployment": "user deploys: 2 edge functions + migration + secrets (ENERTREK_BASE_URL/ENERTREK_API_KEY) per docs/enertrek-integration.md; Enertrek URL = Kimi 发布 public URL",
+  "result": "PASS"
+}

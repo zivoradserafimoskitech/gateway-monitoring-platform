@@ -1,0 +1,11 @@
+{
+  "version": "v7",
+  "stage": "C11-public-rest-api",
+  "ts": "2026-08-10T18:51:26.269867+00:00",
+  "probes": {
+    "scripts/probe-v7-rest-api.py": "ALL PASS 10/10 (create returns raw etk_ once; no/garbage key 401; devices with effectiveSiteId+gateway context; latest with values; sites; alarms default active + bogus 400 + unknown device 404; list shows prefix+lastUsedAt never raw; revoke instant 401)"
+  },
+  "implementation": "api_keys table + migration 0007 (sha256 hash, prefix, role, revokedAt, lastUsedAt); api/lib/api-keys.ts (generate/hash/lookup 30s cache, 60s lastUsed throttle); api/rest/v1.ts Hono router (sites/devices/devices/:id/latest/alarms); tRPC apiKeys router (admin); docs/api-v1.md",
+  "tsc": "clean",
+  "result": "PASS"
+}

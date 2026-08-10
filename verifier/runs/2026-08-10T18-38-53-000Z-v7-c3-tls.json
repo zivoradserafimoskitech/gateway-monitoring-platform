@@ -1,0 +1,10 @@
+{
+  "version": "v7",
+  "stage": "C3-TLS",
+  "ts": "2026-08-10T18:38:53.130224+00:00",
+  "probes": {
+    "scripts/probe-v7-tls.ts": "ALL PASS (cert gen; broker TLS listener on 8883; mqtts rejectUnauthorized=false ok; pinned-CA strict ok; no-CA rejected 'self-signed certificate'; pub/sub roundtrip; plaintext 1883 unaffected)"
+  },
+  "implementation": "scripts/gen-dev-certs.sh; broker.ts TLS listener (MQTT_TLS_KEY/CERT/PORT, MQTT_TLS=0 kill-switch); docs/tls.md incl. production CA guidance, plaintext firewalling, Caddyfile with basic_auth for /metrics; .gitignore certs/ + data/",
+  "result": "PASS"
+}

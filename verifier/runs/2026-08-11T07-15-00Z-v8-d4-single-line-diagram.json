@@ -1,0 +1,24 @@
+{
+  "id": "v8-d4-single-line-diagram",
+  "version": "v8",
+  "stage": "D4 — SCADA single-line diagram",
+  "ts": "2026-08-11T07:15:00Z",
+  "implementedBy": "FE subagent + orchestrator integration gate",
+  "deliverables": [
+    "src/pages/SiteDiagram.tsx (route /sites/:id/diagram)",
+    "src/components/diagram/SingleLineDiagram.tsx (pure SVG, no deps)",
+    "App.tsx route, Gateways.tsx contextual link, i18n diagram.* (12 keys EN+MK)"
+  ],
+  "gateIncidents": [
+    "vite overlay-FS watcher missed ALL subagent file edits (App.tsx, en.ts, mk.ts served stale transforms) — fixed by touching edited files; NEW GATE RULE: touch/restart after every agent frontend edit",
+    "runtime crash t.diagram.title undefined (stale mk.ts) — resolved by the same touch",
+    "demo data: plant gateway 30001 (14 devices) had no site binding — bound to site 1 'Vl' for a meaningful diagram"
+  ],
+  "checks": [
+    { "cmd": "npx tsc --noEmit (agent)", "result": "PASS" },
+    { "cmd": "playwright render /sites/1/diagram", "expect": "SVG PCC→breaker→main meter→busbar→branches", "result": "PASS (no page errors)" },
+    { "cmd": "live values on branches", "expect": "SOC %, charge state, colors per legend", "result": "PASS (SOC 62/80/60%, Idle, online green / offline gray)" },
+    { "cmd": "i18n EN+MK present in vite transforms", "result": "PASS" }
+  ],
+  "result": "PASS"
+}

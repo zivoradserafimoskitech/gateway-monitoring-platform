@@ -1,0 +1,14 @@
+{
+  "command": "final acceptance sweep: npm run check && npm run build && npx tsx scripts/verify-c3c4.ts && npx tsx scripts/verify-c9.ts + dist grep",
+  "criteria": ["C1", "C2", "C3", "C4", "C8", "C9"],
+  "results": [
+    { "check": "C1 typecheck (tsc -b)", "pass": true, "detail": "clean, 0 errors" },
+    { "check": "C2 production build (vite + esbuild boot.js)", "pass": true, "detail": "dist/public 1,015 kB js / 84 kB css; dist/boot.js 3.6 MB" },
+    { "check": "C3 migration columns", "pass": true, "detail": "14/14 present: meters(device_type,brand,host,port,unit_id,poll_interval_sec), telemetry(values_json), device_profiles(brand,device_type,protocol,source,source_url,notes,fault_codes)" },
+    { "check": "C4 profile library seeded", "pass": true, "detail": "20 inverter + 5 BESS + 3 meter profiles; sources: 6 vendor, 12 community, 7 template" },
+    { "check": "C8 UI device types in production bundle", "pass": true, "detail": "dist assets contain BESS/Inverter badges, direct-tcp transport, EN/MK strings (Devices/Уреди)" },
+    { "check": "C9 existing meters unbroken", "pass": true, "detail": "3 demo meters online via MQTT with fresh 14-key telemetry; 8 PV/BESS devices online via TCP poller; latestAll 96 ms / 23 rows" }
+  ],
+  "notes": "E2E (C5/C6/C7) evidence in 2026-08-10T10-51-13-930Z-e2e.json — ALL 7 CHECKS PASSED. Brand research integrated: 18 vendor/community maps (SMA, Fronius, SolarEdge, KACO, Solplanet, Victron vendor; Huawei, Sungrow, Growatt, Deye, Solis, GoodWe, Sofar, Chint, ABB/FIMER, Delta, BYD, Pylontech community); 7 templates marked verify-before-field-use (GoodWe-free list: Ingeteam, Power Electronics, Enphase, Hopewind, KSTAR, Dyness, SunSpec storage).",
+  "summary": "6/6 checks passed"
+}

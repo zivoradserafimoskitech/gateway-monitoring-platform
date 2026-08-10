@@ -1,0 +1,28 @@
+{
+  "run": "v5-all-findings-regression",
+  "at": "2026-08-10T16:04:20Z",
+  "scope": "v5 acceptance A1-A19: all 19 remaining engineering findings fixed + full regression",
+  "results": {
+    "unitTests": "20/20 PASS (5 files: codec, csv, poller-backoff+offline, normalize, batch-writer)",
+    "tsc": "clean",
+    "build": "ok",
+    "esmuE2e": "ALL 6 CHECKS PASSED (3 objects x 11 polls, 0 failures)",
+    "demoFleet": "14/14 online (4 gateways, 14 meters)",
+    "probes": {
+      "dedupConstraint_directInsert": "PASS — duplicate active alarm rejected by alarms_active_dedup_uniq",
+      "restartDuringBreach": "PASS — 0 new alarms after app restart with 6 ongoing breaches",
+      "ackDuringBreach": "PASS — 0 re-fires 75s+ after acknowledge",
+      "preConstraintDupes": "3 dupe groups resolved by dedupe-active-alarms.ts",
+      "jsonExtractPath_TiDB": "PASS — batteryPowerKw from values_json avg 6.05 kW over 833 samples (Victron BESS)",
+      "dbGuard": "PASS — destructive script refused remote DB host without ALLOW_UNSAFE_PROD, ran with it",
+      "dashboardOverview": "200 — totalPowerKw 31.26 (contract keys), metersOnline 14/14",
+      "reportsEnergy_epochDays": "200 — day buckets via unix_timestamp/86400, demandDerived present",
+      "historyPowerKey": "200 — powerKw field served (BESS batteryPowerKw path)"
+    },
+    "migrations": "db/migrations/0000 baseline + 0001 alarms_active_dedup_uniq (applied live, idempotent script)",
+    "schemaChanges": "alarms.active_dedup_key generated column + unique index",
+    "securitySpotCheck": "v4 hardening intact (guard optional, broker auth optional, 2MB limit, CSV guard now in src/lib/csv.ts)"
+  },
+  "notes": "dev daemons reaped twice during the session; restarted via setsid each time and re-verified. Duplicate alarms observed mid-session were traced to vite hot-reload poller generations racing rule evaluation — root-caused and fixed with the DB-level unique generated key (layer 3 of #7).",
+  "verdict": "PASS"
+}

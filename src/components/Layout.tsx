@@ -8,9 +8,11 @@ import {
   Settings,
   Zap,
   Languages,
+  UserCircle,
+  LogOut,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
-import { trpc } from "@/providers/trpc";
+import { trpc, setSessionToken } from "@/providers/trpc";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +24,14 @@ import { cn } from "@/lib/utils";
 
 export function Layout() {
   const { t, lang, setLang } = useI18n();
+  const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery(undefined, { retry: false, staleTime: 60_000 });
+  const logout = trpc.auth.logout.useMutation({
+    onSuccess: () => {
+      setSessionToken(null);
+      utils.invalidate();
+    },
+  });
   const mqttStatus = trpc.gateways.mqttStatus.useQuery(undefined, { refetchInterval: 10000 });
 
   const nav = [
@@ -89,7 +99,23 @@ export function Layout() {
       <div className="ml-60 flex min-h-screen flex-1 flex-col">
         <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b bg-white/80 px-6 backdrop-blur">
           <div />
-          <DropdownMenu>
+          <div className="flex items-center gap-3">
+            {me.data?.user && (
+              <span className="flex items-center gap-2 text-sm text-slate-600">
+                <UserCircle className="h-4 w-4" />
+                {me.data.user.name}
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+                  {me.data.user.role}
+                </span>
+              </span>
+            )}
+            {me.data?.user && (
+              <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => logout.mutate()}>
+                <LogOut className="h-4 w-4" />
+                {t.auth.signOut}
+              </Button>
+            )}
+            <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-2">
                 <Languages className="h-4 w-4" />
@@ -101,6 +127,7 @@ export function Layout() {
               <DropdownMenuItem onClick={() => setLang("mk")}>{t.lang.mk}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </header>
         <main className="flex-1 p-6">
           <Outlet />

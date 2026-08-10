@@ -19,7 +19,11 @@ create table if not exists telemetry (
   energy_import_kwh    double precision,
   energy_export_kwh    double precision,
   demand_kw            double precision,
-  raw                  jsonb
+  raw                  jsonb,
+  -- v5 (#5): full open key map (inverter/BESS/weather registers) — parity with
+  -- the MySQL store. Existing deployments:
+  --   alter table telemetry add column if not exists values_json jsonb;
+  values_json          jsonb
 );
 
 -- Hypertable: automatic partitioning by time (7-day chunks)
@@ -49,11 +53,18 @@ select time_bucket('1 day', ts)                 as day,
        min(energy_export_kwh)                   as x_min,
        max(energy_export_kwh)                   as x_max,
        max(coalesce(demand_kw, active_power_kw)) as max_demand,
+       -- v5 (#21): demand_samples=0 → max_demand was derived from active power
+       count(demand_kw)                         as demand_samples,
        avg(power_factor)                        as avg_pf,
        count(*)                                 as samples
 from telemetry
 group by day, meter_id
 with no data;
+
+-- Existing deployments must recreate the aggregate to pick up demand_samples:
+--   drop materialized view telemetry_daily;
+-- then re-run the create statement above and refresh:
+--   call refresh_continuous_aggregate('telemetry_daily', null, null);
 
 select add_continuous_aggregate_policy('telemetry_daily',
   start_offset => interval '2 days',

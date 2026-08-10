@@ -1,0 +1,13 @@
+{
+  "version": "v7",
+  "stage": "C10-backup-dr",
+  "ts": "2026-08-10T18:44:48.771963+00:00",
+  "probes": {
+    "scripts/probe-v7-backup.ts": "ALL PASS (manifest 15 tables; --verify consistent; guard refuses remote DB without ALLOW_UNSAFE_PROD=1; canary loss -> full restore recovery; telemetry count == manifest + live delta)"
+  },
+  "implementation": "scripts/backup-db.ts (gzip JSONL per table + manifest.json), scripts/restore-db.ts (--verify mode, ALLOW_UNSAFE_PROD + --yes guards, generated-column strip, ISO date revival, manifest consistency abort), docs/runbook-backup-dr.md (cron, DR steps, RPO/RTO, WAL interplay)",
+  "bugsFixed": [
+    "restore-db TABLES tuple/object destructure mismatch (found by probe)"
+  ],
+  "result": "PASS"
+}

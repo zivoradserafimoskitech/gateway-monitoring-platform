@@ -1,0 +1,28 @@
+{
+  "command": "npx tsx scripts/seed-profiles.ts; npx tsx scripts/validate-profiles.ts; npx tsx scripts/provision-esmu-demo.ts; device-simulator --esmu --port 5022; curl poller.status; npx tsx scripts/verify-c9.ts; npm run check; npm run build",
+  "criteria": ["E1", "E5", "E6"],
+  "results": [
+    {
+      "check": "E1 profile validation",
+      "pass": true,
+      "detail": "30/30 seeded profiles valid (28 existing + esmu-bams-stack + esmu-bams-string); 0 bad register defs (offset/stride fields checked, shifted addresses within PDU space)"
+    },
+    {
+      "check": "E5 demo integration",
+      "pass": true,
+      "detail": "ESMU Stack-1 (unit 1) + String-1/2 (units 2,3) on sim :5022 polled by the real app: 5 polls / 0 failures each; online with 41/47/47 decoded keys; stack 775.3 V / 290.2 A discharge / 32.0 °C avg — offset + stride decode working in production path; original 11 demo devices intact and online (14 total)"
+    },
+    {
+      "check": "E6 typecheck + build",
+      "pass": true,
+      "detail": "tsc -b clean; vite build clean (dist refreshed)"
+    }
+  ],
+  "context": {
+    "newProfiles": ["esmu-bams-stack", "esmu-bams-string"],
+    "codecExtensions": ["RegisterDef.offset (value = raw*scale + offset)", "RegisterDef.addressStride (per-unit block shift, e.g. string N base + (N-1)*3000)"],
+    "demoFleetSize": 14,
+    "esmuSimPort": 5022
+  },
+  "summary": "3/3 checks passed"
+}

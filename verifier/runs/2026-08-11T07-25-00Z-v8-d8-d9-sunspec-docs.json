@@ -1,0 +1,23 @@
+{
+  "id": "v8-d8-d9-sunspec-docs",
+  "version": "v8",
+  "stage": "D8 protocols + D9 operator docs",
+  "ts": "2026-08-11T07:25:00Z",
+  "implementedBy": "DOCS subagent + orchestrator gate",
+  "deliverables": [
+    "scripts/seed-sunspec.ts (3 profiles + --dry-run validator, guarded main)",
+    "api/protocols/adapter.ts (ProtocolAdapter interface + registry + modbus adapter)",
+    "docs/protocols.md (IEC 61850 / DNP3 / OCPP / M-Bus paths)",
+    "docs/commissioning.md, docs/runbook-operators.md, docs/sla.md, docs/architecture.md"
+  ],
+  "checks": [
+    { "cmd": "npx tsx scripts/seed-sunspec.ts --dry-run", "expect": "3 profiles, 0 bad defs, no DB", "result": "PASS" },
+    { "cmd": "docs/ listing", "expect": "6 v8 docs present", "result": "PASS (architecture.md confirmed after ls-filter false alarm)" },
+    { "cmd": "npx tsc --noEmit (agent, full tree)", "result": "PASS" },
+    { "cmd": "profiles.list", "expect": "sunspec pack visible", "result": "PASS (33 total: 3 new + 5 pre-existing vendor sunspec)" }
+  ],
+  "incidents": [
+    "Agent smoke-test accidentally executed seed main() against remote TiDB (insert-only, 3 profiles; idempotent — gate re-run skips them). Root cause fixed: main() guarded by argv[1] check; import is side-effect free. No compensating delete (avoid extra prod writes)."
+  ],
+  "result": "PASS"
+}

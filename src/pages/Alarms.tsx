@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
 import { SeverityBadge, AlarmStatusBadge, fmt, fmtTime } from "@/components/shared";
@@ -33,8 +33,36 @@ import {
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { METRIC_UNITS, type MetricKey } from "@contracts/modbus";
+import { EXTENDED_METRIC_UNITS } from "@contracts/devices";
 
-const METRIC_KEYS = Object.keys(METRIC_UNITS) as MetricKey[];
+// #19: rule metrics are an open key space — the dropdown is populated from the
+// actual device-profile register maps (all of them, or the selected meter's),
+// not a hardcoded list of 14 meter metrics.
+interface RegDefLike {
+  key: string;
+  unit?: string;
+}
+
+function useMetricOptions(meterId: string, metersData: { id: number; model: string }[] | undefined) {
+  const profiles = trpc.profiles.list.useQuery();
+  return useMemo(() => {
+    const units: Record<string, string> = { ...METRIC_UNITS, ...EXTENDED_METRIC_UNITS };
+    const keys = new Set<string>();
+    const selected =
+      meterId !== "all" ? (metersData ?? []).find((m) => m.id === Number(meterId)) : undefined;
+    const allProfiles = (profiles.data ?? []) as { model: string; registerMap: RegDefLike[] }[];
+    const relevant = selected ? allProfiles.filter((p) => p.model === selected.model) : allProfiles;
+    for (const p of relevant) {
+      for (const d of p.registerMap ?? []) {
+        keys.add(d.key);
+        if (d.unit) units[d.key] = d.unit;
+      }
+    }
+    if (keys.size === 0) for (const k of Object.keys(METRIC_UNITS)) keys.add(k);
+    keys.add("gatewayOffline");
+    return { keys: [...keys].sort(), units };
+  }, [meterId, metersData, profiles.data]);
+}
 
 export default function Alarms() {
   const { t } = useI18n();
@@ -145,11 +173,12 @@ function RulesTable() {
   const meters = trpc.meters.list.useQuery();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [metric, setMetric] = useState<MetricKey | "gatewayOffline">("voltageL1");
+  const [metric, setMetric] = useState<string>("voltageL1");
   const [operator, setOperator] = useState<"gt" | "lt">("gt");
   const [threshold, setThreshold] = useState("253");
   const [severity, setSeverity] = useState<"info" | "warning" | "critical">("warning");
   const [meterId, setMeterId] = useState<string>("all");
+  const metricOptions = useMetricOptions(meterId, meters.data);
 
   const create = trpc.alarms.createRule.useMutation({
     onSuccess: () => {
@@ -239,14 +268,14 @@ function RulesTable() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>{t.alarms.metric}</Label>
-                  <Select value={metric} onValueChange={(v) => setMetric(v as MetricKey)}>
+                  <Select value={metric} onValueChange={setMetric}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {METRIC_KEYS.map((m) => (
+                      {metricOptions.keys.map((m) => (
                         <SelectItem key={m} value={m}>
-                          {m} {METRIC_UNITS[m] ? `(${METRIC_UNITS[m]})` : ""}
+                          {m} {metricOptions.units[m] ? `(${metricOptions.units[m]})` : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -310,7 +339,7 @@ function RulesTable() {
                 onClick={() =>
                   create.mutate({
                     name: name.trim(),
-                    metric: metric as MetricKey,
+                    metric,
                     operator,
                     threshold: Number(threshold),
                     severity,

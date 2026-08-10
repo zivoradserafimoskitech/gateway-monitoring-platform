@@ -1,0 +1,16 @@
+{
+  "version": "v7",
+  "stage": "C5-retention-downsampling",
+  "ts": "2026-08-10T18:24:58.159874+00:00",
+  "probes": {
+    "scripts/probe-v7-retention.ts": "ALL PASS (baseline raw 30/35+reset; pre-rollup public report empty; purgeRaw deleted 9 raw rows, 6 hourly rows; post-purge report identical to baseline from hourly; rollup idempotent)"
+  },
+  "bugsFoundAndFixed": [
+    "MySQL FALSE OR NULL = NULL broke counter_reset NOT NULL insert -> coalesce(max(...),0) in rollup + hourly report query",
+    "mysql2 parses naive datetimes in process TZ (+8h) -> purgeRaw reads min(ts) as unix_timestamp epoch",
+    "ALLOW_UNSAFE_PROD guard correctly refused the remote dev DB; probe runs with explicit opt-in (fixture-scoped deletes)"
+  ],
+  "notes": "telemetry_hourly table + migration 0006; rollup.ts (rollupHour/rollupRange/purgeRaw/startRetentionLoop, TELEMETRY_RAW_DAYS default 90, ROLLUP_INTERVAL_MIN default 10); dailyReport splits at retentionCutoff and merges raw+hourly per day; TimescaleDB path documented as native CA+retention",
+  "tsc": "clean",
+  "result": "PASS"
+}

@@ -1,0 +1,85 @@
+{
+  "command": "npx tsx scripts/test-esmu-e2e.ts",
+  "criteria": [
+    "E2",
+    "E3",
+    "E4"
+  ],
+  "results": [
+    {
+      "check": "E2 ESMU stack telemetry decoded (offset/u32/FC3)",
+      "pass": true,
+      "detail": "39 keys; V=777.2 I=0 SOC=60 state=3 strings=2 hb=8"
+    },
+    {
+      "check": "E3 addressStride per-unit blocks (string 1 @100, string 2 @3100)",
+      "pass": true,
+      "detail": "string-1 SOC=58 V=775.7; string-2 SOC=62 V=779.7"
+    },
+    {
+      "check": "E4 bmsStatusCode=8 fault alarm fired",
+      "pass": true,
+      "detail": "ESMU-T BMS fault state: bmsStatusCode = 8 (> 7)"
+    },
+    {
+      "check": "E4 string low-SOC alarm fired",
+      "pass": true,
+      "detail": "ESMU-T string low SOC: socPercent = 20 (< 30)"
+    },
+    {
+      "check": "E4 alarms auto-resolved",
+      "pass": true,
+      "detail": "0 still active"
+    },
+    {
+      "check": "E2 poller stable (0 failures on all ESMU objects)",
+      "pass": true,
+      "detail": "ESMU-T stack: 11 polls/0 fail, ESMU-T string-1: 11 polls/0 fail, ESMU-T string-2: 11 polls/0 fail"
+    }
+  ],
+  "poller": [
+    {
+      "id": 1735004,
+      "name": "ESMU-T stack (unit 1)",
+      "host": "127.0.0.1",
+      "port": 5023,
+      "unitId": 1,
+      "model": "esmu-bams-stack",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T17:00:16.178Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 1735005,
+      "name": "ESMU-T string-1 (unit 2)",
+      "host": "127.0.0.1",
+      "port": 5023,
+      "unitId": 2,
+      "model": "esmu-bams-string",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T17:00:16.357Z",
+      "lastError": null,
+      "backoffMs": 0
+    },
+    {
+      "id": 1735006,
+      "name": "ESMU-T string-2 (unit 3)",
+      "host": "127.0.0.1",
+      "port": 5023,
+      "unitId": 3,
+      "model": "esmu-bams-string",
+      "intervalSec": 5,
+      "polls": 11,
+      "failures": 0,
+      "lastOkAt": "2026-08-10T17:00:16.389Z",
+      "lastError": null,
+      "backoffMs": 0
+    }
+  ],
+  "summary": "6/6 checks passed"
+}

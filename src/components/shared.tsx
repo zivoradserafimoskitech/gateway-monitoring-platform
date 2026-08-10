@@ -20,6 +20,27 @@ export function StatusBadge({ status }: { status: "online" | "offline" }) {
   );
 }
 
+export function DeviceTypeBadge({ type }: { type: string }) {
+  const { t } = useI18n();
+  const styles: Record<string, string> = {
+    meter: "bg-sky-100 text-sky-700",
+    inverter: "bg-amber-100 text-amber-700",
+    bess: "bg-violet-100 text-violet-700",
+    weather: "bg-teal-100 text-teal-700",
+  };
+  const labels: Record<string, string> = {
+    meter: t.devices.meter,
+    inverter: t.devices.inverter,
+    bess: t.devices.bess,
+    weather: t.devices.weather,
+  };
+  return (
+    <span className={cn("rounded-full px-2.5 py-0.5 text-xs font-medium", styles[type] ?? "bg-slate-200 text-slate-600")}>
+      {labels[type] ?? type}
+    </span>
+  );
+}
+
 export function SeverityBadge({ severity }: { severity: "info" | "warning" | "critical" }) {
   const { t } = useI18n();
   const styles = {

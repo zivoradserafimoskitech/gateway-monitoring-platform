@@ -219,7 +219,7 @@ async function runScale(gatewayCount: number, metersPer: number, intervalMs: num
       `interval ${intervalMs} ms (~${Math.round(totalMeters / (intervalMs / 1000))} samples/s)`,
   );
 
-  const client = mqtt.connect(BROKER, { clientId: `enertrek-scale-${Date.now()}` });
+  const client = mqtt.connect(BROKER, { clientId: `enertrek-scale-${Date.now()}`, username: process.env.MQTT_USERNAME || undefined, password: process.env.MQTT_PASSWORD || undefined });
   let published = 0;
   const started = Date.now();
 
@@ -281,7 +281,7 @@ async function main() {
     return;
   }
 
-  const client = mqtt.connect(BROKER, { clientId: `enertrek-sim-${Date.now()}` });
+  const client = mqtt.connect(BROKER, { clientId: `enertrek-sim-${Date.now()}`, username: process.env.MQTT_USERNAME || undefined, password: process.env.MQTT_PASSWORD || undefined });
 
   client.on("connect", () => {
     console.log(`[sim] connected to ${BROKER}`);

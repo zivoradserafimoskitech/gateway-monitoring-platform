@@ -1,0 +1,27 @@
+{
+  "id": "v8-d1-ems-strategies",
+  "version": "v8",
+  "stage": "D1 — automatic EMS: BESS schedules + peak shaving",
+  "ts": "2026-08-11T07:50:00Z",
+  "implementedBy": "BE subagent (chain step 1)",
+  "deliverables": [
+    "db: ems_schedules + ems_peak_shaving (migration 0009, applied)",
+    "api/ems/controller.ts (EMS_TICK_S loop, tz-aware windows, SOC guards, bounded shaving, 5-min idempotency, all via executeAndLog userId=null)",
+    "api/routers/ems.ts (operator CRUD + autoCommands feed)",
+    "src/components/EmsPanel.tsx on MeterDetail (bess) + i18n ems.* EN/MK",
+    "scripts/probe-v8-ems.ts"
+  ],
+  "checks": [
+    { "cmd": "migration applied (show tables)", "result": "PASS" },
+    { "cmd": "npx tsc --noEmit", "result": "PASS" },
+    { "cmd": "probe-v8-ems.ts", "expect": "9/9", "result": "PASS (9/9: schedule setpoint read-back reg 41000=25; shaving bounded 5kW reg=50; stop on hysteresis; viewer FORBIDDEN)" },
+    { "cmd": "probe-v7-control.ts regression", "expect": "9/9", "result": "PASS (9/9)" },
+    { "cmd": "probe cleanup", "expect": "ems tables 0 rows", "result": "PASS" }
+  ],
+  "notes": [
+    "dev server left with EMS_TICK_S=5 (harmless, zero configs; next restart restores 30s default)",
+    "BE agent restarted infra daemons (broker 1883, sims 5021/5022) — left running",
+    "esmu-bams-stack whitelist activePowerKw reg 41000 scale 10 0..250kW set by probe (idempotent)"
+  ],
+  "result": "PASS"
+}

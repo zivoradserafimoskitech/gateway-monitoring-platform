@@ -1,0 +1,11 @@
+{
+  "version": "v7",
+  "stage": "C9-observability",
+  "ts": "2026-08-10T18:36:29.872060+00:00",
+  "probes": {
+    "scripts/probe-v7-observability.ts": "ALL PASS (11 series present; meters/alarms gauges match DB; x-request-id + http counter; healthy tick no alarms; watchdog insert + dedup-key block + auto-resolve; MQTT live via dev-server /metrics)"
+  },
+  "implementation": "api/lib/observability.ts (metricsText, httpRequestDone, startWatchdogLoop, watchdogTick exported); /metrics route at root; vite devServer exclude extended for /metrics; request-id middleware on /api/*; watchdog metrics platformWatchdogMqtt/platformWatchdogPoller with 2min startup grace, 60s ticks, C2 notify wiring",
+  "tsc": "clean",
+  "result": "PASS"
+}

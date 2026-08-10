@@ -1,0 +1,33 @@
+{
+  "command": "npx tsx scripts/cleanup-pv-scale.ts; kill plant sim (5101-5130); npx tsx scripts/db-counts.ts; npx tsx scripts/verify-c9.ts",
+  "criteria": ["S6", "S7"],
+  "results": [
+    {
+      "check": "S6 scale TCP fleet removed",
+      "pass": true,
+      "detail": "cleanup-pv-scale removed 110 SCL devices + 20 SCL rules (+telemetry/alarms); 30-plant simulator stopped (no listeners on 5101-5130)"
+    },
+    {
+      "check": "S6 scale MQTT fleet removed",
+      "pass": true,
+      "detail": "cleanup-scale removed 500 gateways + 8000 meters (+telemetry/alarms); clean-orphans found 0 orphan meters (confirms meterCache TTL fix)"
+    },
+    {
+      "check": "S6 original demo devices intact",
+      "pass": true,
+      "detail": "3 gateways / 11 meters; all 11 online with fresh telemetry (3 demo meters via MQTT, 8 demo PV/BESS via TCP plant sim on port 5021, still running)"
+    },
+    {
+      "check": "S7 run records preserved",
+      "pass": true,
+      "detail": "6 scale-related run records in verifier/runs/ (4 scale verify runs incl. failed attempts, e2e runs, closeout); README index updated"
+    }
+  ],
+  "context": {
+    "gatewaysAfterCleanup": 3,
+    "metersAfterCleanup": 11,
+    "telemetryRowsRemaining": 34051,
+    "demoPlantPort": 5021
+  },
+  "summary": "4/4 checks passed"
+}

@@ -1,10 +1,12 @@
 // Remove load-test fleet (UIDs 170XXXXXXXXXXXX / 860XXXXXXXXXXXX) + its data.
 import "dotenv/config";
+import { assertDestructiveOk } from "./lib/db-guard";
 import { getDb } from "../api/queries/connection";
 import { gateways, meters, telemetry, alarms } from "../db/schema";
-import { like, or, inArray } from "drizzle-orm";
+import { like, or, inArray, eq } from "drizzle-orm";
 
 async function main() {
+  assertDestructiveOk("cleanup-scale");
   const db = getDb();
   const gws = await db
     .select({ id: gateways.id })

@@ -1,9 +1,11 @@
 import "dotenv/config";
+import { assertDestructiveOk } from "./lib/db-guard";
 import { getDb } from "../api/queries/connection";
 import { gateways, meters, telemetry } from "../db/schema";
 import { sql, inArray } from "drizzle-orm";
 
 async function main() {
+  assertDestructiveOk("clean-orphans");
   const db = getDb();
   const orphans = await db
     .select({ id: meters.id })

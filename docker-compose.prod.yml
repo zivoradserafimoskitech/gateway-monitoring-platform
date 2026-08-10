@@ -17,9 +17,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-mysql://enertrek:enertrek@mysql:3306/enertrek}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL (no default credentials allowed)}
       TELEMETRY_STORE: timescale
-      TIMESCALE_URL: postgres://postgres:${TIMESCALE_PASSWORD:-enertrek}@timescale:5432/telemetry
+      TIMESCALE_URL: postgres://postgres:${TIMESCALE_PASSWORD:?set TIMESCALE_PASSWORD}@timescale:5432/telemetry
       MQTT_URL: mqtt://emqx:1883
       MQTT_USERNAME: ${MQTT_USERNAME:-}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-}
@@ -34,21 +34,12 @@ services:
   emqx:
     image: emqx/emqx:5.8
     ports:
-      - "1883:1883"   # MQTT (credentials mandatory; prefer 8883 for field gateways)
-      - "8883:8883"   # MQTTS (EMQX default self-signed certs)
-      - "18083:18083" # dashboard (bound to firewall-closed port; SSH tunnel only)
+      - "1883:1883"   # MQTT (gateways connect here — expose via TLS proxy in production)
+      - "8883:8883"   # MQTTS
+      - "127.0.0.1:18083:18083" # dashboard — localhost only; tunnel in, never expose publicly
     environment:
-      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_ADMIN:-admin}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_ADMIN_PASSWORD:-public}
-      # Mandatory auth: clients must present a username/password stored in the
-      # built-in database (users created by deploy.sh via the dashboard API).
-      EMQX_AUTHENTICATION__1__MECHANISM: password_based
-      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
-      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: sha256
-      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION: suffix
-      # Default-deny ACL: anything not explicitly allowed is rejected.
-      EMQX_AUTHORIZATION__NO_MATCH: deny
-      EMQX_AUTHORIZATION__SOURCES__1__TYPE: built_in_database
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_ADMIN:?set EMQX_ADMIN}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_ADMIN_PASSWORD:?set EMQX_ADMIN_PASSWORD}
     volumes:
       - emqx-data:/opt/emqx/data
     restart: unless-stopped
@@ -56,10 +47,10 @@ services:
   timescale:
     image: timescale/timescaledb:2.17-pg16
     environment:
-      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-enertrek}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:?set TIMESCALE_PASSWORD}
       POSTGRES_DB: telemetry
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"  # localhost only
     volumes:
       - timescale-data:/var/lib/postgresql/data
       - ./db/timescale/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
@@ -68,12 +59,12 @@ services:
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-enertrek}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: enertrek
       MYSQL_USER: enertrek
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-enertrek}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"  # localhost only
     volumes:
       - mysql-data:/var/lib/mysql
     restart: unless-stopped

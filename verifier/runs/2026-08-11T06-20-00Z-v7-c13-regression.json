@@ -1,0 +1,36 @@
+{
+  "id": "v7-c13-regression",
+  "version": "v7",
+  "stage": "C13 final regression & delivery",
+  "ts": "2026-08-11T06:20:00Z",
+  "env": { "node": "v22.19.0", "os": "linux x64", "app": "/mnt/agents/output/app" },
+  "checks": [
+    { "cmd": "npx tsc --noEmit", "expect": "no type errors", "result": "PASS" },
+    { "cmd": "npm run build", "expect": "vite build + esbuild dist/boot.js succeed", "result": "PASS" },
+    { "cmd": "vitest run", "expect": "25/25 pass (mqtt-topics, retention-prune, notify-retry, metrics, watchdog-statements)", "result": "PASS (25/25)" },
+    { "cmd": "ESMU e2e harness (custom wal dir, fleet reset)", "expect": "6/6 PASS", "result": "PASS (6/6, run twice — second run after tsx corruption repair)" },
+    { "cmd": "probe-v7-auth.py", "expect": "12/12 (admin, viewer RBAC + role-change live enforcement, /auth/me)", "result": "PASS (12/12, idempotent re-run via auth.users precheck)" },
+    { "cmd": "probe-v6-registration.py (C1-hardened: admin login + cookie jar)", "expect": "13/13", "result": "PASS (13/13)" },
+    { "cmd": "probe-v2-notify.py", "expect": "5/5", "result": "PASS (5/5)" },
+    { "cmd": "probe-v2-notify2.py", "expect": "ALL PASS (repeat-silence + auto-resolve + dedup)", "result": "PASS" },
+    { "cmd": "probe-v4-counter-reset.ts", "expect": "spike-free hourly energy across counter reset", "result": "PASS" },
+    { "cmd": "probe-v7-timezone.ts (C8)", "expect": "6/6", "result": "PASS (6/6)" },
+    { "cmd": "probe-v7-retention.ts (C5)", "expect": "ALL PASS (rollup + dailyReport continuity + purge guard)", "result": "PASS" },
+    { "cmd": "probe-v7-wal.ts (C6)", "expect": "ALL PASS (clean flush, crash replay, give-up preservation)", "result": "PASS" },
+    { "cmd": "probe-v7-observability.ts (C9)", "expect": "6/6", "result": "PASS (6/6)" },
+    { "cmd": "probe-v7-tls.ts (C3)", "expect": "ALL PASS (pinned-CA connect, no-CA rejected, plaintext listener intact)", "result": "PASS" },
+    { "cmd": "probe-v7-backup.ts (C10)", "expect": "ALL PASS (guard, backup/restore/--verify, live-ingestion tolerance)", "result": "PASS" },
+    { "cmd": "probe-v7-rest-api.py (C11)", "expect": "ALL PASS (create/auth/latest/alarms/revoke/viewer-denied)", "result": "PASS" },
+    { "cmd": "probe-v7-control.ts (C12)", "expect": "9/9 (whitelist, range, modbus write+readback, C30 downlink, G30 reject, audit incl. DENIED/FAILED)", "result": "PASS (9/9)" },
+    { "cmd": "probe-v6-mqtt.py", "expect": "ALL PASS (temp gateway G30 fleet-register roundtrip)", "result": "PASS" },
+    { "cmd": "probe-v6-c30-stride.py", "expect": "ALL PASS (HUAWEI-C30 meter via rs485-gateway2 poller)", "result": "PASS" },
+    { "cmd": "gateway/meter state via /metrics", "expect": "3/4 gateways online (gw-60001 pre-existing offline), 18 meters, no active alarms", "result": "PASS (149 mqtt messages in, 2 stale active alarms from earlier notify probes resolved + probe rules deleted)" }
+  ],
+  "incidents": [
+    "node_modules/tsx on-disk corruption (loader.js contained tsconfig-schema content) — repaired via rm -rf node_modules/tsx && npm i tsx --no-save; WAL made resilient (ENOENT self-heal mkdir, per-process wal dirs, tolerant unlink)",
+    "2 stale ACTIVE alarms + 2 leftover probe rules (ids 150003/180003) from C2 probes on live meter id 1 — alarms resolved, rules deleted",
+    "gw-mqtt-pv temp gateway missing at probe time — recreated for probe, deleted after (state back to 4 gateways)"
+  ],
+  "decision": "GO for delivery",
+  "result": "PASS"
+}

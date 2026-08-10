@@ -1,13 +1,12 @@
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
-import { createRouter, publicQuery } from "../middleware";
+import { eq, desc, sql } from "drizzle-orm";
+import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { alarms, alarmRules, meters, gateways } from "@db/schema";
-import { ALARM_METRICS } from "@contracts/modbus";
 import { invalidateRulesCache } from "../mqtt/handlers";
 
 export const alarmsRouter = createRouter({
-  list: publicQuery
+  list: authed
     .input(
       z
         .object({
@@ -29,15 +28,20 @@ export const alarmsRouter = createRouter({
       return rows.map((r) => ({ ...r.alarm, meterName: r.meterName, gatewayName: r.gatewayName }));
     }),
 
-  counts: publicQuery.query(async () => {
+  counts: authed.query(async () => {
     const db = getDb();
-    const rows = await db.select({ status: alarms.status }).from(alarms);
+    // #14: aggregate in SQL — the old version pulled EVERY alarm row into
+    // memory on every dashboard poll.
+    const rows = await db
+      .select({ status: alarms.status, n: sql<number>`count(*)` })
+      .from(alarms)
+      .groupBy(alarms.status);
     const counts = { active: 0, acknowledged: 0, resolved: 0 };
-    for (const r of rows) counts[r.status]++;
+    for (const r of rows) counts[r.status] = Number(r.n);
     return counts;
   }),
 
-  acknowledge: publicQuery.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  acknowledge: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
     const db = getDb();
     await db
       .update(alarms)
@@ -46,7 +50,7 @@ export const alarmsRouter = createRouter({
     return { ok: true };
   }),
 
-  resolve: publicQuery.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  resolve: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
     const db = getDb();
     await db
       .update(alarms)
@@ -56,7 +60,7 @@ export const alarmsRouter = createRouter({
   }),
 
   // ─── Rules ─────────────────────────────────────────────────────────────
-  listRules: publicQuery.query(async () => {
+  listRules: authed.query(async () => {
     const db = getDb();
     const rows = await db
       .select({ rule: alarmRules, meterName: meters.name })
@@ -66,11 +70,14 @@ export const alarmsRouter = createRouter({
     return rows.map((r) => ({ ...r.rule, meterName: r.meterName }));
   }),
 
-  createRule: publicQuery
+  createRule: operator
     .input(
       z.object({
         name: z.string().min(1).max(255),
-        metric: z.enum(ALARM_METRICS),
+        // #19: open key space — profiles define far more keys than ALARM_METRICS
+        // (e.g. ESMU socPercent/bmsStatusCode). Evaluation simply skips metrics
+        // a device doesn't report, so any non-empty key is valid here.
+        metric: z.string().min(1).max(100),
         operator: z.enum(["gt", "lt"]),
         threshold: z.number(),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
@@ -79,19 +86,22 @@ export const alarmsRouter = createRouter({
     )
     .mutation(async ({ input }) => {
       const db = getDb();
-      await db.insert(alarmRules).values({
-        name: input.name,
-        metric: input.metric,
-        operator: input.operator,
-        threshold: input.threshold,
-        severity: input.severity,
-        meterId: input.meterId ?? null,
-      });
+      const inserted = await db
+        .insert(alarmRules)
+        .values({
+          name: input.name,
+          metric: input.metric,
+          operator: input.operator,
+          threshold: input.threshold,
+          severity: input.severity,
+          meterId: input.meterId ?? null,
+        })
+        .$returningId();
       invalidateRulesCache();
-      return { ok: true };
+      return { ok: true, id: inserted[0].id };
     }),
 
-  toggleRule: publicQuery
+  toggleRule: operator
     .input(z.object({ id: z.number(), enabled: z.boolean() }))
     .mutation(async ({ input }) => {
       const db = getDb();
@@ -100,7 +110,7 @@ export const alarmsRouter = createRouter({
       return { ok: true };
     }),
 
-  deleteRule: publicQuery.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+  deleteRule: operator.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
     const db = getDb();
     await db.delete(alarmRules).where(eq(alarmRules.id, input.id));
     return { ok: true };

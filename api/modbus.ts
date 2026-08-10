@@ -1,6 +1,6 @@
 // Minimal Modbus RTU codec for the C30 transparent channel.
 // Frames travel as raw binary inside MQTT payloads (d2g/{uid} up, g2d/{uid} down).
-import type { RegisterDef, MetricKey } from "@contracts/modbus";
+import type { RegisterDef } from "@contracts/modbus";
 
 export function crc16(buf: Buffer): number {
   let crc = 0xffff;
@@ -68,35 +68,48 @@ export function registerSpan(map: RegisterDef[]): { start: number; quantity: num
   return { start, quantity };
 }
 
+// Reverses 16-bit word ORDER within a field: [w0,w1] -> [w1,w0] (CDAB -> ABCD).
+function swapWords(buf: Buffer, offset: number, size: number): Buffer {
+  const out = Buffer.alloc(size);
+  const words = size / 2;
+  for (let w = 0; w < words; w++) {
+    buf.copy(out, w * 2, offset + (words - 1 - w) * 2, offset + (words - w) * 2);
+  }
+  return out;
+}
+
 export function decodeRegisters(
   map: RegisterDef[],
   data: Buffer,
   baseAddress: number,
-): Partial<Record<MetricKey, number>> {
-  const out: Partial<Record<MetricKey, number>> = {};
+): Record<string, number> {
+  const out: Record<string, number> = {};
   for (const def of map) {
+    const size = wordsOf(def.type) * 2;
     const offset = (def.address - baseAddress) * 2;
-    if (offset < 0 || offset + wordsOf(def.type) * 2 > data.length) continue;
+    if (offset < 0 || offset + size > data.length) continue;
+    const view = def.wordSwap && size === 4 ? swapWords(data, offset, size) : data;
+    const off = def.wordSwap && size === 4 ? 0 : offset;
     let raw: number;
     switch (def.type) {
       case "float32":
-        raw = data.readFloatBE(offset);
+        raw = view.readFloatBE(off);
         break;
       case "u32":
-        raw = data.readUInt32BE(offset);
+        raw = view.readUInt32BE(off);
         break;
       case "i32":
-        raw = data.readInt32BE(offset);
+        raw = view.readInt32BE(off);
         break;
       case "u16":
-        raw = data.readUInt16BE(offset);
+        raw = view.readUInt16BE(off);
         break;
       case "i16":
-        raw = data.readInt16BE(offset);
+        raw = view.readInt16BE(off);
         break;
     }
     if (Number.isFinite(raw)) {
-      const v = raw * def.scale;
+      const v = raw * def.scale + (def.offset ?? 0);
       out[def.key] = Math.round(v * 10000) / 10000;
     }
   }

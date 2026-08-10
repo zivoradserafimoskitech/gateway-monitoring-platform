@@ -1,5 +1,24 @@
 # React + TypeScript + Vite
 
+## Enertrek Cloud — ops notes
+
+- **Schema changes (v5 #24):** never hand-apply SQL. Edit `db/schema.ts`, then
+  `npm run db:generate` (writes `db/migrations/`) and `npm run db:migrate`
+  against the target database. Timescale schema changes go in
+  `db/timescale/001_init.sql` (idempotent; notes for existing deployments inline).
+- **Tests (v5 #23):** `npm test` (vitest, `tests/`) — codec offset/stride,
+  CSV formula-injection guard, poller backoff/transport classification,
+  offline thresholds, G30 unit-hint normalization. E2E harnesses:
+  `npx tsx scripts/test-esmu-e2e.ts`, `scripts/test-pv-e2e.ts`.
+- **Destructive scripts** (`cleanup-*`, `clear-telemetry`, `repair-orphans`)
+  refuse to run against a non-local `DATABASE_URL` unless `ALLOW_UNSAFE_PROD=1`
+  is set (v5 #22).
+- **Optional hardening env:** `API_TOKEN` (Bearer guard on /api/trpc/*) +
+  `VITE_API_TOKEN` (frontend), `MQTT_USERNAME`/`MQTT_PASSWORD` (broker auth),
+  `MQTT_BIND_HOST`, `MQTT_AUTO_PROVISION=0` (disable zero-touch onboarding).
+- **Day/timezone policy (v5 #8):** all server-side "day" bucketing is UTC
+  (epoch-based); the browser renders in its local tz. One conversion point.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

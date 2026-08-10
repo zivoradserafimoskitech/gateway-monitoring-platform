@@ -3,3 +3,10 @@ dist
 .git
 *.swp
 *.log
+# Never bake secrets into the image — inject at runtime (F-05)
+.env
+.env.*
+!.env.example
+# Local dev/verification artifacts
+verifier/runs
+upload
