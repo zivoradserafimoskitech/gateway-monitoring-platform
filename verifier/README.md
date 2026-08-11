@@ -226,3 +226,59 @@ Acceptance criteria: `v8/acceptance.md` (D1–D10). Per-point run records:
   (gate rule re-confirmed: restart after every api/vite-config edit);
   Playwright browser 1234 installed; retention probe ran with scoped
   ALLOW_UNSAFE_PROD=1 (cutoff predates all production rows).
+
+## v9 (2026-08-11) — AI прогноза + портфолио оптимизер (Enertrek мускул + VoltTrade мозок)
+- `v9/acceptance.md` — acceptance criteria EN.1–EN.7 (Enertrek ems-plan слој),
+  VT.1–VT.9 (VoltTrade прогнози/оптимизер), INT.1–INT.3 (интеграција).
+- Архитектура: VoltTrade = мозок (PV/load/price прогнози со квантили,
+  детерминистички оптимизер, shadow набавка, accuracy јамка, cron 06:45/13:15/
+  2h/23:50); Enertrek = мускул (единствен што пишува по уреди; приоритет
+  peak-shaving > fresh ems_plan > schedules > idle; fail-safe = локални
+  распореди/idle кога VoltTrade е down).
+- Contract A (Enertrek, миграција 0013 `ems_plans` + REST): PUT
+  `/api/v1/devices/:id/ems-plan` (span ≤48h, 1..192 setpoints, sorted,
+  ts-in-window, |kw|≤500; upsert-supersede на overlap) + GET current-or-next;
+  контролер: step-function setpoints, prefix `plan:<source>` во commands.result,
+  lazy expire (valid_to<now, limit 500/tick); `scripts/probe-v9-ems-plan.ts`
+  12/12 PASS; регресии ems 9/9 + erp-sim 18/18 зелени по интеграцијата.
+- Contract B (VoltTrade, `supabase/functions/_shared/` pure TS — работи и под
+  Deno и под `npx tsx`): types/holidays/weather(Open-Meteo fail-soft)/pv
+  (clear-sky×NWP×MOS)/load(hour-of-week half-life 14d)/price(7-дневна mean
+  крива, само pre-12:00)/optimize(8 детерминистички чекори, tie-break по ts,
+  imbalance ratio 1.5, reserve SOC 30%)/enertrek-push/pipeline; миграција
+  `20260811130000_forecast_optimizer.sql` (site_forecasts — преименувана бидејќи
+  public.forecasts веќе постоеше како budget табела); 4 edge functions
+  (optimize-morning 06:45 CET, optimize-post1300 13:15 со ВИСТИНСКИ цени,
+  optimize-intraday 2h, forecast-accuracy 23:50); UI `src/pages/admin/
+  Optimizer.tsx` + рута + Sidebar; `scripts/v9-selfcheck.ts` 40/40 PASS
+  (познат-оптимум синтетици a–d; независно re-run од orchestrator, exit 0).
+- `runs/2026-08-11T09-36-00Z-v9-int1-e2e.json` — INT.1 e2e harness
+  (`scripts/probe-v9-e2e-integration.ts`, cross-repo import на VT _shared):
+  13/13 PASS. Оптимизер → 96×15min план за утре → pushEmsPlan → Enertrek PUT
+  (planId) → GET current-or-next → live извршување на ESMU sim: 3.0→1.0→0 kW
+  чекори со commands редици `plan:volttrade-e2e` + независен Modbus read-back
+  30→10→0; lazy expire по validTo; регистар останува 0 (нема fallback).
+  Економски инваријант верифициран: празнење 17–21h @80€/MWh; полнење САМО од
+  PV вишок (146.6 kWh surplus, export=0€) или евтина тарифа — 0 grid-charge
+  @high-price виолации.
+- `runs/2026-08-11T09-40-00Z-v9-v8-spot-regression.json` — v8 spot-регресија по
+  v9 измени: reports 6/6, ota 6/6, erp-sim 18/18, ems 9/9, ha 5/5 — сите зелени.
+- `runs/2026-08-11T09-45-00Z-v9-phase1-tou-demo.json` — Phase 1 (0€) TOU демо
+  распореди на ESMU sim батерија: полнење 00–06 @3kW (SOC≤90), празнење
+  17–21 @3kW (SOC≥25); валидирано преку ems.schedules.list (id 30003/30004).
+- Probe hardening (assertion/harness only — продукт кодот точен): e2e A3
+  првично бараше ноќно полнење — погрешно за PV-surplus профил со export=0€
+  (оптимално е ноќно празнење за простор за бесплатен PV); ota diagnostics
+  race (брз ack < 5s liveness flush) → poll до ~15s; /tmp sim-log symlinks
+  репоентирани кон logs/ по reboot.
+- `runs/2026-08-11T10-12-00Z-v9-final-regression.json` — финална батерија:
+  ems-plan 12/12, e2e 13/13, selfcheck 40/40, reports 6/6, ota 6/6, erp-sim
+  18/18, ems 9/9, ha 5/5, rest-energy 10/10, multitenancy 9/9 (вгнездени
+  12/12+9/9+10/10). rest-energy (a)/(b2) по reboot беа environmental (feed
+  gap → нема rolled history) и самооздравеа ~10:05 UTC (09:00 час ролиран
+  како estimated). Verdict: PASS.
+- Часовна лента на пазарот (дизајн одлука): bids close 12:00 CET ПРЕД
+  објава на цени 13:00 CET → набавката користи FORECAST цени (optimize-morning);
+  батеријата се ре-оптимизира 13:15 со ВИСТИНСКИ цени (optimize-post1300);
+  батеријата = прв штит против imbalance; набавка = Σload − Σpv − Σdischarge +
+  Σcharge по период, bias-long маржа (ratio 1.5, cap 15%).

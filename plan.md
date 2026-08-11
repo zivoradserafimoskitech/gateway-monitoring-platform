@@ -221,3 +221,57 @@ ALLOW_UNSAFE_PROD=1; i18n keys in BOTH en.ts and mk.ts.
   build_version, rsync archive → /mnt/agents/work/enertrek-cloud, final
   report in Macedonian. User-side: deploy ERP edge functions per
   docs/enertrek-integration.md; revoke the GitHub PAT used for the push.
+
+## v9 — AI прогноза + портфолио оптимизер (2026-08-11) — „Napravi gi site"
+
+User directive: implement ALL phases of the forecast/optimization roadmap.
+Architecture (agreed with user): **VoltTrade = brain** (forecasts, prices,
+optimizer, procurement shadow), **Enertrek = muscle** (executes ems-plan,
+local safety always wins). Skill: vibecoding-general-swarm (Mode A,
+SPEC-first). Spec: /mnt/agents/output/SPEC-v9.md — contracts are sacred.
+
+- Stage 1 (parallel): EN agent — Enertrek ems-plan: migration 0013
+  (ems_plans), REST PUT/GET /api/v1/devices/:id/ems-plan, EMS controller
+  priority (peak-shaving > fresh plan > schedules > idle, staleness +
+  SOC guards), probe-v9-ems-plan.ts, docs/api-v1.md. Owns app repo.
+- Stage 2 (parallel): VT agent — VoltTrade brain: READ existing
+  forecast-volumes / sync-pv-forecast / sync-entsoe-prices FIRST (extend,
+  not duplicate). Pure-TS modules (Deno+Node compatible): pv forecast
+  (clear-sky + Open-Meteo + per-site MOS calibration), load forecast
+  (hour-of-week + temp + MK holidays), price curve (forecast pre-12:00 /
+  actual post-13:00), quantiles P10/P50/P90. Optimizer: deterministic
+  quantile heuristic (charge cheap / discharge peak, SOC+reserve guards,
+  imbalance-asymmetry procurement margin), procurement_plans shadow mode,
+  push ems-plan to Enertrek (ENERTREK_BASE_URL/API_KEY), crons
+  (07:00 forecast+shadow, 13:15 re-plan actual prices + push, 2h intraday,
+  23:50 accuracy join + champion/challenger model_versions). UI
+  /admin/optimizer (tomorrow chart, accuracy tiles, shadow confirm).
+  docs/forecast-optimizer.md. Owns ERP repo.
+- Stage 3 (orchestrator): restart infra (broker down), optimizer math
+  verification on known-optimum synthetics (pure modules run under npx
+  tsx — no Deno in sandbox), e2e: harness pushes plan → live Enertrek
+  executes (erp-sim pattern), probe-v9-ems-plan green, regression battery.
+- Stage 4: run records (v9-*), verifier/v9/acceptance.md, README index,
+  plan closeout, version, archive, final report MK. GitHub push NOT
+  pre-authorized for ERP repo — deliver locally, offer.
+- Phase 1 (TOU, 0€): seed demo TOU schedules on ESMU battery via API
+  (charge 00-06, discharge 17-21) as live demonstration.
+
+## v9 CLOSEOUT (2026-08-11) — DONE
+- Stage 1 Enertrek (Contract A): DONE — миграција 0013 ems_plans (applied,
+  TiDB), REST PUT/GET ems-plan, контролерски приоритет peak>plan>schedule,
+  lazy expire, probe-v9-ems-plan 12/12, регресии зелени. Deviations:
+  `timestamp` колони (project convention), peak "fired" вклучува active peak
+  event, SOC targetSoc vacuum за plans документиран.
+- Stage 2 VoltTrade (Contract B): DONE — 9 pure-TS _shared модули (Deno-free,
+  tsx-verified), миграција 20260811130000 (site_forecasts rename), 4 edge
+  functions + cron распоред, UI /admin/optimizer, docs, v9-selfcheck 40/40
+  (независно re-verified, exit 0).
+- Stage 3: DONE — INT.1 e2e probe 13/13 (optimizer→push→live execution→
+  Modbus read-back 30→10→0→expire), v8 spot-регресија 5/5 probes зелени,
+  probe hardening: e2e A3 економски инваријант + ota liveness-flush race.
+- Phase 1 TOU demo: DONE — schedules 30003/30004 live на ESMU sim.
+- Stage 4: run records (3 v9 JSONs + rest-energy/multitenancy финални),
+  README index v9, commit 0fde021 (app repo; VT repo не е git — локален
+  delivery), version + archive + MK извештај. GitHub push за v9 НЕ е
+  pre-authorized — deliver locally, offer.

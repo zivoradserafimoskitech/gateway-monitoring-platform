@@ -17,6 +17,8 @@ curl -H "Authorization: Bearer etk_…" https://your-host/api/v1/devices
 | GET | `/api/v1/devices` | All devices: `{ devices: [{ id, name, model, deviceType, siteId, gatewayId, status, … }] }` — `deviceType` ∈ `meter\|inverter\|bess`, `status` ∈ `online\|offline` (liveness). Extra backward-compatible fields: gateway context (`gatewayUid`, `gatewayStatus`, …) and `effectiveSiteId` (own site ?? gateway site — the v6 coalesce rule). |
 | GET | `/api/v1/devices/:id/latest` | Latest telemetry: `{ deviceId, ts, values }` — the full open-key map (power, energy, BESS/inverter keys per device profile). `ts: null, values: {}` when no data yet. (Legacy `latest: { ts, values }` wrapper still included.) |
 | GET | `/api/v1/devices/:id/energy` | **v8/D2 settlement energy intervals** — see below. |
+| PUT | `/api/v1/devices/:id/ems-plan` | **v9 Contract A: push an EMS plan** (upsert/supersede) — see below. |
+| GET | `/api/v1/devices/:id/ems-plan` | **v9 Contract A:** the active plan covering now, else the next upcoming active plan, else `{ "plan": null }`. |
 | GET | `/api/v1/alarms?status=` | Alarms, newest first (limit 500). `status`: `active` (default) \| `acknowledged` \| `resolved` \| `all`. |
 
 ## Energy intervals (ERP / billing)
@@ -65,6 +67,63 @@ Response 200 (worst case 31 d × 15 min = 2976 buckets):
 | 400 | missing/unparsable `from`/`to`, `from >= to`, range > 31 days, `bucketMin` not an integer in 15..1440, non-numeric device id |
 | 401 | missing/garbage/revoked Bearer key |
 | 404 | unknown device id |
+
+## EMS plans (v9 Contract A — optimizer push)
+
+`PUT /api/v1/devices/:id/ems-plan` pushes a time-boxed **step-function
+setpoint series** for one BESS device — designed for the VoltTrade portfolio
+optimizer, but any integration with a valid key can use it.
+
+**Sign convention: `kw > 0` = discharge, `kw < 0` = charge, `0` = idle**
+(matches the control-register semantics "+ = discharge"). The EMS controller
+clamps to the meter's controllable register range (a charge setpoint is only
+written as a negative value when the register's range allows it).
+
+```bash
+curl -X PUT -H "Authorization: Bearer etk_…" -H "Content-Type: application/json" \
+  -d '{
+        "validFrom": "2026-08-12T00:00:00Z",
+        "validTo":   "2026-08-13T00:00:00Z",
+        "source":    "volttrade",
+        "setpoints": [
+          { "ts": "2026-08-12T00:00:00Z", "kw": -30 },
+          { "ts": "2026-08-12T11:00:00Z", "kw": 50 },
+          { "ts": "2026-08-12T17:00:00Z", "kw": 0 }
+        ]
+      }' \
+  https://your-host/api/v1/devices/42/ems-plan
+# → 200 { "planId": 7, "status": "active", "superseded": 1 }
+
+curl -H "Authorization: Bearer etk_…" https://your-host/api/v1/devices/42/ems-plan
+# → 200 { "plan": { "id": 7, "meterId": 42, "orgId": 1, "source": "volttrade",
+#                   "validFrom": "…", "validTo": "…", "setpoints": [ … ],
+#                   "status": "active", "createdAt": "…" } }
+```
+
+| Field | Rule |
+|---|---|
+| `validFrom` / `validTo` | ISO8601; `validTo > validFrom`; span ≤ 48 h |
+| `source` | optional string ≤ 64 chars (default `"unknown"`) — attribution tag, echoed in the command audit trail as `plan:<source>` |
+| `setpoints` | 1..192 entries, sorted non-descending by `ts`, every `ts` within `[validFrom, validTo]`, `kw` finite with \|kw\| ≤ 500 |
+
+**Semantics:** upsert — every existing `active` plan of the same device whose
+window overlaps `[validFrom, validTo)` is atomically marked `superseded`
+(response counts them), then the new plan is inserted `active`.
+
+**Execution:** per controller tick the priority is **peak shaving > active
+plan > schedules > idle**. A plan covering now drives the register with the kw
+of the last setpoint with `ts ≤ now` (step function); execution goes through
+the same interlock + audit path as schedules (system command, `userId` null,
+`result` prefixed `plan:<source>`). Plans past `validTo` are lazily marked
+`expired`. `EMS_TICK_S<=0` disables plan execution together with everything
+else. Fail-safe: if the optimizer stops pushing, the device falls back to
+local schedules / idle.
+
+| Status | Condition |
+|---|---|
+| 400 | unparsable/missing `validFrom`/`validTo`, `validTo <= validFrom`, span > 48 h, bad `source`, setpoints not 1..192 / unsorted / `ts` outside the window / non-finite or \|kw\| > 500, non-numeric device id, non-JSON body |
+| 401 | missing/garbage/revoked Bearer key |
+| 404 | device unknown **or not in the key's org** |
 
 ## Responses & errors
 

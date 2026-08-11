@@ -487,6 +487,31 @@ export const emsPeakShaving = mysqlTable(
 export type EmsPeakShaving = typeof emsPeakShaving.$inferSelect;
 export type InsertEmsPeakShaving = typeof emsPeakShaving.$inferInsert;
 
+// ─── v9: externally-pushed EMS plans (Contract A, VoltTrade optimizer) ───────
+// Time-boxed setpoint series pushed via PUT /api/v1/devices/:id/ems-plan.
+// setpoints: [{ ts: ISO string, kw: number }] sorted non-descending;
+// kw > 0 = discharge, kw < 0 = charge, 0 = idle. valid_from/valid_to are UTC
+// naive (project convention — written/read via utcStr raw SQL, never drizzle
+// Date serialization). status: active → superseded (a newer overlapping plan
+// won) | expired (lazy sweep once valid_to passed).
+export const emsPlans = mysqlTable(
+  "ems_plans",
+  {
+    id: serial("id").primaryKey(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    source: varchar("source", { length: 64 }).notNull().default("unknown"),
+    validFrom: timestamp("valid_from").notNull(),
+    validTo: timestamp("valid_to").notNull(),
+    setpoints: json("setpoints").notNull(), // [{ ts: string, kw: number }]
+    status: varchar("status", { length: 16 }).notNull().default("active"), // active|superseded|expired
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("ems_plans_meter_idx").on(t.meterId, t.status, t.validFrom), index("ems_plans_org_idx").on(t.orgId)],
+);
+export type EmsPlan = typeof emsPlans.$inferSelect;
+export type InsertEmsPlan = typeof emsPlans.$inferInsert;
+
 // ─── v8/D3: scheduled reports ────────────────────────────────────────────────
 // A scheduler loop (api/reports/scheduler.ts) generates the energy report for
 // the previous completed period (daily/weekly/monthly, in the site's timezone)

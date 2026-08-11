@@ -1,0 +1,23 @@
+{
+  "run": "v9-final-regression",
+  "ts": "2026-08-11T10:12:00Z",
+  "result": "PASS",
+  "summary": "v9 финална регресиска батерија — сите v9 + v8 spot probes зелени; rest-energy самооздравен по rollup на 09:00 часот како што беше предвидено",
+  "battery": {
+    "probe-v9-ems-plan.ts": "12/12 — PUT/GET ems-plan валидации, upsert-supersede, controller execution, peak>plan приоритет, stale lazy-expire, RBAC/401",
+    "probe-v9-e2e-integration.ts": "13/13 — INT.1: optimizePortfolio→pushEmsPlan→Enertrek PUT/GET→live execution 3→1→0 kW→Modbus read-back 30/10/0→lazy expire",
+    "volttrade v9-selfcheck.ts": "40/40 — known-optimum синтетици a–d, pure-TS модули (Deno-free), независен re-run exit 0",
+    "probe-v8-reports.ts": "6/6",
+    "probe-v8-ota.ts": "6/6 (по race fix: liveness flush 5s poll)",
+    "probe-v8-erp-sim.py": "18/18",
+    "probe-v8-ems.ts": "9/9",
+    "probe-v8-ha.ts": "5/5",
+    "probe-v8-rest-energy.ts": "10/10 (self-heal ~10:05 UTC: hour 09:00 ролиран како estimated → прозорец [06:00,10:00) има 3 часови)",
+    "probe-v8-multitenancy.ts": "9/9 (вгнездени: v7-auth 12/12, v7-control 9/9, rest-energy 10/10)"
+  },
+  "environmentNotes": [
+    "rest-energy (a)/(b2) FAILs по reboot беа environmental (telemetry feed паднат при reboot → прозорец без доволно rolled history) — самооздравени, НЕ од v9 diff (additive-only)",
+    "ESMU sim duplicate instance убиен (port 5022 držење: еден процес); sim-log symlinks кон logs/"
+  ],
+  "verdict": "PASS — v9 целосно верифициран end-to-end, v8 функционалности недопрени"
+}

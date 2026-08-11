@@ -4,12 +4,14 @@
 //   GET /api/v1/devices              meters + gateway/site context
 //   GET /api/v1/devices/:id/latest   latest telemetry row for one device
 //   GET /api/v1/devices/:id/energy   v8/D2: settlement energy intervals
+//   PUT /api/v1/devices/:id/ems-plan v9 Contract A: push an EMS plan (upsert)
+//   GET /api/v1/devices/:id/ems-plan v9 Contract A: active/next EMS plan
 //   GET /api/v1/alarms[?status=]     alarms (default: active)
 //
 // Auth: `Authorization: Bearer etk_...` with a non-revoked key. Keys are
 // managed via the tRPC apiKeys router (admin) — see docs/api-v1.md.
 import { Hono } from "hono";
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
@@ -130,6 +132,142 @@ restV1.get("/devices/:id/energy", async (c) => {
     bucketMin,
     buckets,
   });
+});
+
+// ─── v9 Contract A: EMS plans (VoltTrade optimizer → Enertrek execution) ────
+// A plan is a time-boxed step-function setpoint series for one BESS meter.
+// Sign convention: kw > 0 = discharge, kw < 0 = charge, 0 = idle (matches the
+// control-register semantics "+ = discharge"). validFrom/validTo are ISO8601;
+// they are stored UTC-naive (project convention — always via utcStr, never
+// through driver Date serialization which follows the host timezone).
+const PLAN_MAX_SPAN_MS = 48 * 3_600_000;
+const PLAN_MAX_SETPOINTS = 192;
+const PLAN_MAX_ABS_KW = 500;
+
+const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+
+interface PlanSetpoint {
+  ts: string;
+  kw: number;
+}
+
+interface PlanRow {
+  id: number;
+  meterId: number;
+  orgId: number;
+  source: string;
+  validFrom: string;
+  validTo: string;
+  setpoints: PlanSetpoint[] | string;
+  status: string;
+  createdAt: string;
+}
+
+const PLAN_COLS = sql`id, meter_id as meterId, org_id as orgId, source,
+  date_format(valid_from, '%Y-%m-%dT%H:%i:%sZ') as validFrom,
+  date_format(valid_to, '%Y-%m-%dT%H:%i:%sZ') as validTo,
+  setpoints, status,
+  date_format(created_at, '%Y-%m-%dT%H:%i:%sZ') as createdAt`;
+
+function normalizePlan(row: PlanRow) {
+  return {
+    ...row,
+    setpoints: typeof row.setpoints === "string" ? JSON.parse(row.setpoints) : row.setpoints,
+  };
+}
+
+restV1.put("/devices/:id/ems-plan", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid device id" }, 400);
+  const org = c.get("apiKey").orgId ?? -1;
+  const db = getDb();
+  const dev = await db
+    .select({ id: meters.id })
+    .from(meters)
+    .where(and(eq(meters.id, id), eq(meters.orgId, org)))
+    .limit(1);
+  if (dev.length === 0) return c.json({ error: "device not found" }, 404);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "a JSON body is required" }, 400);
+  }
+  const b = body as { validFrom?: unknown; validTo?: unknown; source?: unknown; setpoints?: unknown };
+  const fromMs = typeof b.validFrom === "string" ? Date.parse(b.validFrom) : NaN;
+  const toMs = typeof b.validTo === "string" ? Date.parse(b.validTo) : NaN;
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return c.json({ error: "validFrom and validTo (ISO8601) are required" }, 400);
+  }
+  if (toMs <= fromMs) return c.json({ error: "validTo must be after validFrom" }, 400);
+  if (toMs - fromMs > PLAN_MAX_SPAN_MS) return c.json({ error: "plan span must not exceed 48h" }, 400);
+  let source = "unknown";
+  if (b.source !== undefined) {
+    if (typeof b.source !== "string" || b.source.length === 0 || b.source.length > 64) {
+      return c.json({ error: "source must be a string of at most 64 characters" }, 400);
+    }
+    source = b.source;
+  }
+  if (!Array.isArray(b.setpoints) || b.setpoints.length < 1 || b.setpoints.length > PLAN_MAX_SETPOINTS) {
+    return c.json({ error: `setpoints must be an array of 1..${PLAN_MAX_SETPOINTS} entries` }, 400);
+  }
+  const setpoints: PlanSetpoint[] = [];
+  let prevMs = -Infinity;
+  for (const raw of b.setpoints as Array<{ ts?: unknown; kw?: unknown }>) {
+    const tsMs = raw && typeof raw.ts === "string" ? Date.parse(raw.ts) : NaN;
+    const kw = raw && typeof raw.kw === "number" ? raw.kw : NaN;
+    if (!Number.isFinite(tsMs)) return c.json({ error: "every setpoint needs an ISO8601 ts" }, 400);
+    if (!Number.isFinite(kw) || Math.abs(kw) > PLAN_MAX_ABS_KW) {
+      return c.json({ error: `every setpoint kw must be finite with |kw| <= ${PLAN_MAX_ABS_KW}` }, 400);
+    }
+    if (tsMs < prevMs) return c.json({ error: "setpoints must be sorted non-descending by ts" }, 400);
+    if (tsMs < fromMs || tsMs > toMs) return c.json({ error: "every setpoint ts must lie within [validFrom, validTo]" }, 400);
+    prevMs = tsMs;
+    setpoints.push({ ts: new Date(tsMs).toISOString(), kw });
+  }
+
+  // Upsert/supersede semantics: any active plan of this meter overlapping
+  // [validFrom, validTo) is superseded, then the new plan is inserted active.
+  const vf = utcStr(new Date(fromMs));
+  const vt = utcStr(new Date(toMs));
+  const sup = await db.execute(
+    sql`update ems_plans set status = 'superseded' where meter_id = ${id} and status = 'active' and valid_from < ${vt} and valid_to > ${vf}`,
+  );
+  const superseded = Number((sup[0] as { affectedRows?: number }).affectedRows ?? 0);
+  const ins = await db.execute(
+    sql`insert into ems_plans (meter_id, org_id, source, valid_from, valid_to, setpoints, status) values (${id}, ${org}, ${source}, ${vf}, ${vt}, ${JSON.stringify(setpoints)}, 'active')`,
+  );
+  const planId = Number((ins[0] as { insertId?: number }).insertId ?? 0);
+  return c.json({ planId, status: "active" as const, superseded }, 200);
+});
+
+restV1.get("/devices/:id/ems-plan", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid device id" }, 400);
+  const org = c.get("apiKey").orgId ?? -1;
+  const db = getDb();
+  const dev = await db
+    .select({ id: meters.id })
+    .from(meters)
+    .where(and(eq(meters.id, id), eq(meters.orgId, org)))
+    .limit(1);
+  if (dev.length === 0) return c.json({ error: "device not found" }, 404);
+
+  const now = utcStr(new Date());
+  // Active plan covering now (latest created_at wins — overlap is already
+  // prevented by the supersede semantics), else the next upcoming active plan.
+  const cur = await db.execute(
+    sql`select ${PLAN_COLS} from ems_plans where meter_id = ${id} and status = 'active' and valid_from <= ${now} and valid_to >= ${now} order by created_at desc, id desc limit 1`,
+  );
+  let plan = (cur[0] as unknown as PlanRow[])[0] ?? null;
+  if (!plan) {
+    const next = await db.execute(
+      sql`select ${PLAN_COLS} from ems_plans where meter_id = ${id} and status = 'active' and valid_from > ${now} order by valid_from asc, id asc limit 1`,
+    );
+    plan = (next[0] as unknown as PlanRow[])[0] ?? null;
+  }
+  return c.json({ plan: plan ? normalizePlan(plan) : null });
 });
 
 restV1.get("/alarms", async (c) => {

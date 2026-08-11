@@ -1,0 +1,15 @@
+{
+  "run": "v9-phase1-tou-demo",
+  "ts": "2026-08-11T09:45:00Z",
+  "result": "PASS",
+  "summary": "Phase 1 (0€) TOU demo распореди на ESMU sim батерија (meter 1588032) преку ems.schedules.create — живи, enabled",
+  "schedules": [
+    { "id": 30003, "name": "TOU демо: ноќно полнење 00:00–06:00 (евтина тарифа)", "mode": "charge", "targetKw": 3, "targetSoc": 90, "window": "00:00-06:00", "dayOfWeekMask": 127 },
+    { "id": 30004, "name": "TOU демо: вечерно празнење 17:00–21:00 (скапа тарифа)", "mode": "discharge", "targetKw": 3, "targetSoc": 25, "window": "17:00-21:00", "dayOfWeekMask": 127 }
+  ],
+  "notes": [
+    "Контролерот евалуира во meterTimezone (localClock) — прозорците се локално време на сајтот",
+    "Приоритет: peak-shaving > ems_plan > schedules — v9 планови ги overrides-ираат овие распореди кога се активни",
+    "SOC граници: полнење стопира на 90%, празнење на 25%"
+  ]
+}

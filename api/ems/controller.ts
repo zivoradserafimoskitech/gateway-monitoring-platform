@@ -30,11 +30,27 @@
 //  - While active the setpoint is only re-sent when it moved by
 //    ≥ max(1 kW, 10 % of maxDischargeKw) — telemetry wiggle must not spam the bus.
 //
+// EMS plans (v9 Contract A — externally pushed, e.g. by the VoltTrade
+// optimizer): priority per meter per tick is peak-shaving > plan > schedules:
+//  - Peak shaving evaluates first; a BESS with a firing/active peak config
+//    this tick skips plan and schedule evaluation entirely.
+//  - Else the meter's active plan (valid_from ≤ now ≤ valid_to, latest
+//    created_at wins) drives the setpoint as a step function: kw of the last
+//    setpoint with ts ≤ now. kw > 0 = discharge, kw < 0 = charge (negative
+//    only when the register's range allows), 0 = idle. Executed through the
+//    same executeAndLog path (userId null) as schedules; the command's result
+//    string is prefixed `plan:<source>` for audit attribution. Plans carry no
+//    targetSoc, so the schedule SOC guard (only active when targetSoc is set)
+//    is vacuous for them — the C12 interlock/range checks apply identically.
+//  - A meter that executed a plan setpoint skips schedule evaluation.
+//  - Plans fully past valid_to are lazily marked expired by one bounded sweep
+//    per tick (LIMIT 500) — never a per-meter scan.
+//
 // Robustness: the tick and every single evaluation are wrapped in try/catch —
 // the loop never throws. Idempotency: identical (meter, key, value) commands
 // are suppressed for IDEMPOTENCY_MS (5 min) so steady-state schedules don't
 // rewrite the same register every tick.
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { emsPeakShaving, emsSchedules, gateways, meters, sites } from "@db/schema";
 import type { EmsPeakShaving, EmsSchedule, Meter } from "@db/schema";
@@ -92,19 +108,31 @@ export function setpointValue(mode: "charge" | "discharge" | "idle", def: Contro
 const lastCmd = new Map<string, { value: number; at: number }>(); // "<meterId>:<key>" → last sent
 const peakState = new Map<number, { active: boolean; lastSent: number | null }>(); // config id → state
 
-async function send(meter: Meter, key: string, value: number, why: string): Promise<void> {
+async function send(meter: Meter, key: string, value: number, why: string, resultPrefix?: string): Promise<void> {
   const dedupKey = `${meter.id}:${key}`;
   const last = lastCmd.get(dedupKey);
   if (last && last.value === value && Date.now() - last.at < EMS_IDEMPOTENCY_MS) return;
   try {
     const res = await executeAndLog(meter, key, value, null); // system command
     lastCmd.set(dedupKey, { value, at: Date.now() });
+    if (resultPrefix) await tagLastCommand(meter, key, resultPrefix);
     console.log(`[ems] ${why}: ${meter.name} ${key}=${value} → ${res.status} (${res.detail})`);
   } catch (err) {
     // ControlError rows are already logged as rejected commands by executeAndLog;
     // remember the attempt so a permanently-rejected setpoint isn't retried every tick.
     if (err instanceof ControlError) lastCmd.set(dedupKey, { value, at: Date.now() });
     console.error(`[ems] ${why}: ${meter.name} ${key}=${value} failed:`, err instanceof Error ? err.message : err);
+  }
+}
+
+/** Prefix the result of the just-logged command (v9: `plan:<source>` audit attribution). */
+async function tagLastCommand(meter: Meter, key: string, prefix: string): Promise<void> {
+  try {
+    await getDb().execute(
+      sql`update commands set result = concat(${prefix}, ' ', result) where id = (select max(id) from (select id from commands where meter_id = ${meter.id} and control_key = ${key} and user_id is null) t)`,
+    );
+  } catch (err) {
+    console.error(`[ems] result tagging failed for ${meter.name} ${key}:`, err instanceof Error ? err.message : err);
   }
 }
 
@@ -143,7 +171,7 @@ export function scheduleDue(s: EmsSchedule, dow: number, min: number): boolean {
   return min >= s.startMin || min < s.endMin; // wraps midnight
 }
 
-async function evalSchedules(now: Date): Promise<void> {
+async function evalSchedules(now: Date, skip: Set<number> = new Set()): Promise<void> {
   const db = getDb();
   const schedules = await db.select().from(emsSchedules).where(eq(emsSchedules.enabled, true)).orderBy(asc(emsSchedules.id));
   if (schedules.length === 0) return;
@@ -154,6 +182,12 @@ async function evalSchedules(now: Date): Promise<void> {
 
   for (const s of schedules) {
     if (fired.has(s.meterId)) continue; // lowest id already won this tick
+    if (skip.has(s.meterId)) {
+      // v9: a higher-priority strategy (peak shaving / active plan) already
+      // drove this meter this tick — schedules stand down.
+      fired.add(s.meterId);
+      continue;
+    }
     try {
       const meter = meterMap.get(s.meterId);
       if (!meter) continue;
@@ -193,10 +227,12 @@ async function evalSchedules(now: Date): Promise<void> {
   }
 }
 
-async function evalPeakShaving(): Promise<void> {
+/** Returns the BESS meter ids peak shaving drove this tick (v9 priority gate). */
+async function evalPeakShaving(): Promise<Set<number>> {
+  const drove = new Set<number>();
   const db = getDb();
   const configs = await db.select().from(emsPeakShaving).where(eq(emsPeakShaving.enabled, true));
-  if (configs.length === 0) return;
+  if (configs.length === 0) return drove;
   const meterMap = await loadMeters(configs.flatMap((c) => [c.sourceMeterId, c.bessMeterId]));
   const wlCache = new Map<string, ControllableMap>();
   const store = getTelemetryStore();
@@ -234,6 +270,7 @@ async function evalPeakShaving(): Promise<void> {
         await send(bess, sel.key, power, `peak-shaving #${c.id} (import ${importKw.toFixed(2)} kW > ${c.thresholdKw} kW)`);
         st = { active: true, lastSent: power };
         peakState.set(c.id, st);
+        drove.add(c.bessMeterId);
         continue;
       }
 
@@ -247,6 +284,7 @@ async function evalPeakShaving(): Promise<void> {
         const sel = pickSetpointKey(wl, "discharge");
         if (sel) await send(bess, sel.key, 0, `peak-shaving #${c.id} stop (import ${importKw.toFixed(2)} kW)`);
         peakState.set(c.id, { active: false, lastSent: null });
+        drove.add(c.bessMeterId); // the stop command owns this tick
         continue;
       }
       // Still above threshold: re-trim only on a meaningful change.
@@ -264,18 +302,94 @@ async function evalPeakShaving(): Promise<void> {
         st.lastSent = power;
         peakState.set(c.id, st);
       }
+      drove.add(c.bessMeterId); // still riding a peak event — hold plan/schedules
     } catch (err) {
       console.error(`[ems] peak-shaving ${c.id} evaluation failed:`, err instanceof Error ? err.message : err);
     }
   }
+  return drove;
+}
+
+// ─── EMS plans (v9 Contract A) ───────────────────────────────────────────────
+const PLAN_EXPIRE_SWEEP_LIMIT = 500; // bounded lazy sweep per tick
+const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+
+interface PlanTickRow {
+  id: number;
+  meterId: number;
+  source: string;
+  setpoints: Array<{ ts: string; kw: number }> | string;
+}
+
+/**
+ * Execute due plan setpoints for meters not already driven by peak shaving.
+ * Returns the meter ids a plan drove this tick (schedules stand down for them).
+ */
+async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
+  const fired = new Set<number>();
+  const db = getDb();
+  const nowStr = utcStr(now);
+  // Lazy expiry: one bounded sweep per tick — plans fully past valid_to.
+  await db.execute(sql`update ems_plans set status = 'expired' where status = 'active' and valid_to < ${nowStr} limit ${PLAN_EXPIRE_SWEEP_LIMIT}`);
+  // Active plans covering now; latest created_at per meter wins (overlap is
+  // already prevented by the PUT supersede semantics, this is belt & braces).
+  const res = await db.execute(
+    sql`select id, meter_id as meterId, source, setpoints from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} order by meter_id, created_at desc, id desc`,
+  );
+  const plans = res[0] as unknown as PlanTickRow[];
+  if (plans.length === 0) return fired;
+  const byMeter = new Map<number, PlanTickRow>();
+  for (const p of plans) {
+    if (!byMeter.has(p.meterId)) byMeter.set(p.meterId, p);
+  }
+  const meterMap = await loadMeters([...byMeter.keys()]);
+  const wlCache = new Map<string, ControllableMap>();
+
+  for (const [meterId, plan] of byMeter) {
+    if (skip.has(meterId)) continue;
+    try {
+      const meter = meterMap.get(meterId);
+      if (!meter) continue;
+      const sps = (typeof plan.setpoints === "string" ? JSON.parse(plan.setpoints) : plan.setpoints) as Array<{ ts: string; kw: number }>;
+      // Step function: kw of the last setpoint with ts ≤ now.
+      let kw: number | null = null;
+      for (const sp of sps) {
+        if (Date.parse(sp.ts) <= now.getTime()) kw = sp.kw;
+        else break;
+      }
+      if (kw == null) continue; // no setpoint due yet — leave the register alone
+      const mode = kw > 0 ? ("discharge" as const) : kw < 0 ? ("charge" as const) : ("idle" as const);
+      let wl = wlCache.get(meter.model);
+      if (!wl) {
+        wl = await controllableForModel(meter.model);
+        wlCache.set(meter.model, wl);
+      }
+      const sel = pickSetpointKey(wl, mode);
+      if (!sel) {
+        console.warn(`[ems] plan ${plan.id}: model ${meter.model} has no controllable registers — skipped`);
+        fired.add(meterId);
+        continue;
+      }
+      // No targetSoc on plans: the schedule SOC guard (active only when
+      // targetSoc is set) does not apply; C12 interlock/range checks do.
+      const value = setpointValue(mode, sel.def, Math.abs(kw));
+      await send(meter, sel.key, value, `plan #${plan.id} (${plan.source}, ${kw} kW)`, `plan:${plan.source}`);
+      fired.add(meterId);
+    } catch (err) {
+      console.error(`[ems] plan ${plan.id} evaluation failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return fired;
 }
 
 /** One controller iteration — exported for tests. Never throws. */
 export async function emsTick(): Promise<void> {
   try {
     const now = new Date();
-    await evalSchedules(now);
-    await evalPeakShaving();
+    // v9 priority: peak shaving > active plan > schedules.
+    const peakDrove = await evalPeakShaving();
+    const planDrove = await evalPlans(now, peakDrove);
+    await evalSchedules(now, new Set([...peakDrove, ...planDrove]));
   } catch (err) {
     console.error("[ems] tick error:", err instanceof Error ? err.message : err);
   }

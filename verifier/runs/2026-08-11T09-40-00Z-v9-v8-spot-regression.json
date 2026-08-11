@@ -1,0 +1,20 @@
+{
+  "run": "v9-v8-spot-regression",
+  "ts": "2026-08-11T09:40:00Z",
+  "result": "PASS",
+  "summary": "v8 spot-регресија по v9 измени (миграција 0013 + ems-plan endpoint + контролерски приоритет): 5/5 probe-а зелени",
+  "probes": {
+    "probe-v8-reports.ts": "ALL PASS (6/6) — xlsx/pdf runNow, mailer log transport, RBAC",
+    "probe-v8-ota.ts": "ALL PASS (6/6) — config+firmware ack, diagnostics, TCP-gateway refusal, RBAC",
+    "probe-v8-erp-sim.py": "18/18 — REST energy buckets, counter-reset safety, quality flags, 404/400/401",
+    "probe-v8-ems.ts": "9/9 — schedules CRUD+execution, autoCommands feed, peak-shaving bounded discharge, RBAC",
+    "probe-v8-ha.ts": "5/5 — healthz/readyz, втор инстанец :3100 со external broker :1884, ingest, :3000 незасегнат"
+  },
+  "probeHardening": [
+    "probe-v8-ota (diagnostics): race — брз OTA ack (<5s) vs batched liveness flush (5s, api/mqtt/liveness.ts). Diagnostics read сега poll-ира до ~15s за lastSeenAt. Продукт кодот беше точен (markSeen пред /ota branch, flush работи — gw 2 се обновува).",
+    "/tmp/sim-mqtt.log symlink репоентиран кон logs/sim.log (активен simulator процес пишува таму по рестарт)"
+  ],
+  "pending": [
+    "probe-v8-rest-energy (a)+(b2): чека self-heal на telemetry прозорец по reboot (~10:45 UTC / ~11:05 UTC) — па probe-v8-multitenancy што го гнезди"
+  ]
+}

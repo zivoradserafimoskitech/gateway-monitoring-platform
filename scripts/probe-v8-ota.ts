@@ -99,7 +99,14 @@ async function main() {
     );
 
     // ── 3. diagnostics ─────────────────────────────────────────────────────
-    const diagTemp = (await trpc("gateways.diagnostics", { id: tempGwId }, "admin", "GET")) as { lastSeenAt: string | null; msgPerMin: number; activeOtaJobs: number };
+    // Liveness flush е batch на 5 s (api/mqtt/liveness.ts) — ack-от го маркира
+    // gateway-ot веднаш, но DB редот се пишува на следниот flush циклус. Poll
+    // до 15 s наместо еден ран read (race: брз ack < flush интервал).
+    let diagTemp = (await trpc("gateways.diagnostics", { id: tempGwId }, "admin", "GET")) as { lastSeenAt: string | null; msgPerMin: number; activeOtaJobs: number };
+    for (let i = 0; i < 7 && !diagTemp.lastSeenAt; i++) {
+      await new Promise((r) => setTimeout(r, 2200));
+      diagTemp = (await trpc("gateways.diagnostics", { id: tempGwId }, "admin", "GET")) as { lastSeenAt: string | null; msgPerMin: number; activeOtaJobs: number };
+    }
     const diagLive = (await trpc("gateways.diagnostics", { id: 1 }, "admin", "GET")) as { lastSeenAt: string | null; msgPerMin: number; samples5min: number };
     const diagTcp = (await trpc("gateways.diagnostics", { id: 30001 }, "admin", "GET")) as { poller: Array<{ id: number; polls: number }> | null };
     probe(
