@@ -1,0 +1,149 @@
+# D7.1 — CI/CD quality gates.
+#
+# Gates (quality job, runs on every push/PR to main):
+#   1. npm ci
+#   2. typecheck (tsc -b — the root tsconfig is a solution file with project
+#      references, so plain `tsc --noEmit` would no-op; `npm run check` = tsc -b)
+#   3. vitest with v8 coverage thresholds (enforced in vitest.config.ts)
+#   4. production build (vite build + esbuild api bundle)
+#   5. npm audit gate at --audit-level=high (hard fail on any NEW high/critical;
+#      the only known high is xlsx — see the audit step comment)
+#
+# E2E (Playwright) job: manual (workflow_dispatch) only — see the e2e job
+# comment and docs/ci.md for why it cannot run on GitHub-hosted runners.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates (tsc, vitest+coverage, build, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Unit tests with coverage thresholds
+        run: npm run test:coverage
+        # vitest.config.ts enforces: lines 21 / statements 19 / branches 11 /
+        # functions 5 (v8 provider). Baseline at introduction: 26.2 / 24.4 /
+        # 16.8 / 10.5 — raise thresholds as coverage improves.
+
+      - name: Build
+        run: npm run build
+
+      - name: npm audit gate (high+)
+        # `npm audit --audit-level=high` currently reports exactly one high:
+        # xlsx (GHSA-4r6h-8v6p-xvw6 prototype pollution, GHSA-5pgg-2g8v-p4x9
+        # ReDoS) — a direct production dependency with NO fix published by
+        # upstream (SheetJS CVEs are only fixed in their paid CDN builds).
+        # The 6 remaining moderates are dev-only (esbuild <0.25 via
+        # drizzle-kit/@esbuild-kit, vite dev chain) and never ship to the
+        # runtime image. Gate = hard-fail on any high/critical advisory that
+        # is NOT this documented xlsx pair; revisit when a fix lands.
+        env:
+          AUDIT_ALLOW: "GHSA-4r6h-8v6p-xvw6,GHSA-5pgg-2g8v-p4x9"
+        run: |
+          npm audit --audit-level=high --json > audit.json || true
+          node -e '
+            const fs = require("fs");
+            const allow = new Set(process.env.AUDIT_ALLOW.split(","));
+            const audit = JSON.parse(fs.readFileSync("audit.json", "utf8"));
+            const bad = [];
+            for (const [pkg, v] of Object.entries(audit.vulnerabilities ?? {})) {
+              if (v.severity !== "high" && v.severity !== "critical") continue;
+              for (const via of v.via) {
+                if (typeof via !== "object") continue;
+                const id = (via.url ?? "").split("/").pop();
+                if (!allow.has(id)) bad.push(`${v.severity}: ${pkg} — ${via.title} (${via.url})`);
+              }
+            }
+            if (bad.length) {
+              console.error("New high/critical vulnerabilities found:\n" + bad.join("\n"));
+              process.exit(1);
+            }
+            console.log("audit gate OK — only known-allowlisted advisories present");
+          '
+
+      # ---------------------------------------------------------------------
+      # Scale smoke (PLACEHOLDER — not a PR gate).
+      # The v2 scale-test procedure (verifier/README.md, "v2 — scale test:
+      # 500 gateways + 30 PV plants + 20 BESS") needs a long-running fleet
+      # (MQTT simulator at ~507 samples/s, Modbus TCP sim on ports 5101-5130,
+      # ~10 min soak) plus a reachable TiDB — far beyond PR CI. Run it as a
+      # scheduled/nightly job against a staging environment instead:
+      #
+      # - name: Scale smoke (nightly only)
+      #   if: github.event_name == 'schedule'
+      #   run: |
+      #     npx tsx scripts/provision-fleet.ts   # pre-register meters FIRST
+      #     npx tsx scripts/simulator.ts &       # 500-gw MQTT load
+      #     npx tsx scripts/verify-scale.ts      # S1-S7 checks, see verifier/v2
+      #     npx tsx scripts/cleanup-scale.ts     # always clean up afterwards
+      # ---------------------------------------------------------------------
+
+  e2e:
+    name: Playwright E2E (login, RBAC)
+    # MANUAL ONLY (workflow_dispatch): the E2E suite needs a running app whose
+    # DATABASE_URL points at TiDB — and the demo TiDB is reachable only over
+    # Aliyun PrivateLink, which GitHub-hosted runners cannot route to. To use
+    # this job: run it on a self-hosted runner inside the VPC (or point
+    # DATABASE_URL at a staging DB seeded via scripts/seed-admin.ts + a viewer
+    # user). See docs/ci.md.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      # Required GitHub secret: DATABASE_URL (TiDB DSN reachable from the
+      # runner; the DB must already contain admin@enertrek.local/admin1234 and
+      # viewer@enertrek.local/viewer123).
+      - name: Start app (dev server)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          npm run dev &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/ > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:3000/ > /dev/null
+
+      - name: Run Playwright specs
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: test-results/
+          retention-days: 7
