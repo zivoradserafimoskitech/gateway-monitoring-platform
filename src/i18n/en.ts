@@ -1,5 +1,5 @@
 export const en = {
-  appName: "Enertrek Cloud",
+  appName: "VoltTrade Cloud",
   nav: {
     dashboard: "Dashboard",
     gateways: "Gateways",
@@ -67,7 +67,7 @@ export const en = {
   },
   gateways: {
     title: "Gateways",
-    subtitle: "Enertrek G30 and C30 gateways connected over MQTT",
+    subtitle: "VoltTrade G30 and C30 gateways connected over MQTT",
     addGateway: "Add gateway",
     uid: "UID / IMEI",
     topicPrefix: "Topic prefix",

@@ -1,6 +1,6 @@
 # React + TypeScript + Vite
 
-## Enertrek Cloud — ops notes
+## VoltTrade Cloud — ops notes
 
 - **Schema changes (v5 #24):** never hand-apply SQL. Edit `db/schema.ts`, then
   `npm run db:generate` (writes `db/migrations/`) and `npm run db:migrate`

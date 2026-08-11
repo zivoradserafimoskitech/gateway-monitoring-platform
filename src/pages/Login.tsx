@@ -27,7 +27,7 @@ export default function Login() {
       <div className="w-full max-w-sm space-y-6 rounded-xl border bg-white p-8 shadow-sm">
         <div className="flex items-center gap-2">
           <Zap className="h-6 w-6 text-amber-500" />
-          <h1 className="text-xl font-semibold">Enertrek Cloud</h1>
+          <h1 className="text-xl font-semibold">VoltTrade Cloud</h1>
         </div>
         <div className="space-y-1.5">
           <Label>{t.auth.email}</Label>

@@ -151,7 +151,7 @@ export async function runSchedule(s: ReportSchedule, opts: { current: boolean })
   const report = await queryEnergyReport({ scope: "site", siteId: s.siteId ?? undefined, from: period.from, to: period.to });
   const safeName = s.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "report";
   const file = await generateReportFile(report, {
-    title: `Enertrek energy report — ${s.name}`,
+    title: `VoltTrade energy report — ${s.name}`,
     periodLabel: period.label,
     format: s.format,
     fileBase: `${safeName}-${s.id}-${period.key}${opts.current ? "-adhoc" : ""}`,
@@ -161,7 +161,7 @@ export async function runSchedule(s: ReportSchedule, opts: { current: boolean })
   if (recipients.length > 0) {
     const res = await sendMail({
       to: recipients,
-      subject: `[Enertrek] ${s.name} — energy report ${period.label}`,
+      subject: `[VoltTrade] ${s.name} — energy report ${period.label}`,
       text:
         `Scheduled report "${s.name}" (${s.frequency}, site: ${report.scopeLabel})\n` +
         `Period: ${period.label}\n` +

@@ -1,6 +1,6 @@
 # Operator incident runbooks (D9)
 
-First-response procedures for the Enertrek Cloud platform. Backup/restore
+First-response procedures for the VoltTrade Cloud platform. Backup/restore
 detail lives in `docs/runbook-backup-dr.md`; TLS in `docs/tls.md`.
 
 General triage order: **Alarms page** (platform watchdog alarms are

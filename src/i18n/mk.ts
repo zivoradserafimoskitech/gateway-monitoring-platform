@@ -1,7 +1,7 @@
 import type { Dictionary } from "./en";
 
 export const mk: Dictionary = {
-  appName: "Enertrek Cloud",
+  appName: "VoltTrade Cloud",
   nav: {
     dashboard: "Контролна табла",
     gateways: "Гејтвеји",
@@ -69,7 +69,7 @@ export const mk: Dictionary = {
   },
   gateways: {
     title: "Гејтвеји",
-    subtitle: "Enertrek G30 и C30 гејтвеји поврзани преку MQTT",
+    subtitle: "VoltTrade G30 и C30 гејтвеји поврзани преку MQTT",
     addGateway: "Додади гејтвеј",
     uid: "UID / IMEI",
     topicPrefix: "Префикс на топик",

@@ -1,6 +1,6 @@
 # Service Level Agreement — template (D9)
 
-Template for an Enertrek Cloud managed-monitoring offering. Bracketed
+Template for an VoltTrade Cloud managed-monitoring offering. Bracketed
 values are defaults to negotiate per contract. This document describes
 service levels for the **platform**; field-device and last-mile network
 availability are excluded (see §7).

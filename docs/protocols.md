@@ -1,6 +1,6 @@
 # Protocol integration guide (D8)
 
-How new device protocols plug into Enertrek Cloud. The extension point is
+How new device protocols plug into VoltTrade Cloud. The extension point is
 `api/protocols/adapter.ts` (`ProtocolAdapter` interface + registry); the two
 existing Modbus paths predate it and are **not** refactored — the registered
 `modbus` adapter simply delegates to them.

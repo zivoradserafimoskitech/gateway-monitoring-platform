@@ -1,0 +1,24 @@
+{
+  "run": "v9-github-push",
+  "ts": "2026-08-11T10:45:00Z",
+  "result": "PASS",
+  "summary": "v9 push-нат на GitHub (main + tag v9.0.0 + CI workflow) — СИТЕ фајлови, вклучувајќи .github/workflows/ci.yml",
+  "remote": "github.com/zivoradserafimoskitech/gateway-monitoring-platform",
+  "pushed": {
+    "main": "ac227eb → 1a5628b → 48a4ef9 (verified via ls-remote)",
+    "tag v9.0.0": "annotated → 48a4ef9 (force-corrected да покажува на финалниот commit со ci.yml)",
+    "tag v8.0.0": "ac227eb — недопрен"
+  },
+  "commits": [
+    "1a5628b v9: AI forecast + portfolio optimizer — ems-plan слој + INT.1 13/13 + регресија PASS + TOU demo (17 фајлови, +3607)",
+    "48a4ef9 CI: GitHub Actions workflow (посебен commit — PAT има Actions write)"
+  ],
+  "security": [
+    ".env НЕ е во push (gitignore + rsync exclude + diff scan чист)",
+    "PAT користен само како env променлива во credential.helper — не е запишан никаде; во излози цензуриран",
+    "deploy/cloud-init.yaml + deploy.sh зачувани (ги немаше во app repo — вратени од gmp-git историја пред sync)",
+    "ЗАБЕЛЕШКА: demo лозинки (admin1234/…) остануваат во probe скрипти на GitHub — познато од v8, смени пред production"
+  ],
+  "network": "2 транзиентни неуспеси (connect timeout + low-speed) — retry loop со HTTP/1.1 + lowSpeed guard помина",
+  "followup": "РЕВОКИРАЈ го PAT-от веднаш (Settings → Developer settings → Fine-grained tokens → Revoke)"
+}

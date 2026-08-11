@@ -44,7 +44,7 @@ export async function sendMail(opts: {
   text: string;
   attachments?: MailAttachment[];
 }): Promise<MailResult> {
-  const from = process.env.SMTP_FROM || "enertrek-cloud@localhost";
+  const from = process.env.SMTP_FROM || "volttrade-cloud@localhost";
   const attachDesc = (opts.attachments ?? []).map((a) => `${a.filename} (${a.content.length} B)`).join(", ") || "none";
   if (process.env.EMAIL_TRANSPORT !== "log") {
     const transport = await nodemailerTransport();

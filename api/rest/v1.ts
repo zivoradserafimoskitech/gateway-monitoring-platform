@@ -134,7 +134,7 @@ restV1.get("/devices/:id/energy", async (c) => {
   });
 });
 
-// ─── v9 Contract A: EMS plans (VoltTrade optimizer → Enertrek execution) ────
+// ─── v9 Contract A: EMS plans (VoltTrade ERP optimizer → VoltTrade Cloud execution) ────
 // A plan is a time-boxed step-function setpoint series for one BESS meter.
 // Sign convention: kw > 0 = discharge, kw < 0 = charge, 0 = idle (matches the
 // control-register semantics "+ = discharge"). validFrom/validTo are ISO8601;

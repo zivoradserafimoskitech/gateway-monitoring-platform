@@ -1,6 +1,6 @@
 # System architecture (D9)
 
-Enertrek Cloud — single-node app (Hono + tRPC on Node, React/Vite UI) with
+VoltTrade Cloud — single-node app (Hono + tRPC on Node, React/Vite UI) with
 an embedded MQTT broker, a Modbus TCP poller, and MySQL/TiDB (or
 TimescaleDB) storage. Everything below names the code that implements it.
 
@@ -14,7 +14,7 @@ flowchart LR
         C30 --- BUS
     end
 
-    subgraph Platform["Enertrek Cloud (single node)"]
+    subgraph Platform["VoltTrade Cloud (single node)"]
         BRK[Embedded MQTT broker<br/>aedes :1883 / mqtts :8883<br/>scripts/broker.ts]
         MQT[MQTT ingest<br/>api/mqtt/* — auto-provision,<br/>G30 JSON + C30 RTU decode]
         POL[Modbus TCP poller<br/>api/poller/* — per-device loop,<br/>read blocks, backoff]

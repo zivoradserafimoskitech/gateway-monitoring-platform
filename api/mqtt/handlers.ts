@@ -97,12 +97,12 @@ export async function ensureMeter(
   // v6/R10: any model that has a device profile is accepted (PV inverters,
   // BESS, weather stations included), with deviceType/brand taken from the
   // profile. Unknown guesses fall back to PEM3000 with a one-time warning —
-  // before, only three Enertrek models were recognized and everything else
+  // before, only three VoltTrade models were recognized and everything else
   // was silently mis-provisioned as a meter.
   const meta = await getProfileMeta();
   let model = "PEM3000";
   let deviceType = "meter";
-  let brand: string | null = "Enertrek";
+  let brand: string | null = "VoltTrade";
   if (modelGuess && meta.has(modelGuess)) {
     model = modelGuess;
     deviceType = meta.get(modelGuess)!.deviceType;

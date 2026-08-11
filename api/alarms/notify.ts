@@ -38,7 +38,7 @@ async function dispatch(
     // target = "<botToken>:<chatId>"
     const [token, chatId] = channel.target.split(":");
     if (!token || !chatId) throw new Error("telegram target must be token:chatId");
-    const text = `[Enertrek] ${payload.kind === "escalation" ? "ESCALATION " : ""}${payload.message}\n` +
+    const text = `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION " : ""}${payload.message}\n` +
       `meter=${payload.meterName ?? payload.meterId} value=${payload.value} threshold=${payload.threshold} severity=${payload.severity}`;
     await postJson(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: chatId,
@@ -55,7 +55,7 @@ async function dispatch(
   const transport = mod.default.createTransport(process.env.SMTP_URL);
   await transport.sendMail({
     to: channel.target,
-    subject: `[Enertrek] Alarm: ${payload.message}`,
+    subject: `[VoltTrade] Alarm: ${payload.message}`,
     text: JSON.stringify(payload, null, 2),
   });
 }

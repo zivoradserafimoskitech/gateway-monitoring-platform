@@ -15,9 +15,9 @@ const db = getDb();
 // Meter profiles (historically seeded lazily by the ingestion path) — seed them
 // here too so brand/deviceType metadata is present from the start.
 const METER_PROFILES = [
-  { model: "SEM2250", label: "SEM2250 single-phase meter (default map)", brand: "Enertrek" },
-  { model: "SEM3250", label: "SEM3250 three-phase meter (default map)", brand: "Enertrek" },
-  { model: "PEM3000", label: "PEM3000 three-phase meter (default map)", brand: "Enertrek" },
+  { model: "SEM2250", label: "SEM2250 single-phase meter (default map)", brand: "VoltTrade" },
+  { model: "SEM3250", label: "SEM3250 three-phase meter (default map)", brand: "VoltTrade" },
+  { model: "PEM3000", label: "PEM3000 three-phase meter (default map)", brand: "VoltTrade" },
 ];
 
 const REFRESH = process.argv.includes("--refresh");

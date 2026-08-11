@@ -1,5 +1,5 @@
 // Modbus TCP poller — for devices reachable directly over Ethernet/WiFi
-// (inverters with LAN dongles, BESS controllers, GX devices, ...), no Enertrek
+// (inverters with LAN dongles, BESS controllers, GX devices, ...), no VoltTrade
 // gateway needed. Devices are regular rows in `meters` with host/port set.
 //
 // Design notes:
