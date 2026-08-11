@@ -275,3 +275,44 @@ SPEC-first). Spec: /mnt/agents/output/SPEC-v9.md — contracts are sacred.
   README index v9, commit 0fde021 (app repo; VT repo не е git — локален
   delivery), version + archive + MK извештај. GitHub push за v9 НЕ е
   pre-authorized — deliver locally, offer.
+
+## v9.1 (2026-08-11) — UI покриеност: 4 невидливи backend фичери
+- Gap analysis: apiKeys / notifications / reports.schedules / ems_plans (v9)
+  имаат комплетен backend, нула UI. Останатото (EMS, control, OTA, orgs,
+  SCADA, alarms, profiles, dashboard) е веќе вмонтирано.
+- B1 backend: ems.plans tRPC (authed, org-scoped read од ems_plans, последни
+  10 по meter).
+- B2 ApiKeysCard (Settings, admin): create (raw key show-once + copy),
+  табела prefix/role/lastUsed, revoke.
+- B3 NotificationChannelsCard (Settings): канали CRUD-lite (create,
+  enable toggle, remove), target truncated (содржи bot tokens).
+- B4 ReportSchedulesCard (Reports): create (site/freq/format/hour/recipients),
+  табела + runNow + remove + enable toggle.
+- B5 EmsPlanCard (MeterDetail): активен v9 план (source, window, setpoints,
+  следни чекори) + историја (superseded/expired).
+- B6 i18n EN+MK за сите; tsc + live verify; commit, push, version, archive.
+
+## v10 (2026-08-11) — Целосен UI edition: UI го фаќа backend-от
+
+Контекст: backend рутерите (ems/ota/apiKeys/orgs/notifications/reports-schedules)
+се готови и тестирани, UI-от нема страници за нив. SPEC-first, Mode A swarm.
+
+- SPEC: SPEC-v10.md (договори за страници, i18n клучеви, nav, рути).
+- Stage 0 (orchestrator): i18n EN/MK клучеви + Layout nav + App routes +
+  placeholder страници, commit — стабилна основа за паралелни агенти.
+- Stage 1 (3 паралелни агенти, worktrees на /mnt/agents/output/app):
+  - A: EMS Control Center (/ems) — tabs: Schedules CRUD, Peak Shaving CRUD,
+    Auto Commands live feed, Optimizer Plans viewer (ems.plans) + broker/plan
+    статус. НАЈГОЛЕМ модул.
+  - B: Operations — /ota (jobs list + create + cancel + gateway diagnostics),
+    /settings проширен: API Keys (create once-show + revoke), Notification
+    channels (email/telegram CRUD + maintenance windows), Orgs (superadmin).
+  - C: /reports — schedules tab (list/create/update/remove/runNow + lastRunAt),
+    SCADA nav видливост (Dashboard картичка/линк), Diagram polish ако треба.
+- Stage 2 (orchestrator): merge, tsc, Playwright quick smoke (login → /ems →
+  /ota → /settings → /reports), ems probe re-run, commit, GitHub push,
+  version, archive, извештај МК.
+- Правила: само постоечки tRPC рутери (НЕМА backend промени освен ако не
+  недостасува list); shadcn/ui + постоечки обрасци (trpc @/providers/trpc,
+  useI18n, fmt); RBAC видливост (operator/admin/superadmin гледи по улога,
+  viewer read-only); сите страници EN+MK.

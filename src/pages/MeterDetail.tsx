@@ -5,6 +5,7 @@ import { useI18n } from "@/i18n";
 import { StatusBadge, DeviceTypeBadge, fmt, fmtTime } from "@/components/shared";
 import { ControlPanel } from "@/components/ControlPanel";
 import { EmsPanel } from "@/components/EmsPanel";
+import { EmsPlanCard } from "@/components/EmsPlanCard";
 import { METRIC_UNITS } from "@contracts/modbus";
 import { EXTENDED_METRIC_UNITS, PRIMARY_POWER_KEY } from "@contracts/devices";
 import type { DeviceType } from "@contracts/devices";
@@ -165,6 +166,9 @@ export default function MeterDetail() {
 
       {/* v8/D1: EMS automation — renders only for BESS-type devices */}
       <EmsPanel meterId={meterId} deviceType={deviceType} />
+
+      {/* v9.1: optimizer-pushed EMS plan (Contract A) — visible for BESS devices */}
+      {deviceType === "bess" && <EmsPlanCard meterId={meterId} />}
 
       {deviceType !== "meter" && allRows.length > 0 && (
         <Card>

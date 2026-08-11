@@ -10,6 +10,8 @@ import MeterDetail from "@/pages/MeterDetail";
 import Alarms from "@/pages/Alarms";
 import Reports from "@/pages/Reports";
 import SiteDiagram from "@/pages/SiteDiagram";
+import Ems from "@/pages/Ems";
+import Ota from "@/pages/Ota";
 import Settings from "@/pages/Settings";
 import Login from "@/pages/Login";
 
@@ -42,6 +44,8 @@ export default function App() {
           <Route path="/meters" element={<Meters />} />
           <Route path="/meters/:id" element={<MeterDetail />} />
           <Route path="/alarms" element={<Alarms />} />
+          <Route path="/ems" element={<Ems />} />
+          <Route path="/ota" element={<Ota />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/sites/:id/diagram" element={<SiteDiagram />} />
           <Route path="/settings" element={<Settings />} />

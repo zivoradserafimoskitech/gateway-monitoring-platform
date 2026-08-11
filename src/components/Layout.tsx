@@ -4,6 +4,8 @@ import {
   Radio,
   Gauge,
   BellRing,
+  BatteryCharging,
+  CloudUpload,
   FileBarChart,
   Settings,
   Zap,
@@ -39,6 +41,8 @@ export function Layout() {
     { to: "/gateways", icon: Radio, label: t.nav.gateways },
     { to: "/meters", icon: Gauge, label: t.nav.meters },
     { to: "/alarms", icon: BellRing, label: t.nav.alarms },
+    { to: "/ems", icon: BatteryCharging, label: t.nav.ems },
+    { to: "/ota", icon: CloudUpload, label: t.nav.ota },
     { to: "/reports", icon: FileBarChart, label: t.nav.reports },
     { to: "/settings", icon: Settings, label: t.nav.settings },
   ];

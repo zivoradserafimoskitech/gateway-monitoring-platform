@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
 import { StatCard, SeverityBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Zap, Radio, Gauge, BellRing, Activity } from "lucide-react";
+import { Zap, Radio, Gauge, BellRing, Activity, Network } from "lucide-react";
 import {
   AreaChart,
   Area,
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const overview = trpc.dashboard.overview.useQuery(undefined, { refetchInterval: 5000 });
   const trend = trpc.dashboard.powerTrend.useQuery({ hours }, { refetchInterval: 15000 });
   const recent = trpc.dashboard.recentAlarms.useQuery(undefined, { refetchInterval: 10000 });
+  const sites = trpc.sites.list.useQuery();
 
   const o = overview.data;
   const rangeButtons: { value: Range; label: string }[] = [
@@ -104,6 +106,28 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {(sites.data ?? []).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t.common.sites}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="divide-y">
+              {(sites.data ?? []).map((s) => (
+                <li key={s.id} className="flex items-center justify-between py-3">
+                  <p className="text-sm font-medium">{s.name}</p>
+                  <Button variant="ghost" size="sm" asChild title={t.dashboardExtra.openDiagramHint}>
+                    <Link to={`/sites/${s.id}/diagram`} className="gap-2">
+                      <Network className="h-4 w-4" /> {t.dashboardExtra.openDiagram}
+                    </Link>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

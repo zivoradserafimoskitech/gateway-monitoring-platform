@@ -23,6 +23,8 @@ import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
+import { ApiKeysCard } from "@/components/ApiKeysCard";
+import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
 import type { RegisterDef } from "@contracts/modbus";
 
 export default function Settings() {
@@ -37,6 +39,9 @@ export default function Settings() {
       </div>
       {/* v8/D2: organizations — superadmin only */}
       <OrganizationsCard />
+      {/* v9.1: API keys (admin only) + notification channels */}
+      <ApiKeysCard />
+      <NotificationChannelsCard />
       {(profiles.data ?? []).map((p) => (
         <ProfileCard
           key={p.id}

@@ -7,7 +7,7 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { commands, emsPeakShaving, emsSchedules, meters } from "@db/schema";
+import { commands, emsPeakShaving, emsPlans, emsSchedules, meters } from "@db/schema";
 import { assertOrgWrite, isSuper, meterOrg, orgWhere, stampOrg } from "../lib/org-scope";
 import type { User } from "@db/schema";
 
@@ -174,4 +174,25 @@ export const emsRouter = createRouter({
         .orderBy(desc(commands.createdAt))
         .limit(input.limit);
     }),
+
+  // v9.1/B1: optimizer-pushed EMS plans (Contract A) — read-only UI access.
+  // Org-scoped via emsPlans.org_id directly (plans carry org since 0013).
+  plans: authed.input(z.object({ meterId: z.number(), limit: z.number().min(1).max(50).default(10) })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    return db
+      .select({
+        id: emsPlans.id,
+        meterId: emsPlans.meterId,
+        source: emsPlans.source,
+        validFrom: emsPlans.validFrom,
+        validTo: emsPlans.validTo,
+        setpoints: emsPlans.setpoints,
+        status: emsPlans.status,
+        createdAt: emsPlans.createdAt,
+      })
+      .from(emsPlans)
+      .where(and(eq(emsPlans.meterId, input.meterId), orgWhere(ctx.user, emsPlans.orgId)))
+      .orderBy(desc(emsPlans.validFrom))
+      .limit(input.limit);
+  }),
 });
