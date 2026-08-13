@@ -17,6 +17,12 @@
   `VITE_API_TOKEN` (frontend — **DEPRECATED**, will be removed in v11; use
   session login instead), `MQTT_USERNAME`/`MQTT_PASSWORD` (broker auth),
   `MQTT_BIND_HOST`, `MQTT_AUTO_PROVISION=0` (disable zero-touch onboarding).
+- **MFA (audit #23):** per-user opt-in TOTP (RFC 6238, otplib) with 8
+  single-use backup codes. TOTP secrets are AES-256-GCM encrypted at rest —
+  set `MFA_ENCRYPTION_KEY` (64 hex chars / 32 bytes, e.g.
+  `openssl rand -hex 32`). Fallback: a key is derived from `SESSION_SECRET`;
+  if neither is set, MFA procedures return "MFA not configured on server" and
+  logins fall back to password-only.
 - **Day/timezone policy (v5 #8):** all server-side "day" bucketing is UTC
   (epoch-based); the browser renders in its local tz. One conversion point.
 

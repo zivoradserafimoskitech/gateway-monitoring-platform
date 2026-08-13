@@ -7,6 +7,7 @@ import {
   timestamp,
   bigint,
   int,
+  tinyint,
   double,
   boolean,
   json,
@@ -314,6 +315,10 @@ export const users = mysqlTable(
     // v8/D2: home org; isSuperadmin sees/manages all orgs.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     isSuperadmin: boolean("is_superadmin").notNull().default(false),
+    // audit #23: opt-in TOTP MFA. Secret is AES-256-GCM encrypted at rest
+    // (api/lib/totp.ts); plaintext never touches the DB.
+    totpSecretEnc: varchar("totp_secret_enc", { length: 255 }),
+    totpEnabled: tinyint("totp_enabled").notNull().default(0), // 0 off, 1 on
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("users_email_unique").on(t.email), index("users_org_idx").on(t.orgId)],
@@ -350,6 +355,25 @@ export const auditLog = mysqlTable(
   (t) => [index("audit_created_idx").on(t.createdAt)],
 );
 export type AuditLogRow = typeof auditLog.$inferSelect;
+
+// ─── MFA backup codes (audit #23) ────────────────────────────────────────────
+// Single-use recovery codes for TOTP login. Only the sha256 hash is stored;
+// the raw codes are shown exactly once at setup/regeneration (same discipline
+// as API keys). usedAt NULL = still redeemable.
+export const mfaBackupCodes = mysqlTable(
+  "mfa_backup_codes",
+  {
+    id: serial("id").primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    // sha256 hex of the normalized code (format xxxx-xxxx)
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("mfa_backup_user_idx").on(t.userId)],
+);
+export type MfaBackupCode = typeof mfaBackupCodes.$inferSelect;
+export type InsertMfaBackupCode = typeof mfaBackupCodes.$inferInsert;
 
 // ─── Public REST API keys (v7 C11) ───────────────────────────────────────────
 // Bearer keys for /api/v1/*. Only the sha256 hash is stored; the raw key is

@@ -1,13 +1,21 @@
 # Backup & disaster-recovery runbook (v7/C10)
 
+> **Tested 2026-08-13** — full backup→scratch-restore drill executed green
+> (see `docs/DRILL-EVIDENCE.md`). Drill script:
+> `ALLOW_DR_DRILL=1 npx tsx scripts/dr/backup-restore-drill.ts` (dry-run
+> without the env flag). Drills run quarterly; next: 2026-11-13.
+
 ## What is backed up
 
-`scripts/backup-db.ts` dumps **all 15 tables** (metadata, telemetry raw +
-hourly rollups, alarms, users, audit log, notification config — everything in
+`scripts/backup-db.ts` dumps **all 22 tables** (metadata, telemetry raw +
+hourly rollups, alarms, users, audit log, notification config, orgs, API
+keys, EMS schedules/plans, report schedules, OTA jobs — everything in
 MySQL) to a timestamped directory of gzip'd JSONL files plus a
 `manifest.json` (per-table row counts, column counts, creation timestamp).
 Row identity (primary keys) is preserved, so a restore reproduces the exact
-pre-loss state.
+pre-loss state. (Until audit wave 3 the backup covered only the v7 15-table
+list — the v8/v9 tables were added after the 2026-08-13 drill exposed the
+gap; see Finding A in `docs/DRILL-EVIDENCE.md`.)
 
 ## Scheduled backups
 
@@ -57,4 +65,13 @@ the same disk as the database is not a DR strategy.
 - Generated columns (`alarms.active_dedup_key`) are stripped on restore —
   MySQL recomputes them.
 - Verified by `scripts/probe-v7-backup.ts` (canary loss → full recovery,
-  guard refusal without opt-in, `--verify` consistency check).
+  guard refusal without opt-in, `--verify` consistency check) — re-run green
+  on 2026-08-13 against the 22-table backup.
+- Non-destructive drill: `scripts/dr/backup-restore-drill.ts` restores the 7
+  audit tables (`users, sites, meters, gateways, ems_plans, api_keys,
+  audit_log`) into a scratch database `volttrade_dr_drill` on the same
+  server, compares row counts + per-table id checksums, and drops ONLY the
+  scratch database. Requires `ALLOW_DR_DRILL=1`; if `CREATE DATABASE` is not
+  permitted it falls back to backup-vs-live count/checksum verification and
+  says so loudly. Last executed 2026-08-13 — PASS
+  (`docs/DRILL-EVIDENCE.md`).

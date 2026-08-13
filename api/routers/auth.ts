@@ -1,10 +1,13 @@
 // v7/C1: login/logout/me + user management (admin only).
+// audit #23: opt-in TOTP MFA — 2-step login challenge + setup/disable procedures.
 import { z } from "zod";
-import { and, eq, desc, ne } from "drizzle-orm";
+import crypto from "node:crypto";
+import { and, eq, desc, ne, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import QRCode from "qrcode";
 import { createRouter, publicQuery, authed, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { sessions, users, auditLog } from "@db/schema";
+import { sessions, users, auditLog, mfaBackupCodes } from "@db/schema";
 import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
@@ -17,6 +20,18 @@ import {
   tokenHash,
   verifyPassword,
 } from "../lib/auth";
+import {
+  MfaNotConfiguredError,
+  encryptSecret,
+  generateBackupCodes,
+  generateTotpSecret,
+  hashBackupCode,
+  looksLikeBackupCode,
+  mfaConfigured,
+  mfaPending,
+  totpKeyUri,
+  verifyTotp,
+} from "../lib/totp";
 import { assertOrgWrite, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
 
 // When the app is served embedded (platform preview iframe) over HTTPS, the
@@ -105,6 +120,41 @@ function clearLoginFailures(email: string, req: Request): void {
   loginAttempts.delete(loginKey(email, req));
 }
 
+// ─── audit #23: MFA helpers ──────────────────────────────────────────────────
+// loginMfa is a PUBLIC procedure (no session yet), so the middleware audit
+// hook does not cover it — MFA login successes/failures are security-relevant
+// and are logged explicitly here (same shape as the middleware entries).
+function auditMfaLogin(userId: number | null, email: string | null, summary: string): void {
+  void getDb()
+    .insert(auditLog)
+    .values({ userId, email, procedure: "auth.loginMfa", summary })
+    .catch((e) => console.warn("[audit] insert failed:", e instanceof Error ? e.message : e));
+}
+
+/** Guards every MFA procedure: without an encryption key MFA is unusable. */
+function assertMfaConfigured(): void {
+  if (!mfaConfigured()) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "MFA not configured on server (set MFA_ENCRYPTION_KEY or SESSION_SECRET)",
+    });
+  }
+}
+
+function mfaGuardError(e: unknown): never {
+  if (e instanceof MfaNotConfiguredError) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: e.message });
+  }
+  throw e;
+}
+
+/** Constant-time hash comparison (sha256 hex → 32-byte buffers). */
+function hashEq(a: string, b: string): boolean {
+  const ba = Buffer.from(a, "hex");
+  const bb = Buffer.from(b, "hex");
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
+
 export const authRouter = createRouter({
   login: publicQuery
     .input(z.object({ email: z.string().email().max(255), password: z.string().min(1).max(128) }))
@@ -120,12 +170,72 @@ export const authRouter = createRouter({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
       }
       clearLoginFailures(input.email, ctx.req); // reset on success
+      // audit #23: TOTP enabled → step 2. NO session is created here; the
+      // client must complete auth.loginMfa with the pendingToken (5 min TTL,
+      // single-use, max 5 attempts — see api/lib/totp.ts).
+      if (user.totpEnabled === 1 && user.totpSecretEnc) {
+        const pendingToken = mfaPending.create(user.id);
+        return { mfaRequired: true as const, pendingToken };
+      }
       const { token, expiresAt } = await createSession(user.id);
       ctx.resHeaders.set("set-cookie", cookieHeader(token, expiresAt, isSecureReq(ctx.req)));
       void pruneExpiredSessions().catch(() => {});
       // token is also returned in the body: the SPA stores it and sends it as
       // x-session-token when cookies are unavailable (embedded preview).
-      return { id: user.id, email: user.email, name: user.name, role: user.role, token };
+      return { mfaRequired: false as const, id: user.id, email: user.email, name: user.name, role: user.role, token };
+    }),
+
+  // audit #23: step 2 of the login challenge — 6-digit TOTP or a backup code
+  // (xxxx-xxxx). Progressive delay mirrors the password step (500ms × prior
+  // failures); the pending token is single-use and dies after 5 failures.
+  loginMfa: publicQuery
+    .input(z.object({ pendingToken: z.string().min(32).max(128), code: z.string().min(6).max(16) }))
+    .mutation(async ({ input, ctx }) => {
+      const pending = mfaPending.peek(input.pendingToken);
+      if (!pending) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "MFA challenge expired — sign in again" });
+      }
+      if (pending.attempts > 0) {
+        await new Promise((resolve) => setTimeout(resolve, LOGIN_DELAY_STEP_MS * pending.attempts));
+      }
+      const db = getDb();
+      const rows = await db.select().from(users).where(eq(users.id, pending.userId)).limit(1);
+      const user = rows[0];
+      let ok = false;
+      if (user && user.disabled === 0 && user.totpEnabled === 1 && user.totpSecretEnc) {
+        try {
+          ok = await verifyTotp(user.totpSecretEnc, input.code);
+        } catch (e) {
+          mfaGuardError(e);
+        }
+        if (!ok && looksLikeBackupCode(input.code)) {
+          const hash = hashBackupCode(input.code);
+          const codes = await db
+            .select({ id: mfaBackupCodes.id, codeHash: mfaBackupCodes.codeHash })
+            .from(mfaBackupCodes)
+            .where(and(eq(mfaBackupCodes.userId, user.id), isNull(mfaBackupCodes.usedAt)));
+          const match = codes.find((c) => hashEq(c.codeHash, hash));
+          if (match) {
+            await db.update(mfaBackupCodes).set({ usedAt: new Date() }).where(eq(mfaBackupCodes.id, match.id));
+            ok = true;
+          }
+        }
+      }
+      if (!ok) {
+        const f = mfaPending.fail(input.pendingToken);
+        auditMfaLogin(user?.id ?? pending.userId, user?.email ?? null, `FAILED: invalid MFA code (attempt ${Math.max(f.attempts, 1)})`);
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: f.destroyed ? "Too many failed attempts — sign in again" : "Invalid code",
+        });
+      }
+      const done = mfaPending.consume(input.pendingToken)!;
+      const { token, expiresAt } = await createSession(done.userId);
+      ctx.resHeaders.set("set-cookie", cookieHeader(token, expiresAt, isSecureReq(ctx.req)));
+      void pruneExpiredSessions().catch(() => {});
+      evictUserCacheForUser(done.userId);
+      auditMfaLogin(user!.id, user!.email, "OK: MFA login");
+      return { id: user!.id, email: user!.email, name: user!.name, role: user!.role, token };
     }),
 
   logout: publicQuery.mutation(async ({ ctx }) => {
@@ -172,11 +282,131 @@ export const authRouter = createRouter({
       return { ok: true };
     }),
 
+  // ─── audit #23: MFA management (per-user opt-in) ─────────────────────────
+  // Mutations here are authed, so the middleware audit hook already logs
+  // enable/disable/regenerate (procedure name + input digest, secrets masked).
+  mfaStatus: authed.query(async ({ ctx }) => {
+    const db = getDb();
+    const codes = await db
+      .select({ id: mfaBackupCodes.id })
+      .from(mfaBackupCodes)
+      .where(and(eq(mfaBackupCodes.userId, ctx.user!.id), isNull(mfaBackupCodes.usedAt)));
+    return {
+      enabled: ctx.user!.totpEnabled === 1,
+      backupCodesLeft: codes.length,
+      serverConfigured: mfaConfigured(),
+    };
+  }),
+
+  // Step 1 of setup: store the ENCRYPTED secret (totp_enabled stays 0 until
+  // the user proves possession with a valid code) and hand back QR + manual key.
+  mfaSetupBegin: authed.mutation(async ({ ctx }) => {
+    assertMfaConfigured();
+    const db = getDb();
+    const secret = generateTotpSecret();
+    let secretEnc: string;
+    try {
+      secretEnc = encryptSecret(secret);
+    } catch (e) {
+      mfaGuardError(e);
+    }
+    await db.update(users).set({ totpSecretEnc: secretEnc! }).where(eq(users.id, ctx.user!.id));
+    evictUserCacheForUser(ctx.user!.id);
+    const otpauthUrl = totpKeyUri(ctx.user!.email, secret);
+    const qrDataUrl = await QRCode.toDataURL(otpauthUrl, { margin: 1, width: 220 });
+    return { secret, otpauthUrl, qrDataUrl };
+  }),
+
+  // Step 2: verify a code against the pending secret → enable + issue 8
+  // single-use backup codes (replacing any old ones). Raw codes shown ONCE.
+  mfaSetupConfirm: authed
+    .input(z.object({ code: z.string().min(6).max(16) }))
+    .mutation(async ({ input, ctx }) => {
+      assertMfaConfigured();
+      const db = getDb();
+      const rows = await db.select().from(users).where(eq(users.id, ctx.user!.id)).limit(1);
+      const user = rows[0];
+      if (!user || !user.totpSecretEnc) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Start MFA setup first" });
+      }
+      let ok = false;
+      try {
+        ok = await verifyTotp(user.totpSecretEnc, input.code);
+      } catch (e) {
+        mfaGuardError(e);
+      }
+      if (!ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
+      }
+      await db.update(users).set({ totpEnabled: 1 }).where(eq(users.id, user.id));
+      await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
+      const { raw, hashes } = generateBackupCodes();
+      await db.insert(mfaBackupCodes).values(hashes.map((codeHash) => ({ userId: user.id, codeHash })));
+      evictUserCacheForUser(user.id);
+      return { backupCodes: raw };
+    }),
+
+  // Disable requires BOTH the password and a current TOTP code — a hijacked
+  // session alone can't strip the account's second factor.
+  mfaDisable: authed
+    .input(z.object({ password: z.string().min(1).max(128), code: z.string().min(6).max(16) }))
+    .mutation(async ({ input, ctx }) => {
+      assertMfaConfigured();
+      if (!verifyPassword(input.password, ctx.user!.passwordHash)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Current password is wrong" });
+      }
+      const db = getDb();
+      const rows = await db.select().from(users).where(eq(users.id, ctx.user!.id)).limit(1);
+      const user = rows[0];
+      if (!user || user.totpEnabled !== 1 || !user.totpSecretEnc) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "MFA is not enabled" });
+      }
+      let ok = false;
+      try {
+        ok = await verifyTotp(user.totpSecretEnc, input.code);
+      } catch (e) {
+        mfaGuardError(e);
+      }
+      if (!ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
+      }
+      await db.update(users).set({ totpEnabled: 0, totpSecretEnc: null }).where(eq(users.id, user.id));
+      await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
+      evictUserCacheForUser(user.id);
+      return { ok: true };
+    }),
+
+  // Fresh set of 8 backup codes (old ones die immediately). Requires a TOTP code.
+  mfaRegenerateBackup: authed
+    .input(z.object({ code: z.string().min(6).max(16) }))
+    .mutation(async ({ input, ctx }) => {
+      assertMfaConfigured();
+      const db = getDb();
+      const rows = await db.select().from(users).where(eq(users.id, ctx.user!.id)).limit(1);
+      const user = rows[0];
+      if (!user || user.totpEnabled !== 1 || !user.totpSecretEnc) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "MFA is not enabled" });
+      }
+      let ok = false;
+      try {
+        ok = await verifyTotp(user.totpSecretEnc, input.code);
+      } catch (e) {
+        mfaGuardError(e);
+      }
+      if (!ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
+      }
+      await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
+      const { raw, hashes } = generateBackupCodes();
+      await db.insert(mfaBackupCodes).values(hashes.map((codeHash) => ({ userId: user.id, codeHash })));
+      return { backupCodes: raw };
+    }),
+
   // ─── Admin: user management ─────────────────────────────────────────────
   users: admin.query(async ({ ctx }) => {
     // v8/D2: non-superadmin admin sees only users of their own org.
     const rows = await getDb()
-      .select({ id: users.id, email: users.email, name: users.name, role: users.role, disabled: users.disabled, orgId: users.orgId, isSuperadmin: users.isSuperadmin, createdAt: users.createdAt })
+      .select({ id: users.id, email: users.email, name: users.name, role: users.role, disabled: users.disabled, orgId: users.orgId, isSuperadmin: users.isSuperadmin, totpEnabled: users.totpEnabled, createdAt: users.createdAt })
       .from(users)
       .where(orgWhere(ctx.user, users.orgId))
       .orderBy(desc(users.createdAt));

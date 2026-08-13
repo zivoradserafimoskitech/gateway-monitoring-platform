@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
+import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
 import type { RegisterDef } from "@contracts/modbus";
 
@@ -41,6 +42,8 @@ export default function Settings() {
       <OrganizationsCard />
       {/* v9.1: API keys (admin only) + notification channels */}
       <ApiKeysCard />
+      {/* audit #23: per-user TOTP MFA */}
+      <MfaCard />
       <NotificationChannelsCard />
       {(profiles.data ?? []).map((p) => (
         <ProfileCard

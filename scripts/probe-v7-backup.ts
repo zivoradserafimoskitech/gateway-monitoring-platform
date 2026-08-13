@@ -34,8 +34,8 @@ async function main() {
   const [telCount] = await db.select({ n: dsql<number>`count(*)` }).from(telemetry);
   const tables = Object.keys(manifest.tables);
   probe(
-    "backup manifest covers all 15 tables; telemetry count in range",
-    tables.length === 15 && manifest.tables.telemetry.rows <= Number(telCount.n) && manifest.tables.sites.rows >= 1,
+    "backup manifest covers all 22 tables; telemetry count in range",
+    tables.length === 22 && manifest.tables.telemetry.rows <= Number(telCount.n) && manifest.tables.sites.rows >= 1,
     { tables: tables.length, backupTel: manifest.tables.telemetry.rows, liveTel: Number(telCount.n) },
   );
 

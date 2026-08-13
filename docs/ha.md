@@ -95,6 +95,24 @@ All background loops run on **every** replica. Effects and guards:
 | **Watchdog / alarm escalation** | Duplicate alert checks / notification attempts | Alarm transitions are status-guarded in DB; escalation mail may duplicate in the worst case (same as a retry). |
 | **Modbus TCP poller** | Two replicas polling the same direct-TCP device → **double telemetry rows** | Honest limit: run the poller on ONE replica (`POLLER_ENABLED=0` on the other via an override file) when direct-TCP devices exist. MQTT-only fleets are unaffected. |
 
+## Failover drills
+
+Executed 2026-08-13 (audit wave 3) — full evidence in
+`docs/DRILL-EVIDENCE.md`:
+
+- **Broker kill drill**: `pkill` on the embedded dev broker → watchdog
+  restarted it in 20 s, `/readyz` back to 200 in ≤ 59 s, sims + app MQTT
+  client reconnected, **0 telemetry rows lost**, ~60 duplicate rows from
+  at-least-once redelivery (documented tolerance).
+- **Backup → scratch restore drill**: `scripts/dr/backup-restore-drill.ts`,
+  all 7 audit tables restored into `volttrade_dr_drill` and checksum-verified
+  (backup 11.4 s, restore 2.8 s), scratch DB dropped afterwards.
+- Organic same-day evidence: the watchdog recovered the whole stack after a
+  full outage at 10:19Z; a second outage (11:08Z–12:21Z) showed the watchdog
+  itself has no supervisor — run it under systemd/cron in real deployments.
+
+Drills repeat quarterly (next: 2026-11-13), rotating the killed component.
+
 ## Honest limits
 
 - **Metadata DB**: a single TiDB Serverless endpoint (private link) is a

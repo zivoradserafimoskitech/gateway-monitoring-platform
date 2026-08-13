@@ -33,6 +33,15 @@ const TABLES: { name: string; table: MySqlTable }[] = (
     ["notification_channels", schema.notificationChannels],
     ["alarm_notifications", schema.alarmNotifications],
     ["maintenance_windows", schema.maintenanceWindows],
+    // v8/v9 tables — mirror of scripts/backup-db.ts (audit wave-3 DR drill
+    // found them missing from the v7 list).
+    ["orgs", schema.orgs],
+    ["api_keys", schema.apiKeys],
+    ["ems_schedules", schema.emsSchedules],
+    ["ems_peak_shaving", schema.emsPeakShaving],
+    ["ems_plans", schema.emsPlans],
+    ["report_schedules", schema.reportSchedules],
+    ["ota_jobs", schema.otaJobs],
   ] as [string, MySqlTable][]
 ).map(([name, table]) => ({ name, table }));
 

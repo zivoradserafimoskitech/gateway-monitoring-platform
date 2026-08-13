@@ -29,6 +29,15 @@ const TABLES: { name: string; table: MySqlTable }[] = [
   ["notification_channels", schema.notificationChannels],
   ["alarm_notifications", schema.alarmNotifications],
   ["maintenance_windows", schema.maintenanceWindows],
+  // v8/v9 tables — added by the audit wave-3 DR drill (they were missing from
+  // the original v7 list, so backups silently skipped them).
+  ["orgs", schema.orgs],
+  ["api_keys", schema.apiKeys],
+  ["ems_schedules", schema.emsSchedules],
+  ["ems_peak_shaving", schema.emsPeakShaving],
+  ["ems_plans", schema.emsPlans],
+  ["report_schedules", schema.reportSchedules],
+  ["ota_jobs", schema.otaJobs],
 ].map(([name, table]) => ({ name: name as string, table: table as MySqlTable }));
 
 async function main() {
