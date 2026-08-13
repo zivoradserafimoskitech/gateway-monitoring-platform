@@ -294,6 +294,11 @@ export const en = {
     showOnce: "Copy this key NOW — it is shown only once and can never be recovered.",
     done: "Done",
     copyFailed: "Copy failed — select the key manually",
+    expires: "Expires",
+    noExpiry: "No expiry",
+    expiredStatus: "Expired",
+    scopes: "Scopes",
+    fullAccess: "full access",
   },
   notif: {
     title: "Notification channels",

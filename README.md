@@ -14,7 +14,8 @@
   refuse to run against a non-local `DATABASE_URL` unless `ALLOW_UNSAFE_PROD=1`
   is set (v5 #22).
 - **Optional hardening env:** `API_TOKEN` (Bearer guard on /api/trpc/*) +
-  `VITE_API_TOKEN` (frontend), `MQTT_USERNAME`/`MQTT_PASSWORD` (broker auth),
+  `VITE_API_TOKEN` (frontend — **DEPRECATED**, will be removed in v11; use
+  session login instead), `MQTT_USERNAME`/`MQTT_PASSWORD` (broker auth),
   `MQTT_BIND_HOST`, `MQTT_AUTO_PROVISION=0` (disable zero-touch onboarding).
 - **Day/timezone policy (v5 #8):** all server-side "day" bucketing is UTC
   (epoch-based); the browser renders in its local tz. One conversion point.

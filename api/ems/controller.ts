@@ -53,11 +53,28 @@
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { emsPeakShaving, emsSchedules, gateways, meters, sites } from "@db/schema";
-import type { EmsPeakShaving, EmsSchedule, Meter } from "@db/schema";
+import type { Meter } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog } from "../control/execute";
-import type { ControllableDef, ControllableMap } from "../control/execute";
+import type { ControllableMap } from "../control/execute";
 import { getTelemetryStore } from "../telemetry";
-import { tzOffsetMs } from "../lib/tz";
+import {
+  kwToMode,
+  peakHoldPower,
+  peakMinMoveKw,
+  peakRetrimDue,
+  peakStartPower,
+  peakStopDue,
+  pickSetpointKey,
+  planKwAt,
+  scheduleDue,
+  setpointValue,
+  socGuardBlocks,
+  localClock,
+} from "./decide";
+
+// v10/P1-9: pure decision logic lives in ./decide (extracted unchanged for
+// unit tests); re-export the helpers that were already public from here.
+export { localClock, pickSetpointKey, scheduleDue, setpointValue } from "./decide";
 
 const TICK_S = parseInt(process.env.EMS_TICK_S || "30", 10);
 export const EMS_IDEMPOTENCY_MS = 5 * 60 * 1000;
@@ -77,31 +94,6 @@ export function startEmsLoop(): void {
   // Boot tick: apply due schedules / peak shaving immediately after start.
   emsTick().catch((err) => console.error("[ems] boot tick failed:", err instanceof Error ? err.message : err));
   console.log(`[ems] controller started (tick ${TICK_S}s)`);
-}
-
-// ─── Setpoint key selection ─────────────────────────────────────────────────
-// BESS profiles declare writable registers in device_profiles.controllable.
-// Preferred keys per mode; fall back to the first declared key so any
-// single-register BESS still works.
-const KEY_PREF: Record<"charge" | "discharge" | "idle", string[]> = {
-  discharge: ["dischargePowerKw", "chargeDischargePowerKw", "activePowerKw"],
-  charge: ["chargePowerKw", "chargeDischargePowerKw", "activePowerKw"],
-  idle: ["dischargePowerKw", "chargeDischargePowerKw", "activePowerKw"],
-};
-
-export function pickSetpointKey(map: ControllableMap, mode: "charge" | "discharge" | "idle"): { key: string; def: ControllableDef } | null {
-  for (const k of KEY_PREF[mode]) {
-    if (map[k]) return { key: k, def: map[k] };
-  }
-  const first = Object.entries(map)[0];
-  return first ? { key: first[0], def: first[1] } : null;
-}
-
-/** Setpoint value for a mode: idle → 0; charge → −t when the register is bipolar, else +t (dedicated charge register). */
-export function setpointValue(mode: "charge" | "discharge" | "idle", def: ControllableDef, targetKw: number | null): number {
-  if (mode === "idle") return 0;
-  const t = targetKw ?? def.max;
-  return mode === "charge" && def.min < 0 ? -t : t;
 }
 
 // ─── Idempotency + peak-shaving state ────────────────────────────────────────
@@ -158,19 +150,6 @@ async function meterTimezone(meter: Meter): Promise<string> {
   return s[0]?.timezone ?? "UTC";
 }
 
-/** Local weekday (0=Sunday) and minutes-from-midnight for an instant in a zone. */
-export function localClock(tz: string, now: Date): { dow: number; min: number } {
-  const local = new Date(now.getTime() + tzOffsetMs(tz, now));
-  return { dow: local.getUTCDay(), min: local.getUTCHours() * 60 + local.getUTCMinutes() };
-}
-
-export function scheduleDue(s: EmsSchedule, dow: number, min: number): boolean {
-  if (((s.dayOfWeekMask >> dow) & 1) === 0) return false;
-  if (s.startMin === s.endMin) return true; // 00:00–00:00 = all day
-  if (s.startMin < s.endMin) return min >= s.startMin && min < s.endMin;
-  return min >= s.startMin || min < s.endMin; // wraps midnight
-}
-
 async function evalSchedules(now: Date, skip: Set<number> = new Set()): Promise<void> {
   const db = getDb();
   const schedules = await db.select().from(emsSchedules).where(eq(emsSchedules.enabled, true)).orderBy(asc(emsSchedules.id));
@@ -213,7 +192,7 @@ async function evalSchedules(now: Date, skip: Set<number> = new Set()): Promise<
       if (s.targetSoc != null) {
         const latest = await getTelemetryStore().latest(s.meterId);
         const soc = latest?.values.socPercent;
-        if (soc != null && ((s.mode === "discharge" && soc <= s.targetSoc) || (s.mode === "charge" && soc >= s.targetSoc))) {
+        if (socGuardBlocks(s.mode, soc, s.targetSoc)) {
           fired.add(s.meterId);
           continue; // guard active — leave the previous setpoint untouched
         }
@@ -262,7 +241,7 @@ async function evalPeakShaving(): Promise<Set<number>> {
           peakState.set(c.id, st);
           continue;
         }
-        const power = Math.min(importKw - c.thresholdKw, c.maxDischargeKw, sel.def.max);
+        const power = peakStartPower(importKw, c.thresholdKw, c.maxDischargeKw, sel.def.max);
         if (power <= 0) {
           peakState.set(c.id, st);
           continue;
@@ -275,7 +254,7 @@ async function evalPeakShaving(): Promise<Set<number>> {
       }
 
       // Active: stop below threshold − hysteresis.
-      if (importKw < c.thresholdKw - c.hysteresisKw) {
+      if (peakStopDue(importKw, c.thresholdKw, c.hysteresisKw)) {
         let wl = wlCache.get(bess.model);
         if (!wl) {
           wl = await controllableForModel(bess.model);
@@ -295,9 +274,9 @@ async function evalPeakShaving(): Promise<Set<number>> {
       }
       const sel = pickSetpointKey(wl, "discharge");
       if (!sel) continue;
-      const power = Math.min(Math.max(importKw - c.thresholdKw, 0), c.maxDischargeKw, sel.def.max);
-      const minDelta = Math.max(1, 0.1 * c.maxDischargeKw);
-      if (st.lastSent == null || Math.abs(power - st.lastSent) >= minDelta) {
+      const power = peakHoldPower(importKw, c.thresholdKw, c.maxDischargeKw, sel.def.max);
+      const minDelta = peakMinMoveKw(c.maxDischargeKw);
+      if (peakRetrimDue(power, st.lastSent, minDelta)) {
         await send(bess, sel.key, power, `peak-shaving #${c.id} re-trim (import ${importKw.toFixed(2)} kW)`);
         st.lastSent = power;
         peakState.set(c.id, st);
@@ -352,13 +331,9 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
       if (!meter) continue;
       const sps = (typeof plan.setpoints === "string" ? JSON.parse(plan.setpoints) : plan.setpoints) as Array<{ ts: string; kw: number }>;
       // Step function: kw of the last setpoint with ts ≤ now.
-      let kw: number | null = null;
-      for (const sp of sps) {
-        if (Date.parse(sp.ts) <= now.getTime()) kw = sp.kw;
-        else break;
-      }
+      const kw = planKwAt(sps, now.getTime());
       if (kw == null) continue; // no setpoint due yet — leave the register alone
-      const mode = kw > 0 ? ("discharge" as const) : kw < 0 ? ("charge" as const) : ("idle" as const);
+      const mode = kwToMode(kw);
       let wl = wlCache.get(meter.model);
       if (!wl) {
         wl = await controllableForModel(meter.model);

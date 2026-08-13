@@ -1,18 +1,20 @@
 // v7/C1: login/logout/me + user management (admin only).
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicQuery, authed, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { users, auditLog } from "@db/schema";
+import { sessions, users, auditLog } from "@db/schema";
 import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
   createSession,
   evictUserCache,
+  evictUserCacheForUser,
   hashPassword,
   pruneExpiredSessions,
   revokeSession,
+  tokenHash,
   verifyPassword,
 } from "../lib/auth";
 import { assertOrgWrite, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
@@ -155,6 +157,18 @@ export const authRouter = createRouter({
         throw new TRPCError({ code: "FORBIDDEN", message: "Current password is wrong" });
       }
       await db.update(users).set({ passwordHash: hashPassword(input.next) }).where(eq(users.id, ctx.user!.id));
+      // audit P1-10: a password change invalidates every OTHER session of
+      // this user (stolen sessions must die immediately); the current session
+      // is kept so the user isn't logged out of the tab that changed it.
+      await db
+        .delete(sessions)
+        .where(
+          and(
+            eq(sessions.userId, ctx.user!.id),
+            ctx.sessionToken ? ne(sessions.tokenHash, tokenHash(ctx.sessionToken)) : undefined,
+          ),
+        );
+      evictUserCacheForUser(ctx.user!.id);
       return { ok: true };
     }),
 

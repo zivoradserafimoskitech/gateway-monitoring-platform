@@ -23,6 +23,16 @@ if (env.isProduction && process.env.AUTH_REQUIRED === "false") {
   );
 }
 
+// audit P1-1: VITE_API_TOKEN is deprecated (a build-time shared static token
+// baked into the frontend bundle is not a credential). Behavior is unchanged
+// for now — this is a non-breaking deprecation warning only.
+if (process.env.VITE_API_TOKEN) {
+  console.warn(
+    "[deprecation] VITE_API_TOKEN is deprecated and will be removed in v11 — " +
+      "use session login (et_session cookie) instead of a shared static token.",
+  );
+}
+
 // Start MQTT ingestion. The app is always a broker CLIENT: it connects to the
 // external broker at MQTT_URL when set (HA mode — no embedded broker), else to
 // the local dev broker (scripts/broker.ts) on 127.0.0.1:1883.

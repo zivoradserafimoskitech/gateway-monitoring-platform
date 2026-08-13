@@ -67,6 +67,15 @@ export function evictUserCache(token?: string): void {
   else userCache.clear();
 }
 
+// audit P1-10: drop every cached user lookup belonging to one user (e.g.
+// after a password change invalidates their other sessions — without this the
+// 30 s cache would keep the deleted sessions "alive").
+export function evictUserCacheForUser(userId: number): void {
+  for (const [th, entry] of userCache) {
+    if (entry.user?.id === userId) userCache.delete(th);
+  }
+}
+
 // Opportunistic sweep of expired sessions (called on login — cheap, rare enough).
 export async function pruneExpiredSessions(): Promise<void> {
   await getDb().delete(sessions).where(lt(sessions.expiresAt, new Date()));

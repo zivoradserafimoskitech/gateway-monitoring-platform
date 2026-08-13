@@ -21,6 +21,8 @@ export const apiKeysRouter = createRouter({
         createdAt: apiKeys.createdAt,
         lastUsedAt: apiKeys.lastUsedAt,
         revokedAt: apiKeys.revokedAt,
+        expiresAt: apiKeys.expiresAt,
+        scopes: apiKeys.scopes,
       })
       .from(apiKeys)
       .where(orgWhere(ctx.user, apiKeys.orgId))
@@ -29,13 +31,31 @@ export const apiKeysRouter = createRouter({
   }),
 
   create: admin
-    .input(z.object({ name: z.string().min(1).max(255), role: z.enum(["admin", "operator", "viewer"]).default("viewer") }))
+    .input(
+      z.object({
+        name: z.string().min(1).max(255),
+        role: z.enum(["admin", "operator", "viewer"]).default("viewer"),
+        // audit P1-7: optional expiry (ISO8601) and scope restriction.
+        // Omitted/null scopes = full access per role (legacy behavior).
+        expiresAt: z.string().datetime().optional(),
+        scopes: z.array(z.enum(["read", "control"])).optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const { raw, hash, prefix } = generateApiKey();
       const inserted = await db
         .insert(apiKeys)
-        .values({ name: input.name, keyHash: hash, prefix, role: input.role, createdBy: ctx.user?.id ?? null, orgId: stampOrg(ctx.user) })
+        .values({
+          name: input.name,
+          keyHash: hash,
+          prefix,
+          role: input.role,
+          createdBy: ctx.user?.id ?? null,
+          orgId: stampOrg(ctx.user),
+          expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+          scopes: input.scopes ?? null,
+        })
         .$returningId();
       // The ONLY time the raw key is ever returned or stored anywhere.
       return { id: inserted[0].id, key: raw, prefix, name: input.name, role: input.role };

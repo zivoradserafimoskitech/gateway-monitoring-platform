@@ -9,8 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { Check, Copy, KeyRound, Loader2, Plus, Ban } from "lucide-react";
 import { toast } from "sonner";
+
+type Scope = "read" | "control";
 
 export function ApiKeysCard() {
   const { t } = useI18n();
@@ -20,13 +24,21 @@ export function ApiKeysCard() {
   const keys = trpc.apiKeys.list.useQuery(undefined, { enabled: isAdmin });
   const [name, setName] = useState("");
   const [role, setRole] = useState<"viewer" | "operator" | "admin">("viewer");
+  // audit P1-7: optional expiry + scope restriction (no scopes ticked = full access).
+  const [expiry, setExpiry] = useState("");
+  const [scopes, setScopes] = useState<Scope[]>([]);
   const [freshKey, setFreshKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  const toggleScope = (s: Scope) =>
+    setScopes((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
 
   const create = trpc.apiKeys.create.useMutation({
     onSuccess: (res) => {
       void utils.apiKeys.list.invalidate();
       setName("");
+      setExpiry("");
+      setScopes([]);
       setFreshKey(res.key); // the ONLY time the raw key exists anywhere
       toast.success(t.apiKeys.created);
     },
@@ -72,7 +84,31 @@ export function ApiKeysCard() {
               <SelectItem value="admin">admin</SelectItem>
             </SelectContent>
           </Select>
-          <Button size="sm" disabled={create.isPending || !name.trim()} onClick={() => create.mutate({ name: name.trim(), role })}>
+          <Input
+            className="max-w-44"
+            type="date"
+            title={t.apiKeys.expires}
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+          />
+          {(["read", "control"] as const).map((s) => (
+            <label key={s} className="flex items-center gap-1.5 text-sm">
+              <Checkbox checked={scopes.includes(s)} onCheckedChange={() => toggleScope(s)} />
+              {s}
+            </label>
+          ))}
+          <Button
+            size="sm"
+            disabled={create.isPending || !name.trim()}
+            onClick={() =>
+              create.mutate({
+                name: name.trim(),
+                role,
+                expiresAt: expiry ? new Date(`${expiry}T23:59:59Z`).toISOString() : undefined,
+                scopes: scopes.length ? scopes : undefined,
+              })
+            }
+          >
             {create.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
             {t.common.add}
           </Button>
@@ -100,6 +136,8 @@ export function ApiKeysCard() {
               <TableHead>{t.apiKeys.prefix}</TableHead>
               <TableHead>{t.apiKeys.role}</TableHead>
               <TableHead>{t.apiKeys.lastUsed}</TableHead>
+              <TableHead>{t.apiKeys.expires}</TableHead>
+              <TableHead>{t.apiKeys.scopes}</TableHead>
               <TableHead>{t.apiKeys.status}</TableHead>
               <TableHead />
             </TableRow>
@@ -112,6 +150,31 @@ export function ApiKeysCard() {
                 <TableCell>{k.role}</TableCell>
                 <TableCell className="text-xs text-slate-500">
                   {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "—"}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {k.expiresAt ? (
+                    <span className="flex items-center gap-1">
+                      {new Date(k.expiresAt).toLocaleDateString()}
+                      {new Date(k.expiresAt).getTime() <= Date.now() && (
+                        <Badge variant="destructive">{t.apiKeys.expiredStatus}</Badge>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400">{t.apiKeys.noExpiry}</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {k.scopes && k.scopes.length ? (
+                    <span className="flex gap-1">
+                      {k.scopes.map((s) => (
+                        <Badge key={s} variant="secondary">
+                          {s}
+                        </Badge>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400">{t.apiKeys.fullAccess}</span>
+                  )}
                 </TableCell>
                 <TableCell>{k.revokedAt ? t.apiKeys.revokedStatus : t.apiKeys.activeStatus}</TableCell>
                 <TableCell className="text-right">

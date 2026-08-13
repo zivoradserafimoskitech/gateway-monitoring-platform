@@ -17,8 +17,17 @@ import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
 import { getTelemetryStore } from "../telemetry";
 
-type Vars = { Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null } } };
+type Vars = {
+  Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null; scopes: string[] | null } };
+};
 export const restV1 = new Hono<Vars>();
+
+// audit P1-7: route→scope resolution. "read" covers all GET routes; "control"
+// covers writes (PUT /devices/:id/ems-plan today, POST /command in the
+// future). NULL scopes on a key = full access (legacy keys).
+export function requiredScope(method: string): "read" | "control" {
+  return method.toUpperCase() === "GET" ? "read" : "control";
+}
 
 restV1.use("*", async (c, next) => {
   const header = c.req.header("authorization") ?? "";
@@ -27,7 +36,16 @@ restV1.use("*", async (c, next) => {
   if (!key) {
     return c.json({ error: "Unauthorized — a valid Bearer API key is required (etk_...)" }, 401);
   }
-  c.set("apiKey", { id: key.id, name: key.name, role: key.role, orgId: key.orgId });
+  // audit P1-7: expiry enforcement (NULL expiresAt = never expires).
+  if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+    return c.json({ error: "API key expired" }, 401);
+  }
+  // audit P1-7: scope enforcement (NULL scopes = legacy full access).
+  if (key.scopes && !key.scopes.includes(requiredScope(c.req.method))) {
+    return c.json({ error: "API key lacks required scope" }, 403);
+  }
+  // scopes are exposed on the context for debugging only — never log the raw key.
+  c.set("apiKey", { id: key.id, name: key.name, role: key.role, orgId: key.orgId, scopes: key.scopes });
   await next();
 });
 

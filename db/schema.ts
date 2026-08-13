@@ -370,6 +370,12 @@ export const apiKeys = mysqlTable(
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     lastUsedAt: timestamp("last_used_at"),
     revokedAt: timestamp("revoked_at"),
+    // audit P1-7: optional key expiry (NULL = never expires) and scope
+    // restriction (NULL = full access per role — legacy keys). Non-null scopes
+    // limit the key to the listed scopes ("read" = GET routes, "control" =
+    // PUT/POST/DELETE routes on /api/v1/*).
+    expiresAt: timestamp("expires_at"),
+    scopes: json("scopes").$type<string[]>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("api_keys_hash_unique").on(t.keyHash), index("api_keys_org_idx").on(t.orgId)],

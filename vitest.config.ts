@@ -17,9 +17,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["api/**/*.test.ts", "api/**/*.spec.ts", "tests/**/*.test.ts"],
-    // D7.3: coverage gate (v8 provider). Thresholds are set ~5 points below
+    // D7.3: coverage gate (v8 provider). Thresholds are set ~2 points below
     // the suite's measured baseline (run `npm run test:coverage`):
-    //   lines 26.23 / statements 24.35 / branches 16.75 / functions 10.46
+    //   lines 41.63 / statements 39.90 / branches 30.70 / functions 24.54
+    // (v10/P1-9: EMS controller + decide, C12 control interlock, org-scope
+    // tests raised this from lines 26.23 / stmts 24.35 / branch 16.75 / fn 10.46)
     // Raise the thresholds as coverage improves; CI enforces them.
     coverage: {
       provider: "v8",
@@ -32,10 +34,10 @@ export default defineConfig({
         process.env.COVERAGE_DIR ??
         (process.env.CI ? "coverage" : path.join(os.tmpdir(), "enertrek-vitest-coverage")),
       thresholds: {
-        lines: 21,
-        statements: 19,
-        branches: 11,
-        functions: 5,
+        lines: 39,
+        statements: 37,
+        branches: 28,
+        functions: 22,
       },
     },
   },

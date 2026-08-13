@@ -5,6 +5,12 @@ billing, fleet tooling). Authentication: **Bearer API key** — keys are created
 by admins in the app (tRPC `apiKeys.create`) and shown **exactly once**; only
 the sha256 hash + 12-char prefix are stored.
 
+Keys may carry an optional **expiry** (`expiresAt`) and **scope restriction**
+(`scopes`): an expired key gets `401 { "error": "API key expired" }`; a key
+whose scopes don't cover the route gets `403 { "error": "API key lacks
+required scope" }`. Scope mapping: **GET → `read`**, **PUT/POST/DELETE →
+`control`**. Keys with `scopes = NULL` (legacy) keep full access per role.
+
 ```bash
 curl -H "Authorization: Bearer etk_…" https://your-host/api/v1/devices
 ```
@@ -65,7 +71,8 @@ Response 200 (worst case 31 d × 15 min = 2976 buckets):
 | Status | Condition |
 |---|---|
 | 400 | missing/unparsable `from`/`to`, `from >= to`, range > 31 days, `bucketMin` not an integer in 15..1440, non-numeric device id |
-| 401 | missing/garbage/revoked Bearer key |
+| 401 | missing/garbage/revoked/**expired** Bearer key |
+| 403 | key scopes don't include `read` |
 | 404 | unknown device id |
 
 ## EMS plans (v9 Contract A — optimizer push)
@@ -122,26 +129,27 @@ local schedules / idle.
 | Status | Condition |
 |---|---|
 | 400 | unparsable/missing `validFrom`/`validTo`, `validTo <= validFrom`, span > 48 h, bad `source`, setpoints not 1..192 / unsorted / `ts` outside the window / non-finite or \|kw\| > 500, non-numeric device id, non-JSON body |
-| 401 | missing/garbage/revoked Bearer key |
+| 401 | missing/garbage/revoked/**expired** Bearer key |
+| 403 | key scopes don't include `control` |
 | 404 | device unknown **or not in the key's org** |
 
 ## Responses & errors
 
 - `200` — JSON body with a single top-level collection key (`sites` / `devices` / `alarms`), `{ deviceId, ts, values, … }`, or the energy-intervals envelope.
 - `400` — bad parameter (e.g. invalid `status` value or non-numeric device id).
-- `401` — missing/garbage/revoked key. Revocation takes effect immediately (30 s lookup cache is evicted on revoke).
+- `401` — missing/garbage/revoked key, or key past its `expiresAt` (`API key expired`). Revocation takes effect immediately (30 s lookup cache is evicted on revoke).
+- `403` — key has a non-null `scopes` list that doesn't cover the route's required scope (`read` for GET, `control` for PUT/POST/DELETE).
 - `404` — unknown device id.
 
 ## Key management (admin, via tRPC)
 
 | Procedure | Type | Notes |
 |---|---|---|
-| `apiKeys.create` | mutation | `{ name, role }` → returns `{ key }` **once** |
-| `apiKeys.list` | query | id, name, prefix, role, createdAt, lastUsedAt, revokedAt |
+| `apiKeys.create` | mutation | `{ name, role, expiresAt?, scopes? }` → returns `{ key }` **once**; `expiresAt` is an ISO8601 datetime, `scopes` a subset of `["read", "control"]` (omit both for a legacy full-access key) |
+| `apiKeys.list` | query | id, name, prefix, role, createdAt, lastUsedAt, revokedAt, expiresAt, scopes |
 | `apiKeys.revoke` | mutation | `{ id }` — instant revoke |
 
-Key roles mirror the RBAC roles (`admin`/`operator`/`viewer`); v1 is read-only
-for all roles — write scopes arrive with the control API (C12). `lastUsedAt`
+Key roles mirror the RBAC roles (`admin`/`operator`/`viewer`). `lastUsedAt`
 is updated at most once per minute per key.
 
 ## Notes
