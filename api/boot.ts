@@ -11,6 +11,18 @@ import { startEscalationLoop } from "./alarms/notify";
 import { metricsText, httpRequestDone, startWatchdogLoop } from "./lib/observability";
 import crypto from "node:crypto";
 
+// Audit P1-2: AUTH_REQUIRED=false flips the system to open demo mode — RBAC
+// bypassed, cross-org access, no audit trail. That must never run in
+// production, so refuse to boot instead of starting silently unauthenticated.
+// Dev behavior is unchanged.
+if (env.isProduction && process.env.AUTH_REQUIRED === "false") {
+  throw new Error(
+    "FATAL: AUTH_REQUIRED=false is forbidden when NODE_ENV=production " +
+      "(open demo mode disables auth, RBAC and audit logging). " +
+      "Unset AUTH_REQUIRED or set it to true.",
+  );
+}
+
 // Start MQTT ingestion. The app is always a broker CLIENT: it connects to the
 // external broker at MQTT_URL when set (HA mode — no embedded broker), else to
 // the local dev broker (scripts/broker.ts) on 127.0.0.1:1883.
@@ -81,7 +93,11 @@ app.get("/readyz", async (c) => {
     const { sql } = await import("drizzle-orm");
     await getDb().execute(sql`SELECT 1`);
   } catch (err) {
-    db = `error: ${err instanceof Error ? err.message : String(err)}`;
+    // Audit P1-6: never leak raw driver errors (mysql2 messages can include
+    // host/user) to unauthenticated callers — generic string, details only in
+    // the server log.
+    console.error("[readyz] db check failed:", err instanceof Error ? err.message : err);
+    db = "error";
   }
   const mqtt = getMqttStatus();
   const broker = mqtt.running && mqtt.connected ? "ok" : "disconnected";

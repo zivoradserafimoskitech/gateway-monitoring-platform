@@ -35,17 +35,89 @@ function clearCookieHeader(secure: boolean): string {
   return secure ? `${base}; SameSite=None; Secure; Partitioned` : `${base}; SameSite=Lax`;
 }
 
+// ─── Audit P1-4: login rate limiting + lockout ──────────────────────────────
+// In-memory, per (email + client IP) limiter. Documented limitation: state is
+// per process, so with multiple replicas behind the LB each replica counts
+// independently — move to Redis (or a shared store) when running multi-instance.
+const LOGIN_WINDOW_MS = 5 * 60_000; // failures are counted over 5 minutes
+const LOGIN_MAX_FAILURES = 5; // >5 failures within the window → lockout
+const LOGIN_LOCKOUT_MS = 15 * 60_000; // lockout duration
+const LOGIN_DELAY_STEP_MS = 500; // progressive delay: 500ms × failures so far
+
+type LoginAttempts = { failures: number[]; lockedUntil: number };
+const loginAttempts = new Map<string, LoginAttempts>();
+
+function loginClientIp(req: Request): string {
+  // nginx sets X-Forwarded-For; first hop is the real client.
+  const fwd = req.headers.get("x-forwarded-for");
+  return fwd?.split(",")[0]?.trim() || "unknown";
+}
+
+function loginKey(email: string, req: Request): string {
+  return `${email.toLowerCase()}|${loginClientIp(req)}`;
+}
+
+function recentFailures(rec: LoginAttempts | undefined, now: number): number {
+  if (!rec) return 0;
+  rec.failures = rec.failures.filter((t) => now - t < LOGIN_WINDOW_MS);
+  return rec.failures.length;
+}
+
+/** Throws 429 when the key is locked out; otherwise applies progressive delay. */
+async function loginThrottle(email: string, req: Request): Promise<void> {
+  const key = loginKey(email, req);
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+  if (rec?.lockedUntil && rec.lockedUntil > now) {
+    // Generic message — never reveal whether the email exists.
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many login attempts. Try again later." });
+  }
+  const failures = recentFailures(rec, now);
+  if (failures > 0) {
+    await new Promise((resolve) => setTimeout(resolve, LOGIN_DELAY_STEP_MS * failures));
+  }
+}
+
+function recordLoginFailure(email: string, req: Request): void {
+  const key = loginKey(email, req);
+  const now = Date.now();
+  const rec = loginAttempts.get(key) ?? { failures: [], lockedUntil: 0 };
+  recentFailures(rec, now);
+  rec.failures.push(now);
+  if (rec.failures.length > LOGIN_MAX_FAILURES && rec.lockedUntil <= now) {
+    rec.lockedUntil = now + LOGIN_LOCKOUT_MS;
+    // Audit trail: a lockout is security-relevant — keep it in the server log
+    // (key carries email+IP but no password material).
+    console.warn(`[auth] login lockout 15min for ${key} after ${rec.failures.length} failed attempts`);
+  }
+  loginAttempts.set(key, rec);
+  // Bound memory: sweep expired entries when the map grows large.
+  if (loginAttempts.size > 10_000) {
+    for (const [k, v] of loginAttempts) {
+      if (v.lockedUntil <= now && recentFailures(v, now) === 0) loginAttempts.delete(k);
+    }
+  }
+}
+
+function clearLoginFailures(email: string, req: Request): void {
+  loginAttempts.delete(loginKey(email, req));
+}
+
 export const authRouter = createRouter({
   login: publicQuery
     .input(z.object({ email: z.string().email().max(255), password: z.string().min(1).max(128) }))
     .mutation(async ({ input, ctx }) => {
+      // P1-4: lockout check + progressive delay BEFORE any DB work / verify.
+      await loginThrottle(input.email, ctx.req);
       const db = getDb();
       const rows = await db.select().from(users).where(eq(users.email, input.email.toLowerCase())).limit(1);
       const user = rows[0];
       // Constant-ish behavior: verify against a dummy hash when user is absent
       if (!user || user.disabled !== 0 || !verifyPassword(input.password, user.passwordHash)) {
+        recordLoginFailure(input.email, ctx.req);
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
       }
+      clearLoginFailures(input.email, ctx.req); // reset on success
       const { token, expiresAt } = await createSession(user.id);
       ctx.resHeaders.set("set-cookie", cookieHeader(token, expiresAt, isSecureReq(ctx.req)));
       void pruneExpiredSessions().catch(() => {});

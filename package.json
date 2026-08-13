@@ -61,6 +61,7 @@
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
     "embla-carousel-react": "^8.6.0",
+    "exceljs": "^4.4.0",
     "hono": "^4.8.3",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.562.0",
@@ -80,7 +81,6 @@
     "superjson": "^2.2.6",
     "tailwind-merge": "^3.4.0",
     "vaul": "^1.1.2",
-    "xlsx": "^0.18.5",
     "zod": "^4.3.5"
   },
   "devDependencies": {

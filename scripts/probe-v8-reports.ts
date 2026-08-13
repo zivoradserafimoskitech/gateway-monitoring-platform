@@ -11,7 +11,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { eq } from "drizzle-orm";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { getDb } from "../api/queries/connection";
 import { reportSchedules, users } from "../db/schema";
 
@@ -72,12 +72,14 @@ async function main() {
     let sheetOk = false;
     let rowsN = 0;
     try {
-      const wb = XLSX.read(xbuf, { type: "buffer" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][];
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(xbuf as unknown as ArrayBuffer);
+      const ws = wb.worksheets[0];
+      const rows: unknown[][] = [];
+      ws?.eachRow((r) => rows.push(((r.values as unknown[]) ?? []).slice(1)));
       rowsN = rows.length;
       const flat = JSON.stringify(rows);
-      sheetOk = wb.SheetNames[0] === "Energy" && flat.includes("Import kWh") && flat.includes("TOTAL");
+      sheetOk = ws?.name === "Energy" && flat.includes("Import kWh") && flat.includes("TOTAL");
     } catch {
       sheetOk = false;
     }
@@ -99,7 +101,7 @@ async function main() {
     );
 
     // 3. mail transport
-    const logText = fs.existsSync("/tmp/dev-server.log") ? fs.readFileSync("/tmp/dev-server.log", "utf8") : "";
+    const logText = fs.existsSync("/mnt/agents/output/logs/dev.log") ? fs.readFileSync("/mnt/agents/output/logs/dev.log", "utf8") : "";
     const mailLines = logText.split("\n").filter((l) => l.includes("[mailer] LOG TRANSPORT") && l.includes("probe@example.com"));
     probe(
       "email transport invoked (log transport + server log line)",

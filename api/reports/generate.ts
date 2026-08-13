@@ -1,9 +1,10 @@
-// v8/D3: report file generation (xlsx via the `xlsx` package; pdf via a small
-// hand-rolled writer — no headless-browser deps). Output lands in
-// data/reports/ (REPORT_OUT_DIR override).
+// v8/D3: report file generation (xlsx via the `exceljs` package — audit P1-8,
+// SheetJS `xlsx@0.18.5` carries unpatched CVEs; pdf via a small hand-rolled
+// writer — no headless-browser deps). Output lands in data/reports/
+// (REPORT_OUT_DIR override).
 import fs from "node:fs";
 import path from "node:path";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import type { EnergyReport } from "./energy-query";
 
 export interface GeneratedReport {
@@ -51,14 +52,19 @@ function headerLines(report: EnergyReport, title: string, periodLabel: string): 
   ];
 }
 
-// ─── XLSX ────────────────────────────────────────────────────────────────────
-function buildXlsx(report: EnergyReport, title: string, periodLabel: string): Buffer {
-  const aoa = [...headerLines(report, title, periodLabel), ...tableRows(report)];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 8 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Energy");
-  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+// ─── XLSX (exceljs) ──────────────────────────────────────────────────────────
+// Same output format as the old SheetJS build: sheet "Energy", header lines,
+// then the table rows — all cells written as strings (no date/number typing),
+// so no timezone surprises from mysql2 Date values. SheetJS `wch` and exceljs
+// column `width` use the same character-width unit, so widths map 1:1.
+async function buildXlsx(report: EnergyReport, title: string, periodLabel: string): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Energy");
+  ws.columns = [{ width: 28 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 8 }, { width: 8 }];
+  for (const row of [...headerLines(report, title, periodLabel), ...tableRows(report)]) {
+    ws.addRow(row); // [] → empty spacer row, same as aoa_to_sheet
+  }
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 // ─── PDF (hand-rolled, single Helvetica font, plain-text table) ─────────────
@@ -131,7 +137,7 @@ export async function generateReportFile(
   const filePath = path.join(dir, filename);
   let buf: Buffer;
   if (opts.format === "xlsx") {
-    buf = buildXlsx(report, opts.title, opts.periodLabel);
+    buf = await buildXlsx(report, opts.title, opts.periodLabel);
   } else {
     const head = headerLines(report, opts.title, opts.periodLabel).map((r) => r[0] ?? "");
     const rows = tableRows(report);
