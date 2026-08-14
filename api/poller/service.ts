@@ -15,46 +15,19 @@ import { isNotNull } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { meters } from "@db/schema";
 import type { Meter } from "@db/schema";
-import type { RegisterDef } from "@contracts/modbus";
 import { getRegisterMaps, persistTelemetry } from "../mqtt/handlers";
-import { decodeRegisters } from "../modbus";
+import { decodeRegisters, buildBlocks } from "../modbus";
 import { shiftedAddress } from "@contracts/modbus";
 import { isTransportError, nextBackoffMs } from "./backoff";
+import { guarded } from "../lib/error-reporting";
+import { telemetryValueRejected } from "../lib/observability";
 
 const REFRESH_MS = 30_000;
-const MAX_BLOCK_WORDS = 120; // Modbus spec limit is 125 registers per read
-const MAX_GAP_WORDS = 8;
 
-interface Block {
-  functionCode: 3 | 4;
-  start: number; // PDU address
-  words: number;
-  defs: RegisterDef[];
-}
-
-// Group a register map into minimal read blocks.
-export function buildBlocks(map: RegisterDef[]): Block[] {
-  const wordsOf = (t: RegisterDef["type"]) => (t === "float32" || t === "u32" || t === "i32" ? 2 : 1);
-  const blocks: Block[] = [];
-  for (const fc of [3, 4] as const) {
-    const defs = map
-      .filter((d) => d.functionCode === fc)
-      .sort((a, b) => a.address - b.address);
-    let cur: Block | null = null;
-    for (const def of defs) {
-      const w = wordsOf(def.type);
-      const end = def.address + w;
-      if (cur && def.address - (cur.start + cur.words) <= MAX_GAP_WORDS && end - cur.start <= MAX_BLOCK_WORDS) {
-        cur.words = end - cur.start;
-        cur.defs.push(def);
-      } else {
-        cur = { functionCode: fc, start: def.address, words: w, defs: [def] };
-        blocks.push(cur);
-      }
-    }
-  }
-  return blocks;
-}
+// buildBlocks/Block/MAX_BLOCK_WORDS/MAX_GAP_WORDS moved to api/modbus.ts
+// (Wave 4 / C30 T2) so the C30 transparent path shares the same block planning.
+// Re-exported for existing importers (api/poller/test-connection.ts).
+export { buildBlocks } from "../modbus";
 
 interface DeviceStats {
   polls: number;
@@ -156,7 +129,9 @@ async function pollDevice(task: Task): Promise<void> {
         block.functionCode === 3
           ? await entry.client.readHoldingRegisters(block.start, block.words)
           : await entry.client.readInputRegisters(block.start, block.words);
-      Object.assign(values, decodeRegisters(block.defs, res.buffer, block.start));
+      const decoded = decodeRegisters(block.defs, res.buffer, block.start);
+      Object.assign(values, decoded.values);
+      for (const r of decoded.rejected) telemetryValueRejected(r.key);
     }
     if (Object.keys(values).length > 0) {
       await persistTelemetry(dev, values, { poller: "tcp", host, port });
@@ -170,11 +145,17 @@ async function pollDevice(task: Task): Promise<void> {
   }
 }
 
+// Audit wave 4: runTask already catches device-level poll failures (backoff
+// stats); this wrap is for anything OUTSIDE that catch (e.g. a bug in the
+// loop driver itself) — report it instead of an invisible unhandledRejection.
+// Never rethrows, so the per-device loop keeps its next-cycle behavior.
+const guardedRunTask = guarded("poller-task", runTask);
+
 function scheduleNext(task: Task): void {
   if (task.stopped) return;
   const interval = Math.max(5, task.device.pollIntervalSec || 60) * 1000;
   const delay = task.backoffMs > 0 ? task.backoffMs : interval;
-  task.timer = setTimeout(() => void runTask(task), delay);
+  task.timer = setTimeout(() => void guardedRunTask(task), delay);
   task.timer.unref?.();
 }
 
@@ -235,7 +216,7 @@ async function refreshDevices(): Promise<void> {
       };
       tasks.set(dev.id, task);
       // Stagger first polls to avoid a thundering herd on startup
-      task.timer = setTimeout(() => void runTask(task), (dev.id % 20) * 250);
+      task.timer = setTimeout(() => void guardedRunTask(task), (dev.id % 20) * 250);
       task.timer.unref?.();
     }
   }

@@ -3,8 +3,7 @@
 // block of the profile's register map and decodes it.
 import ModbusRTU from "modbus-serial";
 import { getRegisterMaps } from "../mqtt/handlers";
-import { decodeRegisters } from "../modbus";
-import { buildBlocks } from "./service";
+import { decodeRegisters, buildBlocks } from "../modbus";
 import { shiftedAddress } from "@contracts/modbus";
 
 export interface TestConnectionResult {
@@ -41,7 +40,7 @@ export async function testTcpConnection(
       block.functionCode === 3
         ? await client.readHoldingRegisters(block.start, block.words)
         : await client.readInputRegisters(block.start, block.words);
-    const values = decodeRegisters(block.defs, res.buffer, block.start);
+    const { values } = decodeRegisters(block.defs, res.buffer, block.start);
     if (Object.keys(values).length === 0) {
       return { ok: false, ms: Date.now() - started, error: "device answered but no values decoded" };
     }

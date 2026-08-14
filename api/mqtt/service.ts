@@ -15,7 +15,9 @@ import { gateways, meters, alarms, alarmRules, commands } from "@db/schema";
 import type { Gateway } from "@db/schema";
 import { defaultTopicPrefix, defaultTransport, downlinkTopic } from "@contracts/topics";
 import { handleG30Message, handleC30Frame, getRegisterMaps, meterCache, isDuplicateKey } from "./handlers";
-import { buildReadRequest, registerSpan } from "../modbus";
+import { buildReadRequest, buildBlocks } from "../modbus";
+import { shiftedAddress } from "@contracts/modbus";
+import { registerOutstanding, sweepOutstanding } from "./c30-outstanding";
 import { getTelemetryStats } from "../telemetry";
 import { markGatewaySeen } from "./liveness";
 import { offlineThresholdMs } from "./offline";
@@ -259,6 +261,11 @@ async function offlineSweep(): Promise<void> {
         .set({ status: "resolved", resolvedAt: new Date() })
         .where(eq(alarms.id, a.alarmId));
     }
+
+    // Wave 4 / C30 T1+T4: expire outstanding reads; control writes whose
+    // read-back never arrived are marked failed ("no read-back within 30s")
+    // so a command never sits in "sent" forever.
+    await sweepOutstanding();
   } catch (err) {
     console.error("[mqtt] offline sweep error:", err instanceof Error ? err.message : err);
   }
@@ -407,6 +414,10 @@ export async function publishOtaCmd(gateway: Gateway, frame: Record<string, unkn
 }
 
 // ─── Downlink commands (C30) ─────────────────────────────────────────────────
+// Wave 4 / C30 T1+T2: one read request PER BLOCK of the (stride-shifted)
+// register map — wide profiles (>125-register span) now work behind a C30, and
+// every request is registered in the outstanding-read registry so the response
+// is decoded against a KNOWN base address instead of a guessed one.
 export async function sendReadNow(gateway: Gateway, meterId: number): Promise<{ topic: string; hex: string }> {
   const svc = globalThis.__enertrekMqtt;
   if (!svc) throw new Error("MQTT service not running");
@@ -419,34 +430,57 @@ export async function sendReadNow(gateway: Gateway, meterId: number): Promise<{ 
   if (!meter || meter.gatewayId !== gateway.id) throw new Error("Meter not found on this gateway");
 
   const maps = await getRegisterMaps();
-  const map = maps.get(meter.model);
-  if (!map) throw new Error(`No register map for model ${meter.model}`);
-  const span = registerSpan(map);
-  if (!span) throw new Error("Register map span too large for a single Modbus read");
-
-  const fc = map[0].functionCode;
-  const frame = buildReadRequest(meter.modbusAddress, fc, span.start, span.quantity);
-  const topic = downlinkTopic(gateway.uid);
-  const hex = frame.toString("hex");
+  const baseMap = maps.get(meter.model);
+  if (!baseMap) throw new Error(`No register map for model ${meter.model}`);
+  // Mirror handleC30Frame/the poller: multi-unit devices live at shifted
+  // address blocks per unit (constraint #4 — addressStride must survive).
+  const unitId = meter.unitId ?? meter.modbusAddress;
+  const map = baseMap.some((d) => d.addressStride)
+    ? baseMap.map((d) => ({ ...d, address: shiftedAddress(d, unitId) }))
+    : baseMap;
+  const blocks = buildBlocks(map);
+  if (blocks.length === 0) throw new Error(`Register map for model ${meter.model} has no readable block`);
 
   if (!svc.client.connected) throw new Error("MQTT broker is not connected — cannot send on-demand read");
-  // Publish with a hard timeout: if the broker connection stalls, the
-  // publish callback never fires and this would otherwise hang forever.
-  await Promise.race([
-    new Promise<void>((resolve, reject) => {
-      svc.client.publish(topic, frame, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
-    }),
-    new Promise<void>((_resolve, reject) =>
-      setTimeout(() => reject(new Error("Timed out publishing read-now command (10s)")), 10_000)
-    ),
-  ]);
-  await db.insert(commands).values({
-    gatewayId: gateway.id,
-    meterId: meter.id,
-    kind: "readNow",
-    payloadHex: hex,
-    topic,
-    status: "sent",
-  });
-  return { topic, hex };
+  const topic = downlinkTopic(gateway.uid);
+  const hexes: string[] = [];
+  for (const block of blocks) {
+    const frame = buildReadRequest(meter.modbusAddress, block.functionCode, block.start, block.words);
+    const hex = frame.toString("hex");
+    // Publish with a hard timeout: if the broker connection stalls, the
+    // publish callback never fires and this would otherwise hang forever.
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        svc.client.publish(topic, frame, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+      }),
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("Timed out publishing read-now command (10s)")), 10_000)
+      ),
+    ]);
+    const inserted = await db
+      .insert(commands)
+      .values({
+        gatewayId: gateway.id,
+        meterId: meter.id,
+        kind: "readNow",
+        payloadHex: hex,
+        topic,
+        status: "sent",
+        reqSlave: meter.modbusAddress,
+        reqFc: block.functionCode,
+        reqStart: block.start,
+        reqQuantity: block.words,
+      })
+      .$returningId();
+    registerOutstanding({
+      gatewayId: gateway.id,
+      slave: meter.modbusAddress,
+      fc: block.functionCode,
+      start: block.start,
+      quantity: block.words,
+      commandId: inserted[0]?.id,
+    });
+    hexes.push(hex);
+  }
+  return { topic, hex: hexes.join(" ") };
 }

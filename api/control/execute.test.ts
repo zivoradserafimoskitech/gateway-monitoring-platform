@@ -45,9 +45,16 @@ function fakeDb(): void {
       },
     }),
     insert: () => ({
-      values: async (v: Record<string, unknown>) => {
+      values: (v: Record<string, unknown>) => {
         state.inserted.push(v);
-        return [];
+        // Thenable + $returningId (Wave 4 / T4: executeAndLog links the audit
+        // row id to the outstanding read-back).
+        const id = state.inserted.length;
+        return {
+          $returningId: async () => [{ id }],
+          then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
+            Promise.resolve([{ id }]).then(onF, onR),
+        };
       },
     }),
   };
@@ -131,7 +138,9 @@ test("interlock: devices behind a non-transparent gateway have no downlink chann
 test("transparent gateway: an FC6 frame is published to the downlink topic", async () => {
   const r = await executeControl(meter(), "dischargePowerKw", 40);
   assert.equal(r.status, "sent");
-  assert.equal(state.sentFrames.length, 1);
+  // Wave 4 / T4: FC6 write + an FC3 read of the same register for read-back
+  // verification (correlated via the outstanding registry).
+  assert.equal(state.sentFrames.length, 2);
   const { frame, gatewayUid } = state.sentFrames[0];
   assert.equal(gatewayUid, "gw-1");
   // FC6 frame: slave, fc=6, address BE, value BE, crc16 LE.
@@ -141,6 +150,13 @@ test("transparent gateway: an FC6 frame is published to the downlink topic", asy
   assert.equal(frame.readUInt16BE(2), 10); // register address
   assert.equal(frame.readUInt16BE(4), 40); // setpoint (scale 1)
   assert.equal(frame.readUInt16LE(6), crc16(frame.subarray(0, 6)));
+  // Second frame: FC3 read-back request (slave 5, fc=3, addr 10, quantity 1).
+  const read = state.sentFrames[1].frame;
+  assert.equal(read[0], 5);
+  assert.equal(read[1], 3);
+  assert.equal(read.readUInt16BE(2), 10);
+  assert.equal(read.readUInt16BE(4), 1);
+  assert.equal(r.verify?.gatewayId, 7);
 });
 
 test("interlock: bus address outside 1..255 is refused", async () => {

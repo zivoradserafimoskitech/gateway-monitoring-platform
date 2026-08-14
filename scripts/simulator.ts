@@ -21,7 +21,7 @@
 import "dotenv/config";
 import mqtt from "mqtt";
 import { DEFAULT_REGISTER_MAPS } from "../contracts/modbus";
-import { buildReadRequest, crc16 } from "../api/modbus";
+import { buildReadRequest, buildBlocks, crc16 } from "../api/modbus";
 
 const BROKER = process.env.SIM_MQTT_URL || "mqtt://127.0.0.1:1883";
 const G30_UID = "17697439880";
@@ -297,8 +297,13 @@ async function main() {
 
     setInterval(() => {
       const reading = genReading(`${C30_UID}:1`, 40, 10 / 3600, new Date());
-      const frame = buildC30Response(1, 0x0000, 0x56, reading);
-      client.publish(`d2g/${C30_UID}`, frame);
+      // audit wave 4 (C30 T1): emit PER-BLOCK frames like a real field master
+      // polling its read plan — a full-span frame is ambiguous to the gateway
+      // (a response carries no start address) and is now dropped + counted.
+      for (const b of buildBlocks(DEFAULT_REGISTER_MAPS.PEM3000)) {
+        const frame = buildC30Response(1, b.start, b.words, reading);
+        client.publish(`d2g/${C30_UID}`, frame);
+      }
     }, 10000);
 
     client.subscribe(`g2d/${C30_UID}`);

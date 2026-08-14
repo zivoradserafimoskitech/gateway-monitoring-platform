@@ -14,7 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { Check, Copy, KeyRound, Loader2, Plus, Ban } from "lucide-react";
 import { toast } from "sonner";
 
-type Scope = "read" | "control";
+// audit wave 4: 4-scope model. No scopes ticked = read-only key (was full
+// access). Labels live in the apiKeysScopes i18n section.
+type Scope = "read" | "control" | "telemetry:read" | "ems:write";
+const ALL_SCOPES: Scope[] = ["read", "control", "telemetry:read", "ems:write"];
+const scopeLabelKey = (s: Scope) =>
+  s === "telemetry:read" ? "telemetryRead" : s === "ems:write" ? "emsWrite" : s;
 
 export function ApiKeysCard() {
   const { t } = useI18n();
@@ -24,7 +29,7 @@ export function ApiKeysCard() {
   const keys = trpc.apiKeys.list.useQuery(undefined, { enabled: isAdmin });
   const [name, setName] = useState("");
   const [role, setRole] = useState<"viewer" | "operator" | "admin">("viewer");
-  // audit P1-7: optional expiry + scope restriction (no scopes ticked = full access).
+  // audit P1-7/wave-4: optional expiry + scope restriction (no scopes ticked = read-only).
   const [expiry, setExpiry] = useState("");
   const [scopes, setScopes] = useState<Scope[]>([]);
   const [freshKey, setFreshKey] = useState<string | null>(null);
@@ -91,12 +96,13 @@ export function ApiKeysCard() {
             value={expiry}
             onChange={(e) => setExpiry(e.target.value)}
           />
-          {(["read", "control"] as const).map((s) => (
+          {ALL_SCOPES.map((s) => (
             <label key={s} className="flex items-center gap-1.5 text-sm">
               <Checkbox checked={scopes.includes(s)} onCheckedChange={() => toggleScope(s)} />
-              {s}
+              {t.apiKeysScopes[scopeLabelKey(s)]}
             </label>
           ))}
+          <span className="self-center text-xs text-slate-400">{t.apiKeysScopes.hint}</span>
           <Button
             size="sm"
             disabled={create.isPending || !name.trim()}
@@ -173,7 +179,7 @@ export function ApiKeysCard() {
                       ))}
                     </span>
                   ) : (
-                    <span className="text-slate-400">{t.apiKeys.fullAccess}</span>
+                    <span className="text-slate-400">{t.apiKeysScopes.legacyReadOnly}</span>
                   )}
                 </TableCell>
                 <TableCell>{k.revokedAt ? t.apiKeys.revokedStatus : t.apiKeys.activeStatus}</TableCell>

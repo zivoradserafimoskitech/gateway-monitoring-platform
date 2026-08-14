@@ -20,6 +20,7 @@ import { localDayRanges, tzOffsetMs } from "../lib/tz";
 import { queryEnergyReport } from "./energy-query";
 import { generateReportFile } from "./generate";
 import { sendMail } from "../lib/mailer";
+import { captureError, guarded } from "../lib/error-reporting";
 
 const TICK_MIN = parseInt(process.env.REPORT_TICK_MIN || "5", 10);
 let timer: NodeJS.Timeout | null = null;
@@ -30,11 +31,14 @@ export function startReportLoop(): void {
     console.log("[reports] disabled via REPORT_TICK_MIN<=0"); // v8/D6: probe/secondary-replica switch
     return;
   }
+  // Audit wave 4: guarded() reports a tick failure (Sentry/log) and never
+  // rethrows — same loop-survives behavior as the previous .catch(console).
+  const tick = guarded("report-scheduler", reportTick);
   timer = setInterval(() => {
-    reportTick().catch((err) => console.error("[reports] tick failed:", err instanceof Error ? err.message : err));
+    void tick();
   }, TICK_MIN * 60_000);
   timer.unref?.();
-  reportTick().catch((err) => console.error("[reports] boot tick failed:", err instanceof Error ? err.message : err));
+  void tick();
   console.log(`[reports] scheduler started (tick ${TICK_MIN} min)`);
 }
 
@@ -210,6 +214,9 @@ export async function reportTick(): Promise<void> {
         console.log(`[reports] schedule ${s.id} "${s.name}" → ${res.path} (${res.bytes} B, ${res.transport})`);
       } catch (err) {
         console.error(`[reports] schedule ${s.id} failed:`, err instanceof Error ? err.message : err);
+        // Audit wave 4: a failed scheduled report must alert a human, not
+        // just a log line (60s dedupe keeps a broken schedule from spamming).
+        captureError(err, { task: "report-schedule", scheduleId: s.id });
       }
     }
   } catch (err) {

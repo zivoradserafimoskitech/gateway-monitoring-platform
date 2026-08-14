@@ -14,6 +14,41 @@ import { notifyAlarmBreach } from "../alarms/notify";
 const bootAt = Date.now();
 const http = { total: 0, errors: 0, byPath: new Map<string, number>() };
 
+// ─── Wave 4 / C30 counters (hand-rolled, labeled) ───────────────────────────
+// c30_frames_undecodable_total{reason}: C30 frames dropped because they could
+// not be attributed to a known read block ("drop over guess" — T1).
+// telemetry_values_rejected_total{key}: decoded values dropped by RegisterDef
+// min/max plausibility bounds (T3). `decoded` is tracked alongside so the UI
+// can show a rejection RATE; it is not exported as its own metric.
+export type C30UndecodableReason = "ambiguous" | "no_match" | "span_too_wide";
+const c30Undecodable = new Map<string, number>();
+const telemetryRejected = new Map<string, number>();
+const telemetryDecoded = new Map<string, number>();
+
+export function c30FrameUndecodable(reason: C30UndecodableReason): void {
+  c30Undecodable.set(reason, (c30Undecodable.get(reason) ?? 0) + 1);
+}
+
+export function telemetryValueRejected(key: string): void {
+  telemetryRejected.set(key, (telemetryRejected.get(key) ?? 0) + 1);
+}
+
+export function telemetryValueDecoded(key: string): void {
+  telemetryDecoded.set(key, (telemetryDecoded.get(key) ?? 0) + 1);
+}
+
+// Test/inspection accessors (the /metrics text is the production surface).
+export function getC30UndecodableCounts(): Record<string, number> {
+  return Object.fromEntries(c30Undecodable);
+}
+
+export function getTelemetryRejectionStats(): Record<string, { rejected: number; decoded: number }> {
+  const out: Record<string, { rejected: number; decoded: number }> = {};
+  for (const [k, v] of telemetryRejected) out[k] = { rejected: v, decoded: telemetryDecoded.get(k) ?? 0 };
+  for (const [k, v] of telemetryDecoded) out[k] ??= { rejected: 0, decoded: v };
+  return out;
+}
+
 export function httpRequestDone(method: string, path: string, status: number, ms: number, reqId: string): void {
   http.total++;
   if (status >= 500) http.errors++;
@@ -112,9 +147,20 @@ export async function metricsText(): Promise<string> {
     "# HELP enertrek_http_request_errors_total API 5xx responses",
     "# TYPE enertrek_http_request_errors_total counter",
     `enertrek_http_request_errors_total ${http.errors}`,
+    "# HELP c30_frames_undecodable_total C30 transparent frames dropped: no block could be attributed (drop over guess)",
+    "# TYPE c30_frames_undecodable_total counter",
+    "# HELP telemetry_values_rejected_total Decoded register values dropped by profile min/max plausibility bounds",
+    "# TYPE telemetry_values_rejected_total counter",
   );
   for (const [k, v] of http.byPath) {
     lines.push(`enertrek_http_requests_by_path{path="${esc(k)}"} ${v}`);
+  }
+  for (const reason of ["ambiguous", "no_match", "span_too_wide"] as const) {
+    const v = c30Undecodable.get(reason);
+    if (v !== undefined) lines.push(`c30_frames_undecodable_total{reason="${reason}"} ${v}`);
+  }
+  for (const [k, v] of telemetryRejected) {
+    lines.push(`telemetry_values_rejected_total{key="${esc(k)}"} ${v}`);
   }
   return lines.join("\n") + "\n";
 }

@@ -9,7 +9,14 @@ import { startMqttService, getMqttStatus } from "./mqtt/service";
 import { startPollerService } from "./poller/service";
 import { startEscalationLoop } from "./alarms/notify";
 import { metricsText, httpRequestDone, startWatchdogLoop } from "./lib/observability";
+import { installErrorHandlers } from "./lib/error-reporting";
 import crypto from "node:crypto";
+
+// Audit wave 4: report unhandledRejection/uncaughtException (Sentry when
+// SENTRY_DSN is set, process log otherwise). Installed FIRST so every later
+// boot failure is captured. uncaughtException exits after a ~1s flush — a
+// process in an unknown state must stop, not keep commanding plant.
+installErrorHandlers();
 
 // Audit P1-2: AUTH_REQUIRED=false flips the system to open demo mode — RBAC
 // bypassed, cross-org access, no audit trail. That must never run in

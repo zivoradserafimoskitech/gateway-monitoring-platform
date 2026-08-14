@@ -71,6 +71,52 @@ export interface EnergyIntervalBucket {
   estimated: boolean;
 }
 
+// audit wave 4 (Task 4): one bucket of a multi-metric series for
+// GET /api/v1/devices/:id/telemetry. Only NON-EMPTY buckets are returned —
+// the REST layer materializes the full consecutive UTC-aligned grid and fills
+// gaps with null values + samples:0 (same contract as EnergyIntervalBucket).
+export interface MetricSeriesBucket {
+  /** Bucket start, epoch seconds (UTC-aligned multiple of bucketSec). */
+  bucketStartSec: number;
+  /** AVG per requested key within the bucket; null when no sample carries the key. */
+  values: Record<string, number | null>;
+  /** Telemetry rows in the bucket (never 0 — empty buckets are omitted). */
+  samples: number;
+}
+
+// Metric keys become SQL identifiers/expressions, so they CANNOT be sent as
+// bind parameters — this whitelist IS the injection defence. The REST layer
+// validates first; both stores re-validate (defence in depth).
+export const METRIC_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+// Keys backed by a real indexed telemetry column (see writeBatch/HistoryPoint);
+// every other key is averaged out of values_json.
+export const COLUMN_BACKED_METRICS: Readonly<Record<string, string>> = {
+  voltageL1: "voltage_l1",
+  voltageL2: "voltage_l2",
+  voltageL3: "voltage_l3",
+  currentL1: "current_l1",
+  currentL2: "current_l2",
+  currentL3: "current_l3",
+  activePowerKw: "active_power_kw",
+  reactivePowerKvar: "reactive_power_kvar",
+  apparentPowerKva: "apparent_power_kva",
+  powerFactor: "power_factor",
+  frequencyHz: "frequency_hz",
+  energyImportKwh: "energy_import_kwh",
+  energyExportKwh: "energy_export_kwh",
+  demandKw: "demand_kw",
+};
+
+/** Throw unless every key passes METRIC_KEY_RE (pre-interpolation guard). */
+export function assertValidMetricKeys(keys: string[]): void {
+  for (const k of keys) {
+    if (!METRIC_KEY_RE.test(k)) {
+      throw new Error(`invalid metric key ${JSON.stringify(k)} — keys must match ${METRIC_KEY_RE}`);
+    }
+  }
+}
+
 export interface TelemetryStore {
   writeBatch(rows: TelemetryRow[]): Promise<void>;
   latest(meterId: number): Promise<TelemetryRow | null>;
@@ -96,5 +142,18 @@ export interface TelemetryStore {
   // v8/D2: settlement energy intervals — non-negative counter deltas + mean
   // power per UTC-aligned bucket; split raw/hourly at the retention cutoff.
   energyIntervals(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]>;
+  // audit wave 4 (Task 4): multi-metric AVG series per UTC-aligned bucket for
+  // the telemetry REST endpoint. Column-backed keys (COLUMN_BACKED_METRICS)
+  // use the real indexed column; all other keys are read from values_json.
+  // keys MUST pass METRIC_KEY_RE — implementations re-validate before any
+  // interpolation (the whitelist is the injection defence; keys are
+  // identifiers, not bind values). Returns only non-empty buckets.
+  metricSeries(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    keys: string[],
+  ): Promise<MetricSeriesBucket[]>;
   close(): Promise<void>;
 }

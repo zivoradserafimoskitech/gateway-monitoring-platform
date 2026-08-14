@@ -7,9 +7,11 @@ import { getTelemetryWriter } from "../telemetry";
 import { markMeterSeen } from "./liveness";
 import type { MetricKey, RegisterDef } from "@contracts/modbus";
 import { DEFAULT_REGISTER_MAPS, DEFAULT_METER_PHASES } from "@contracts/modbus";
-import { parseResponse, decodeRegisters, registerSpan } from "../modbus";
+import { parseResponse, decodeRegisters, registerSpan, buildBlocks } from "../modbus";
 import { shiftedAddress } from "@contracts/modbus";
 import { isInMaintenance, notifyAlarmBreach } from "../alarms/notify";
+import { telemetryValueRejected, telemetryValueDecoded, c30FrameUndecodable } from "../lib/observability";
+import { matchOutstanding, stampResponded, confirmVerifiedWrite } from "./c30-outstanding";
 import type { Gateway, Meter } from "@db/schema";
 
 // ─── Register maps (DB-backed, seeded from defaults) ────────────────────────
@@ -454,10 +456,17 @@ export async function handleG30Message(
 }
 
 // ─── C30 transparent Modbus uplink ───────────────────────────────────────────
+// A Modbus RTU response carries NO start address. Attribution order (T1):
+//  (a) a correlated outstanding read (same gateway+slave+fc, byteCount ===
+//      quantity*2) → decode against the REQUESTED base, which is known;
+//  (b) an unsolicited frame → accept only when EXACTLY ONE profile block
+//      matches the byte count, decode against that block's start;
+//  (c) otherwise DROP the frame and count it (c30_frames_undecodable_total).
+// Missing data is recoverable; silently mis-decoded data reaches billing.
 export async function handleC30Frame(
   gateway: Gateway,
   frame: Buffer,
-): Promise<{ decoded: boolean; exception?: number }> {
+): Promise<{ decoded: boolean; exception?: number; baseAddress?: number }> {
   const parsed = parseResponse(frame);
   if (!parsed || parsed.data === undefined) return { decoded: false };
   if (parsed.exception !== undefined) return { decoded: false, exception: parsed.exception };
@@ -476,16 +485,41 @@ export async function handleC30Frame(
   const map = baseMap.some((d) => d.addressStride)
     ? baseMap.map((d) => ({ ...d, address: shiftedAddress(d, unitId) }))
     : baseMap;
-  const span = registerSpan(map);
-  if (!span) return { decoded: false };
 
-  // Try decoding against the profile span start; also try base 0 for full-range frames.
-  let values = decodeRegisters(map, parsed.data, span.start);
-  if (Object.keys(values).length === 0) {
-    values = decodeRegisters(map, parsed.data, 0);
+  // (a) Correlated response to a read we issued (readNow / control read-back).
+  const matched = matchOutstanding(gateway.id, parsed.slave, parsed.functionCode, parsed.data.length);
+  let baseAddress: number;
+  if (matched) {
+    baseAddress = matched.start;
+    if (matched.commandId !== undefined) await stampResponded(matched.commandId);
+    if (matched.verifyExpected !== undefined) {
+      // T4: control write read-back — compare the first register and mark the
+      // control command row ok/failed. Telemetry decode below still runs.
+      await confirmVerifiedWrite(matched, parsed.data.readUInt16BE(0));
+    }
+  } else {
+    // (b) Unsolicited frame: attribute only when exactly one block of the
+    // profile matches the response's byte count — never guess.
+    const blocks = buildBlocks(map);
+    const candidates = blocks.filter(
+      (b) => b.functionCode === parsed.functionCode && b.words * 2 === parsed.data!.length,
+    );
+    if (candidates.length !== 1) {
+      c30FrameUndecodable(
+        candidates.length > 1 ? "ambiguous" : registerSpan(map) === null ? "span_too_wide" : "no_match",
+      );
+      return { decoded: false };
+    }
+    baseAddress = candidates[0].start;
   }
-  if (Object.keys(values).length === 0) return { decoded: false };
 
-  await persistTelemetry(meter, values, { hex: frame.toString("hex") });
-  return { decoded: true };
+  const decoded = decodeRegisters(map, parsed.data, baseAddress);
+  for (const key of Object.keys(decoded.values)) telemetryValueDecoded(key);
+  for (const r of decoded.rejected) telemetryValueRejected(r.key);
+  if (Object.keys(decoded.values).length > 0) {
+    await persistTelemetry(meter, decoded.values, { hex: frame.toString("hex") });
+  }
+  // A correlated frame is "decoded" (attributed) even when no register of the
+  // profile landed inside the requested block — it was provably our response.
+  return { decoded: true, baseAddress };
 }

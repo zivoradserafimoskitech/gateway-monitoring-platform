@@ -13,6 +13,9 @@
 //     peak command wins and the plan does not overwrite it while active.
 //  7) 404 for a device of another org; 400 on bad span / unsorted / >192
 //     setpoints (plus >48h span, out-of-window ts, |kw|>500); 401 without key.
+//  7b) audit wave 4 scope model: a legacy NULL-scopes viewer key gets 403 on
+//     PUT ems-plan; an ADMIN-role key with [read,control] but no ems:write
+//     also gets 403 (role does not imply scope). Both keys revoked after.
 //  8) Cleanup of all artifacts (plans, peak config, source meter/gateway/org,
 //     probe API key) + register reset.
 //
@@ -103,7 +106,9 @@ async function main() {
 
   // ── setup ────────────────────────────────────────────────────────────────
   await trpc("auth.login", { email: "admin@enertrek.local", password: "admin1234" }, "admin");
-  const key = (await trpc("apiKeys.create", { name: "probe-v9-ems-plan", role: "viewer" }, "admin")) as { id: number; key: string };
+  // audit wave 4: plan pushes need the full operator scope set — with the
+  // NULL=read-only flip a scope-less key can no longer PUT (checked in 7b).
+  const key = (await trpc("apiKeys.create", { name: "probe-v9-ems-plan", role: "operator", scopes: ["read", "control", "ems:write"] }, "admin")) as { id: number; key: string };
   const raw = key.key;
 
   const esmuRows = await db
@@ -322,6 +327,22 @@ async function main() {
         tooBig.status === 400 &&
         noKey.status === 401,
       { otherPut: otherPut.status, otherGet: otherGet.status, badSpan: badSpan.status, longSpan: longSpan.status, unsorted: unsorted.status, tooMany: tooMany.status, outOfWindow: outOfWindow.status, tooBig: tooBig.status, noKey: noKey.status },
+    );
+
+    // ── (7b) audit wave 4 scope model: NULL = read-only; role ≠ scope ─────
+    // Legacy NULL-scopes viewer key → 403 on PUT ems-plan (coarse "control").
+    const legacyKey = (await trpc("apiKeys.create", { name: "probe-v9-ems-plan-legacy", role: "viewer" }, "admin")) as { id: number; key: string };
+    const legacyPut = await v1("PUT", `/devices/${esmuId}/ems-plan`, legacyKey.key, plan1Body);
+    await trpc("apiKeys.revoke", { id: legacyKey.id }, "admin");
+    // ADMIN-role key with [read, control] but NO ems:write → still 403.
+    const adminKey = (await trpc("apiKeys.create", { name: "probe-v9-ems-plan-noscope", role: "admin", scopes: ["read", "control"] }, "admin")) as { id: number; key: string };
+    const adminPut = await v1("PUT", `/devices/${esmuId}/ems-plan`, adminKey.key, plan1Body);
+    const adminGet = await v1("GET", `/devices/${esmuId}/ems-plan`, adminKey.key);
+    await trpc("apiKeys.revoke", { id: adminKey.id }, "admin");
+    probe(
+      "(7b) NULL-scopes key → 403 on PUT; admin-role key without ems:write → 403 on PUT (GET still 200)",
+      legacyPut.status === 403 && adminPut.status === 403 && adminGet.status === 200,
+      { legacyPut: legacyPut.status, adminPut: adminPut.status, adminGet: adminGet.status },
     );
   } finally {
     // ── (8) cleanup ────────────────────────────────────────────────────────

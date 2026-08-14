@@ -35,6 +35,41 @@ export default function MeterDetail() {
   const meter = (meters.data ?? []).find((m) => m.id === meterId);
   const latest = trpc.meters.latest.useQuery({ meterId }, { refetchInterval: 5000 });
 
+  // Wave 4 / C30 T3: surface telemetry_values_rejected_total from /metrics —
+  // a profile with a wrong scale shows up here as a spike instead of silently
+  // stored bad data. Rate is computed between consecutive scrapes.
+  const [rejected, setRejected] = useState<{ total: number; perMin: number; byKey: Record<string, number> } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let prev: { at: number; total: number } | null = null;
+    const load = async () => {
+      try {
+        const text = await (await fetch("/metrics")).text();
+        const byKey: Record<string, number> = {};
+        let total = 0;
+        for (const line of text.split("\n")) {
+          const m = line.match(/^telemetry_values_rejected_total\{key="([^"]+)"\}\s+([0-9.]+)/);
+          if (m) {
+            byKey[m[1]] = Number(m[2]);
+            total += Number(m[2]);
+          }
+        }
+        const now = Date.now();
+        const perMin = prev && total >= prev.total ? ((total - prev.total) / (now - prev.at)) * 60_000 : 0;
+        prev = { at: now, total };
+        if (alive) setRejected({ total, perMin, byKey });
+      } catch {
+        /* /metrics unavailable — card stays hidden */
+      }
+    };
+    void load();
+    const i = setInterval(load, 15_000);
+    return () => {
+      alive = false;
+      clearInterval(i);
+    };
+  }, []);
+
   // Stable query window: tick every 15 s, otherwise `new Date()` per render
   // would change the query key on every render and the chart would never settle.
   const [tick, setTick] = useState(0);
@@ -160,6 +195,25 @@ export default function MeterDetail() {
           </Card>
         ))}
       </div>
+
+      {rejected && rejected.total > 0 && (
+        <Card>
+          <CardHeader className="pb-1 pt-4">
+            <CardTitle className="text-xs font-medium text-amber-600">{t.meters.rejectedValues}</CardTitle>
+          </CardHeader>
+          <CardContent className="pb-4 text-sm" title={t.meters.rejectedValuesHint}>
+            <span className="font-semibold text-amber-600">{rejected.total}</span>
+            <span className="text-xs text-slate-400"> · {rejected.perMin.toFixed(1)}/min</span>
+            <span className="ml-2 text-xs text-slate-500">
+              {Object.entries(rejected.byKey)
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 6)
+                .map(([k, n]) => `${k}: ${n}`)
+                .join(" · ")}
+            </span>
+          </CardContent>
+        </Card>
+      )}
 
       {/* v7/C12: active control — renders only when the model has a writable whitelist */}
       <ControlPanel meterId={meterId} />

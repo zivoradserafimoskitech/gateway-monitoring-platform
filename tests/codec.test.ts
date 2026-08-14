@@ -34,8 +34,24 @@ test("decodeRegisters: offset (biased register) applied after scale", () => {
   ];
   const buf = Buffer.alloc(24);
   buf.writeUInt16BE(18960, 20); // raw 18960 → 1896 - 1600 = 296 A
-  const values = decodeRegisters(defs, buf, 0);
+  const { values } = decodeRegisters(defs, buf, 0);
   assert.ok(Math.abs(values.batteryCurrentA - 296) < 1e-9);
+});
+
+test("decodeRegisters: out-of-bounds values are rejected, not emitted", () => {
+  // Wave 4 / C30 T3: a mis-scaled/misaligned register must land in `rejected`
+  // (counted via telemetry_values_rejected_total) and never in `values`.
+  const defs: RegisterDef[] = [
+    { key: "socPercent", label: "SOC", address: 0, functionCode: 4, type: "u16", scale: 1, unit: "%", min: 0, max: 100 },
+    { key: "frequencyHz", label: "F", address: 1, functionCode: 4, type: "u16", scale: 0.1, unit: "Hz", min: 40, max: 70 },
+  ];
+  const buf = Buffer.alloc(4);
+  buf.writeUInt16BE(3200, 0); // 3200 % SoC — impossible
+  buf.writeUInt16BE(500, 2); // 50.0 Hz — fine
+  const { values, rejected } = decodeRegisters(defs, buf, 0);
+  assert.equal(values.socPercent, undefined);
+  assert.equal(values.frequencyHz, 50);
+  assert.deepEqual(rejected, [{ key: "socPercent", value: 3200 }]);
 });
 
 test("decodeRegisters: u32 is high-word first", () => {
@@ -45,6 +61,6 @@ test("decodeRegisters: u32 is high-word first", () => {
   const buf = Buffer.alloc(12);
   buf.writeUInt16BE(0x0001, 8); // high word
   buf.writeUInt16BE(0x0000, 10); // low word → 65536 * 0.1 = 6553.6
-  const values = decodeRegisters(defs, buf, 0);
+  const { values } = decodeRegisters(defs, buf, 0);
   assert.ok(Math.abs(values.energyTotalKwh - 6553.6) < 1e-9);
 });

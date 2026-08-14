@@ -68,6 +68,45 @@ export function registerSpan(map: RegisterDef[]): { start: number; quantity: num
   return { start, quantity };
 }
 
+// ─── Read-block planning (shared by the TCP poller and the C30 path) ────────
+// Moved out of api/poller/service.ts (Wave 4 / C30 T2): the C30 transparent
+// channel needs the same block list — both to issue one read request per block
+// (profiles wider than the 125-register span limit) and to attribute
+// unsolicited response frames to a block by byte count.
+export const MAX_BLOCK_WORDS = 120; // Modbus spec limit is 125 registers per read
+export const MAX_GAP_WORDS = 8;
+
+export interface Block {
+  functionCode: 3 | 4;
+  start: number; // PDU address
+  words: number;
+  defs: RegisterDef[];
+}
+
+// Group a register map into minimal read blocks.
+export function buildBlocks(map: RegisterDef[]): Block[] {
+  const wordsOfT = (t: RegisterDef["type"]) => (t === "float32" || t === "u32" || t === "i32" ? 2 : 1);
+  const blocks: Block[] = [];
+  for (const fc of [3, 4] as const) {
+    const defs = map
+      .filter((d) => d.functionCode === fc)
+      .sort((a, b) => a.address - b.address);
+    let cur: Block | null = null;
+    for (const def of defs) {
+      const w = wordsOfT(def.type);
+      const end = def.address + w;
+      if (cur && def.address - (cur.start + cur.words) <= MAX_GAP_WORDS && end - cur.start <= MAX_BLOCK_WORDS) {
+        cur.words = end - cur.start;
+        cur.defs.push(def);
+      } else {
+        cur = { functionCode: fc, start: def.address, words: w, defs: [def] };
+        blocks.push(cur);
+      }
+    }
+  }
+  return blocks;
+}
+
 // Reverses 16-bit word ORDER within a field: [w0,w1] -> [w1,w0] (CDAB -> ABCD).
 function swapWords(buf: Buffer, offset: number, size: number): Buffer {
   const out = Buffer.alloc(size);
@@ -78,12 +117,21 @@ function swapWords(buf: Buffer, offset: number, size: number): Buffer {
   return out;
 }
 
+export interface DecodeResult {
+  values: Record<string, number>;
+  // Values that decoded fine but fell outside the register's declared min/max
+  // plausibility bounds (Wave 4 / C30 T3) — NOT emitted into `values`, so they
+  // never reach persistTelemetry; callers count them (telemetry_values_rejected_total).
+  rejected: Array<{ key: string; value: number }>;
+}
+
 export function decodeRegisters(
   map: RegisterDef[],
   data: Buffer,
   baseAddress: number,
-): Record<string, number> {
+): DecodeResult {
   const out: Record<string, number> = {};
+  const rejected: Array<{ key: string; value: number }> = [];
   for (const def of map) {
     const size = wordsOf(def.type) * 2;
     const offset = (def.address - baseAddress) * 2;
@@ -109,9 +157,13 @@ export function decodeRegisters(
         break;
     }
     if (Number.isFinite(raw)) {
-      const v = raw * def.scale + (def.offset ?? 0);
-      out[def.key] = Math.round(v * 10000) / 10000;
+      const v = Math.round((raw * def.scale + (def.offset ?? 0)) * 10000) / 10000;
+      if ((def.min !== undefined && v < def.min) || (def.max !== undefined && v > def.max)) {
+        rejected.push({ key: def.key, value: v });
+        continue;
+      }
+      out[def.key] = v;
     }
   }
-  return out;
+  return { values: out, rejected };
 }

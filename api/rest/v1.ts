@@ -4,6 +4,7 @@
 //   GET /api/v1/devices              meters + gateway/site context
 //   GET /api/v1/devices/:id/latest   latest telemetry row for one device
 //   GET /api/v1/devices/:id/energy   v8/D2: settlement energy intervals
+//   GET /api/v1/devices/:id/telemetry audit wave 4/Task 4: multi-metric bucketed series
 //   PUT /api/v1/devices/:id/ems-plan v9 Contract A: push an EMS plan (upsert)
 //   GET /api/v1/devices/:id/ems-plan v9 Contract A: active/next EMS plan
 //   GET /api/v1/alarms[?status=]     alarms (default: active)
@@ -16,17 +17,39 @@ import { getDb } from "../queries/connection";
 import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
 import { getTelemetryStore } from "../telemetry";
+import { METRIC_KEY_RE } from "../telemetry/types";
 
 type Vars = {
   Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null; scopes: string[] | null } };
 };
 export const restV1 = new Hono<Vars>();
 
-// audit P1-7: route→scope resolution. "read" covers all GET routes; "control"
-// covers writes (PUT /devices/:id/ems-plan today, POST /command in the
-// future). NULL scopes on a key = full access (legacy keys).
+// audit P1-7 + wave-4 scope model. Coarse route→scope resolution: "read"
+// covers all GET routes; "control" covers writes (PUT /devices/:id/ems-plan
+// today, POST /command in the future). Fine-grained scopes layer ON TOP of
+// the coarse one (endpointScope below). audit wave 4 FLIP (external audit,
+// constraint #3): NULL scopes = READ-ONLY (legacy keys) — was full access.
+// Role does NOT imply scope: an admin-role key without "ems:write" cannot
+// push an EMS plan.
+export type ApiScope = "read" | "control" | "telemetry:read" | "ems:write";
+
 export function requiredScope(method: string): "read" | "control" {
   return method.toUpperCase() === "GET" ? "read" : "control";
+}
+
+// Endpoint-specific scope required IN ADDITION to the coarse method scope.
+export function endpointScope(method: string, path: string): ApiScope | null {
+  const m = method.toUpperCase();
+  if (m === "PUT" && /\/devices\/\d+\/ems-plan\/?$/.test(path)) return "ems:write";
+  if (m === "GET" && /\/devices\/\d+\/telemetry\/?$/.test(path)) return "telemetry:read";
+  return null;
+}
+
+// NULL scopes = read-only (legacy keys): passes only the "read" check;
+// control / telemetry:read / ems:write all get 403.
+function scopeAllowed(scopes: string[] | null | undefined, scope: ApiScope): boolean {
+  if (scopes == null) return scope === "read";
+  return scopes.includes(scope);
 }
 
 restV1.use("*", async (c, next) => {
@@ -40,9 +63,14 @@ restV1.use("*", async (c, next) => {
   if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
     return c.json({ error: "API key expired" }, 401);
   }
-  // audit P1-7: scope enforcement (NULL scopes = legacy full access).
-  if (key.scopes && !key.scopes.includes(requiredScope(c.req.method))) {
-    return c.json({ error: "API key lacks required scope" }, 403);
+  // audit wave 4: scope enforcement (NULL scopes = READ-ONLY legacy keys).
+  const coarse = requiredScope(c.req.method);
+  if (!scopeAllowed(key.scopes, coarse)) {
+    return c.json({ error: `API key lacks required scope: ${coarse}` }, 403);
+  }
+  const extra = endpointScope(c.req.method, c.req.path);
+  if (extra && !scopeAllowed(key.scopes, extra)) {
+    return c.json({ error: `API key lacks required scope: ${extra}` }, 403);
   }
   // scopes are exposed on the context for debugging only — never log the raw key.
   c.set("apiKey", { id: key.id, name: key.name, role: key.role, orgId: key.orgId, scopes: key.scopes });
@@ -148,6 +176,71 @@ restV1.get("/devices/:id/energy", async (c) => {
     from: new Date(fromMs).toISOString(),
     to: new Date(toMs).toISOString(),
     bucketMin,
+    buckets,
+  });
+});
+
+// audit wave 4 (Task 4): multi-metric bucketed telemetry series — unblocks
+// retiring the ERP-side InfluxDB (neither /latest nor /energy can serve a
+// state-of-charge trend). Requires the telemetry:read scope (see middleware).
+// Full consecutive UTC-aligned grid: empty buckets are PRESENT with all keys
+// null and samples:0 — an omitted bucket and a measured zero must never be
+// indistinguishable ("no data" vs "the battery was idle").
+const TELEMETRY_MAX_KEYS = 16;
+restV1.get("/devices/:id/telemetry", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid device id" }, 400);
+  const fromRaw = c.req.query("from");
+  const toRaw = c.req.query("to");
+  if (!fromRaw || !toRaw) return c.json({ error: "from and to query params (ISO8601) are required" }, 400);
+  const fromMs = Date.parse(fromRaw);
+  const toMs = Date.parse(toRaw);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return c.json({ error: "unparsable from/to — use ISO8601" }, 400);
+  if (fromMs >= toMs) return c.json({ error: "from must be before to" }, 400);
+  if (toMs - fromMs > MAX_RANGE_MS) return c.json({ error: "range must not exceed 31 days" }, 400);
+  const keysRaw = c.req.query("keys");
+  if (!keysRaw) return c.json({ error: "keys query param (comma-separated metric keys) is required" }, 400);
+  const keys = [...new Set(keysRaw.split(",").map((k) => k.trim()))];
+  if (keys.length < 1 || keys.length > TELEMETRY_MAX_KEYS) {
+    return c.json({ error: `keys must contain 1..${TELEMETRY_MAX_KEYS} comma-separated metric keys` }, 400);
+  }
+  for (const k of keys) {
+    // Keys are SQL identifiers, not bind values — this whitelist IS the
+    // injection defence. The store re-validates (defence in depth).
+    if (!METRIC_KEY_RE.test(k)) {
+      return c.json({ error: `invalid metric key ${JSON.stringify(k)} — keys must match ${METRIC_KEY_RE}` }, 400);
+    }
+  }
+  const bucketRaw = c.req.query("bucketMin");
+  const bucketMin = bucketRaw === undefined ? 15 : Number(bucketRaw);
+  if (!Number.isInteger(bucketMin) || bucketMin < 1 || bucketMin > 1440) {
+    return c.json({ error: "bucketMin must be an integer in 1..1440" }, 400);
+  }
+  const db = getDb();
+  const dev = await db.select({ id: meters.id }).from(meters).where(and(eq(meters.id, id), eq(meters.orgId, c.get("apiKey").orgId ?? -1))).limit(1);
+  if (dev.length === 0) return c.json({ error: "device not found" }, 404);
+
+  const bucketSec = bucketMin * 60;
+  const rows = await getTelemetryStore().metricSeries(id, new Date(fromMs), new Date(toMs), bucketSec, keys);
+  const byStart = new Map(rows.map((r) => [r.bucketStartSec, r]));
+  // Consecutive UTC-aligned grid: floor(from) … ceil(to); gaps → nulls + samples:0.
+  const first = Math.floor(fromMs / 1000 / bucketSec);
+  const count = Math.ceil(toMs / 1000 / bucketSec) - first;
+  const buckets = Array.from({ length: count }, (_, i) => {
+    const startSec = (first + i) * bucketSec;
+    const r = byStart.get(startSec);
+    return {
+      ts: new Date(startSec * 1000).toISOString(),
+      values: Object.fromEntries(keys.map((k) => [k, r?.values[k] ?? null])),
+      samples: r?.samples ?? 0,
+    };
+  });
+  return c.json({
+    deviceId: id,
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    bucketMin,
+    keys,
     buckets,
   });
 });

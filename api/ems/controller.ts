@@ -57,6 +57,7 @@ import type { Meter } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog } from "../control/execute";
 import type { ControllableMap } from "../control/execute";
 import { getTelemetryStore } from "../telemetry";
+import { guarded } from "../lib/error-reporting";
 import {
   kwToMode,
   peakHoldPower,
@@ -87,12 +88,15 @@ export function startEmsLoop(): void {
     console.log("[ems] disabled via EMS_TICK_S<=0"); // v8/D6: probe/secondary-replica switch
     return;
   }
+  // Audit wave 4: guarded() reports a tick failure (Sentry/log) and never
+  // rethrows — same loop-survives behavior as the previous .catch(console).
+  const tick = guarded("ems-tick", emsTick);
   timer = setInterval(() => {
-    emsTick().catch((err) => console.error("[ems] tick failed:", err instanceof Error ? err.message : err));
+    void tick();
   }, TICK_S * 1000);
   timer.unref?.();
   // Boot tick: apply due schedules / peak shaving immediately after start.
-  emsTick().catch((err) => console.error("[ems] boot tick failed:", err instanceof Error ? err.message : err));
+  void tick();
   console.log(`[ems] controller started (tick ${TICK_S}s)`);
 }
 

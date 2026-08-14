@@ -53,13 +53,21 @@ function clearCookieHeader(secure: boolean): string {
 }
 
 // ─── Audit P1-4: login rate limiting + lockout ──────────────────────────────
-// In-memory, per (email + client IP) limiter. Documented limitation: state is
-// per process, so with multiple replicas behind the LB each replica counts
-// independently — move to Redis (or a shared store) when running multi-instance.
+// In-memory limiter with TWO independent counters per attempt — one keyed by
+// identity, one by client IP (audit wave4: the old `${email}|${ip}` key let
+// credential spraying (one host, many accounts) and distributed guessing (one
+// account, many hosts) slip through because every pair was distinct). A
+// failure is recorded against BOTH keys; a login is rejected when EITHER key
+// is locked. Documented limitation: state is per process, so with multiple
+// replicas behind the LB each replica counts independently — move to Redis
+// (or a shared store) when running multi-instance.
 const LOGIN_WINDOW_MS = 5 * 60_000; // failures are counted over 5 minutes
 const LOGIN_MAX_FAILURES = 5; // >5 failures within the window → lockout
 const LOGIN_LOCKOUT_MS = 15 * 60_000; // lockout duration
 const LOGIN_DELAY_STEP_MS = 500; // progressive delay: 500ms × failures so far
+// Bound the map so a spray across fabricated identities cannot grow it
+// without limit: past the cap, sweep expired entries, then evict oldest.
+const LOGIN_ATTEMPTS_MAX = 20_000;
 
 type LoginAttempts = { failures: number[]; lockedUntil: number };
 const loginAttempts = new Map<string, LoginAttempts>();
@@ -70,8 +78,9 @@ function loginClientIp(req: Request): string {
   return fwd?.split(",")[0]?.trim() || "unknown";
 }
 
-function loginKey(email: string, req: Request): string {
-  return `${email.toLowerCase()}|${loginClientIp(req)}`;
+/** The two counter keys an attempt is tracked under. */
+function keysFor(email: string, ip: string): string[] {
+  return [`id:${email.toLowerCase()}`, `ip:${ip}`];
 }
 
 function recentFailures(rec: LoginAttempts | undefined, now: number): number {
@@ -80,45 +89,76 @@ function recentFailures(rec: LoginAttempts | undefined, now: number): number {
   return rec.failures.length;
 }
 
-/** Throws 429 when the key is locked out; otherwise applies progressive delay. */
+/** Throws 429 when EITHER key is locked out; otherwise applies progressive delay. */
 async function loginThrottle(email: string, req: Request): Promise<void> {
-  const key = loginKey(email, req);
+  const keys = keysFor(email, loginClientIp(req));
   const now = Date.now();
-  const rec = loginAttempts.get(key);
-  if (rec?.lockedUntil && rec.lockedUntil > now) {
-    // Generic message — never reveal whether the email exists.
-    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many login attempts. Try again later." });
+  let maxFailures = 0;
+  for (const key of keys) {
+    const rec = loginAttempts.get(key);
+    if (rec?.lockedUntil && rec.lockedUntil > now) {
+      // Generic message — never reveal whether the email exists.
+      throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many login attempts. Try again later." });
+    }
+    maxFailures = Math.max(maxFailures, recentFailures(rec, now));
   }
-  const failures = recentFailures(rec, now);
-  if (failures > 0) {
-    await new Promise((resolve) => setTimeout(resolve, LOGIN_DELAY_STEP_MS * failures));
+  if (maxFailures > 0) {
+    await new Promise((resolve) => setTimeout(resolve, LOGIN_DELAY_STEP_MS * maxFailures));
   }
 }
 
 function recordLoginFailure(email: string, req: Request): void {
-  const key = loginKey(email, req);
+  const keys = keysFor(email, loginClientIp(req));
   const now = Date.now();
-  const rec = loginAttempts.get(key) ?? { failures: [], lockedUntil: 0 };
-  recentFailures(rec, now);
-  rec.failures.push(now);
-  if (rec.failures.length > LOGIN_MAX_FAILURES && rec.lockedUntil <= now) {
-    rec.lockedUntil = now + LOGIN_LOCKOUT_MS;
-    // Audit trail: a lockout is security-relevant — keep it in the server log
-    // (key carries email+IP but no password material).
-    console.warn(`[auth] login lockout 15min for ${key} after ${rec.failures.length} failed attempts`);
+  for (const key of keys) {
+    const rec = loginAttempts.get(key) ?? { failures: [], lockedUntil: 0 };
+    recentFailures(rec, now);
+    rec.failures.push(now);
+    if (rec.failures.length > LOGIN_MAX_FAILURES && rec.lockedUntil <= now) {
+      rec.lockedUntil = now + LOGIN_LOCKOUT_MS;
+      // Audit trail: a lockout is security-relevant — keep it in the server log
+      // (key carries email or IP but no password material).
+      console.warn(`[auth] login lockout 15min for ${key} after ${rec.failures.length} failed attempts`);
+    }
+    loginAttempts.set(key, rec);
   }
-  loginAttempts.set(key, rec);
-  // Bound memory: sweep expired entries when the map grows large.
-  if (loginAttempts.size > 10_000) {
+  // Bound memory: past the cap, evict oldest-first (Map iteration order is
+  // insertion order). Unlocked entries go first — an ACTIVE lock is only
+  // evicted when every entry is locked, so a flood of fabricated identities
+  // cannot wash out a real lockout while alternatives exist. (Failures older
+  // than LOGIN_WINDOW_MS are dead weight; oldest-first eviction removes them
+  // naturally, and recentFailures() also prunes on access.)
+  if (loginAttempts.size > LOGIN_ATTEMPTS_MAX) {
+    let overflow = loginAttempts.size - LOGIN_ATTEMPTS_MAX;
     for (const [k, v] of loginAttempts) {
-      if (v.lockedUntil <= now && recentFailures(v, now) === 0) loginAttempts.delete(k);
+      if (overflow <= 0) break;
+      if (v.lockedUntil <= now) {
+        loginAttempts.delete(k);
+        overflow--;
+      }
+    }
+    for (const k of loginAttempts.keys()) {
+      if (overflow <= 0) break;
+      loginAttempts.delete(k);
+      overflow--;
     }
   }
 }
 
 function clearLoginFailures(email: string, req: Request): void {
-  loginAttempts.delete(loginKey(email, req));
+  for (const key of keysFor(email, loginClientIp(req))) loginAttempts.delete(key);
 }
+
+// Test-only handle (api/routers/auth-lockout.test.ts) — the limiter state is
+// module-level, so unit tests drive it through these functions directly.
+export const __loginLimiterForTests = {
+  keysFor,
+  loginThrottle,
+  recordLoginFailure,
+  clearLoginFailures,
+  attempts: loginAttempts,
+  MAX: LOGIN_ATTEMPTS_MAX,
+};
 
 // ─── audit #23: MFA helpers ──────────────────────────────────────────────────
 // loginMfa is a PUBLIC procedure (no session yet), so the middleware audit
@@ -202,12 +242,16 @@ export const authRouter = createRouter({
       const rows = await db.select().from(users).where(eq(users.id, pending.userId)).limit(1);
       const user = rows[0];
       let ok = false;
+      // audit wave4: the accepted TOTP time-step, persisted before the session
+      // is issued so the same code can never be replayed inside its window.
+      let acceptedStep: number | null = null;
       if (user && user.disabled === 0 && user.totpEnabled === 1 && user.totpSecretEnc) {
         try {
-          ok = await verifyTotp(user.totpSecretEnc, input.code);
+          acceptedStep = await verifyTotp(user.totpSecretEnc, input.code, user.totpLastStep);
         } catch (e) {
           mfaGuardError(e);
         }
+        ok = acceptedStep !== null;
         if (!ok && looksLikeBackupCode(input.code)) {
           const hash = hashBackupCode(input.code);
           const codes = await db
@@ -228,6 +272,9 @@ export const authRouter = createRouter({
           code: "UNAUTHORIZED",
           message: f.destroyed ? "Too many failed attempts — sign in again" : "Invalid code",
         });
+      }
+      if (acceptedStep !== null) {
+        await db.update(users).set({ totpLastStep: acceptedStep }).where(eq(users.id, user!.id));
       }
       const done = mfaPending.consume(input.pendingToken)!;
       const { token, expiresAt } = await createSession(done.userId);
@@ -329,16 +376,18 @@ export const authRouter = createRouter({
       if (!user || !user.totpSecretEnc) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Start MFA setup first" });
       }
-      let ok = false;
+      // audit wave4: returns the accepted step (replay protection) — persist
+      // it together with enabling so this code cannot be reused at login.
+      let step: number | null = null;
       try {
-        ok = await verifyTotp(user.totpSecretEnc, input.code);
+        step = await verifyTotp(user.totpSecretEnc, input.code, user.totpLastStep);
       } catch (e) {
         mfaGuardError(e);
       }
-      if (!ok) {
+      if (step === null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
       }
-      await db.update(users).set({ totpEnabled: 1 }).where(eq(users.id, user.id));
+      await db.update(users).set({ totpEnabled: 1, totpLastStep: step }).where(eq(users.id, user.id));
       await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
       const { raw, hashes } = generateBackupCodes();
       await db.insert(mfaBackupCodes).values(hashes.map((codeHash) => ({ userId: user.id, codeHash })));
@@ -361,16 +410,17 @@ export const authRouter = createRouter({
       if (!user || user.totpEnabled !== 1 || !user.totpSecretEnc) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "MFA is not enabled" });
       }
-      let ok = false;
+      // audit wave4: persist the accepted step before disabling succeeds.
+      let step: number | null = null;
       try {
-        ok = await verifyTotp(user.totpSecretEnc, input.code);
+        step = await verifyTotp(user.totpSecretEnc, input.code, user.totpLastStep);
       } catch (e) {
         mfaGuardError(e);
       }
-      if (!ok) {
+      if (step === null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
       }
-      await db.update(users).set({ totpEnabled: 0, totpSecretEnc: null }).where(eq(users.id, user.id));
+      await db.update(users).set({ totpEnabled: 0, totpSecretEnc: null, totpLastStep: step }).where(eq(users.id, user.id));
       await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
       evictUserCacheForUser(user.id);
       return { ok: true };
@@ -387,15 +437,17 @@ export const authRouter = createRouter({
       if (!user || user.totpEnabled !== 1 || !user.totpSecretEnc) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "MFA is not enabled" });
       }
-      let ok = false;
+      // audit wave4: persist the accepted step before regenerating succeeds.
+      let step: number | null = null;
       try {
-        ok = await verifyTotp(user.totpSecretEnc, input.code);
+        step = await verifyTotp(user.totpSecretEnc, input.code, user.totpLastStep);
       } catch (e) {
         mfaGuardError(e);
       }
-      if (!ok) {
+      if (step === null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid code — check your authenticator app" });
       }
+      await db.update(users).set({ totpLastStep: step }).where(eq(users.id, user.id));
       await db.delete(mfaBackupCodes).where(eq(mfaBackupCodes.userId, user.id));
       const { raw, hashes } = generateBackupCodes();
       await db.insert(mfaBackupCodes).values(hashes.map((codeHash) => ({ userId: user.id, codeHash })));

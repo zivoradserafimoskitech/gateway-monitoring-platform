@@ -25,6 +25,13 @@
   logins fall back to password-only.
 - **Day/timezone policy (v5 #8):** all server-side "day" bucketing is UTC
   (epoch-based); the browser renders in its local tz. One conversion point.
+- **Error reporting (audit wave 4):** set `SENTRY_DSN` to push background-task
+  failures (EMS tick, poller loop, report scheduler, unhandled rejections) to
+  Sentry. The reporter (`api/lib/error-reporting.ts`) speaks the Sentry HTTP
+  store API directly — no SDK — with 60s fingerprint dedupe; uncaught
+  exceptions are reported, then the process exits for the watchdog to restart.
+  **Leaving `SENTRY_DSN` unset means nobody is alerted when a background task
+  fails** — errors degrade to `console.error` in the process log only.
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

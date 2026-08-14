@@ -2,19 +2,19 @@
 // Suitable for small fleets (dev, pilots, up to ~50 gateways at 1 min reporting).
 // For 300–500 gateways use the TimescaleDB store.
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { getDb } from "../queries/connection";
-import * as schema from "@db/schema";
+import { getDb, createWriteDb } from "../queries/connection";
 import { telemetry } from "@db/schema";
 import type {
   DailyReportOpts,
   DailyReportRow,
   EnergyIntervalBucket,
   HistoryPoint,
+  MetricSeriesBucket,
   TelemetryRow,
   TelemetryStore,
   TrendPoint,
 } from "./types";
+import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 import { retentionCutoff } from "./rollup";
 
 // v7/C5: merge raw-range and hourly-range report rows per day (ranges that
@@ -51,7 +51,7 @@ function mergeDayRows(parts: DailyReportRow[][]): DailyReportRow[] {
   return [...map.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
 }
 
-type WriteDb = ReturnType<typeof drizzle<typeof schema>>;
+type WriteDb = ReturnType<typeof createWriteDb>;
 let writeDb: WriteDb | null = null;
 
 // The batched hot path gets its OWN small connection pool, so bursts of
@@ -59,15 +59,8 @@ let writeDb: WriteDb | null = null;
 // writes of connections.
 function getWriteDb(): WriteDb {
   if (!writeDb) {
-    writeDb = drizzle({
-      connection: {
-        uri: process.env.DATABASE_URL!,
-        connectionLimit: 4,
-        enableKeepAlive: true,
-      },
-      schema,
-      mode: "planetscale",
-    });
+    // createWriteDb pins UTC on driver + session (see api/queries/connection.ts).
+    writeDb = createWriteDb({ connectionLimit: 4, enableKeepAlive: true });
   }
   return writeDb;
 }
@@ -573,6 +566,45 @@ export class MySqlTelemetryStore implements TelemetryStore {
       }
     }
     return out;
+  }
+
+  // audit wave 4 (Task 4): multi-metric bucketed series for the public REST
+  // API. Keys are validated against METRIC_KEY_RE BEFORE any interpolation —
+  // they are identifiers, not bind values, so the whitelist IS the injection
+  // defence (the REST layer validates too; this is defence in depth).
+  // Column-backed keys AVG the real indexed column; everything else is
+  // extracted from values_json. Only non-empty buckets are returned — the
+  // REST layer materializes the full grid (same split as energyIntervals).
+  async metricSeries(meterId: number, from: Date, to: Date, bucketSec: number, keys: string[]): Promise<MetricSeriesBucket[]> {
+    assertValidMetricKeys(keys);
+    if (!Number.isInteger(bucketSec) || bucketSec <= 0) throw new Error("bucketSec must be a positive integer");
+    const unique = [...new Set(keys)];
+    if (unique.length === 0) return [];
+    const db = getDb();
+    // Raw-sql Date params follow the node process TZ; pass explicit naive-UTC
+    // strings (same fix as dailyReportRaw, v7/C8).
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const avgExprs = unique.map((k) => {
+      const col = COLUMN_BACKED_METRICS[k];
+      const expr = col
+        ? sql`avg(${sql.raw(col)})`
+        : sql`avg(cast(json_unquote(json_extract(values_json, ${`$."${k}"`})) as double))`;
+      return sql`${expr} as ${sql.raw(`\`${k}\``)}`;
+    });
+    const res = await db.execute(sql`
+      select floor(unix_timestamp(ts) / ${bucketSec}) as b, count(*) as samples, ${sql.join(avgExprs, sql`, `)}
+      from telemetry
+      where meter_id = ${meterId}
+        and ts >= ${utcStr(from)}
+        and ts <= ${utcStr(to)}
+      group by b
+      order by b`);
+    const rows = (res as unknown as [Record<string, unknown>[]])[0];
+    return rows.map((r) => ({
+      bucketStartSec: Number(r.b) * bucketSec,
+      values: Object.fromEntries(unique.map((k) => [k, r[k] == null ? null : Number(r[k])])),
+      samples: Number(r.samples),
+    }));
   }
 
   async close(): Promise<void> {

@@ -13,10 +13,12 @@ import type {
   DailyReportRow,
   EnergyIntervalBucket,
   HistoryPoint,
+  MetricSeriesBucket,
   TelemetryRow,
   TelemetryStore,
   TrendPoint,
 } from "./types";
+import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 
 const COLS = [
   "ts",
@@ -302,6 +304,36 @@ export class TimescaleTelemetryStore implements TelemetryStore {
       avgPowerKw: r.avgPower === null ? null : Math.round(Number(r.avgPower) * 1000) / 1000,
       samples: Number(r.samples),
       estimated: r.counterReset === true,
+    }));
+  }
+
+  // audit wave 4 (Task 4): multi-metric bucketed series (same shape/semantics
+  // as the MySQL store). Keys are validated against METRIC_KEY_RE BEFORE any
+  // interpolation — the whitelist IS the injection defence (keys are
+  // identifiers, not bind values). Column-backed keys AVG the real indexed
+  // column; other keys read values_json. Only non-empty buckets are returned.
+  async metricSeries(meterId: number, from: Date, to: Date, bucketSec: number, keys: string[]): Promise<MetricSeriesBucket[]> {
+    assertValidMetricKeys(keys);
+    if (!Number.isInteger(bucketSec) || bucketSec <= 0) throw new Error("bucketSec must be a positive integer");
+    const unique = [...new Set(keys)];
+    if (unique.length === 0) return [];
+    const avgExprs = unique.map((k) => {
+      const col = COLUMN_BACKED_METRICS[k];
+      const inner = col ?? `(values_json->>'${k}')::double precision`; // k is whitelisted above
+      return `avg(${inner}) as "${k}"`;
+    });
+    const { rows } = await this.pool.query(
+      `select floor(extract(epoch from ts) / ${bucketSec}) as b, count(*)::int as samples, ${avgExprs.join(", ")}
+       from telemetry
+       where meter_id = $1 and ts >= $2::timestamptz and ts <= $3::timestamptz
+       group by b
+       order by b`,
+      [meterId, from, to],
+    );
+    return rows.map((r) => ({
+      bucketStartSec: Number(r.b) * bucketSec,
+      values: Object.fromEntries(unique.map((k) => [k, r[k] == null ? null : Number(r[k])])),
+      samples: Number(r.samples),
     }));
   }
 

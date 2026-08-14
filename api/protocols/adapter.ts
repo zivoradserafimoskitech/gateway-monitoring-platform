@@ -96,7 +96,10 @@ export const modbusAdapter: ProtocolAdapter = {
   capabilities: { poll: true, control: true, discovery: false },
 
   decode(map: RegisterDef[], data: Buffer, baseAddress: number): Record<string, number> {
-    return decodeRegisters(map, data, baseAddress);
+    // Out-of-bounds rejections (RegisterDef min/max) are dropped here as well;
+    // the live paths (poller, C30 handler) count them — this registry seam is
+    // currently not wired to any runtime path (see docs/protocols.md).
+    return decodeRegisters(map, data, baseAddress).values;
   },
 
   async control(meter: Meter, key: string, value: number): Promise<ControlResult> {

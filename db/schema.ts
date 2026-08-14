@@ -280,6 +280,15 @@ export const commands = mysqlTable(
     controlKey: varchar("control_key", { length: 64 }),
     controlValue: double("control_value"),
     result: varchar("result", { length: 500 }),
+    // Wave 4 / C30 T1: Modbus request parameters for kind=readNow rows (one row
+    // per read block). A C30 response carries no start address — these columns
+    // make the request recoverable so the response is decoded against a KNOWN
+    // base instead of a guessed one. respondedAt stamps the correlated reply.
+    reqSlave: int("req_slave"),
+    reqFc: int("req_fc"),
+    reqStart: int("req_start"),
+    reqQuantity: int("req_quantity"),
+    respondedAt: timestamp("responded_at"),
   },
   (t) => [index("commands_gateway_idx").on(t.gatewayId), index("commands_meter_idx").on(t.meterId)],
 );
@@ -319,6 +328,9 @@ export const users = mysqlTable(
     // (api/lib/totp.ts); plaintext never touches the DB.
     totpSecretEnc: varchar("totp_secret_enc", { length: 255 }),
     totpEnabled: tinyint("totp_enabled").notNull().default(0), // 0 off, 1 on
+    // audit wave4: last accepted TOTP time-step — replay protection. A step
+    // <= totpLastStep is never accepted again (see verifyTotp in api/lib/totp.ts).
+    totpLastStep: bigint("totp_last_step", { mode: "number" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("users_email_unique").on(t.email), index("users_org_idx").on(t.orgId)],
@@ -395,9 +407,9 @@ export const apiKeys = mysqlTable(
     lastUsedAt: timestamp("last_used_at"),
     revokedAt: timestamp("revoked_at"),
     // audit P1-7: optional key expiry (NULL = never expires) and scope
-    // restriction (NULL = full access per role — legacy keys). Non-null scopes
-    // limit the key to the listed scopes ("read" = GET routes, "control" =
-    // PUT/POST/DELETE routes on /api/v1/*).
+    // restriction. audit wave 4: NULL scopes = READ-ONLY (legacy keys); the
+    // full scope vocabulary is "read" | "control" | "telemetry:read" |
+    // "ems:write" — see api/rest/v1.ts and docs/api-v1.md.
     expiresAt: timestamp("expires_at"),
     scopes: json("scopes").$type<string[]>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),

@@ -2,9 +2,10 @@
 // Pinned behavior: RFC 6238 vectors (SHA1/8-digit), AES-256-GCM roundtrip +
 // tamper detection + key-derivation fallback, backup code format/hashing, and
 // the pending-login store contract (TTL, single-use, max-attempts).
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   MfaNotConfiguredError,
+  TOTP_PERIOD_S,
   createMfaPendingStore,
   decryptSecret,
   encryptSecret,
@@ -130,19 +131,75 @@ describe("encrypt/decrypt (AES-256-GCM at rest)", () => {
 });
 
 describe("verifyTotp (encrypted-secret path)", () => {
+  const KEY = "c".repeat(64);
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.MFA_ENCRYPTION_KEY;
+    process.env.MFA_ENCRYPTION_KEY = KEY;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.MFA_ENCRYPTION_KEY;
+    else process.env.MFA_ENCRYPTION_KEY = saved;
+  });
+
   it("verifies a live code against the encrypted secret", async () => {
-    const saved = process.env.MFA_ENCRYPTION_KEY;
-    process.env.MFA_ENCRYPTION_KEY = "c".repeat(64);
+    const secret = generateTotpSecret();
+    const enc = encryptSecret(secret);
+    const code = await generateTotpCode(secret);
+    expect(await verifyTotp(enc, code, null)).not.toBeNull();
+    expect(await verifyTotp(enc, code === "000000" ? "000001" : "000000", null)).toBeNull();
+  });
+
+  // audit wave4 — this is the test that proves replay protection:
+  it("rejects replay of an already-used code", async () => {
+    const secret = generateTotpSecret();
+    const enc = encryptSecret(secret);
+    const code = await generateTotpCode(secret);
+    const step = await verifyTotp(enc, code, null);
+    expect(step).not.toBeNull();
+    expect(await verifyTotp(enc, code, step)).toBeNull(); // same code again
+  });
+
+  it("returns the accepted step number (current 30s step)", async () => {
+    vi.useFakeTimers();
     try {
+      const t0 = 1_700_000_123_000; // fixed "now"
+      vi.setSystemTime(t0);
       const secret = generateTotpSecret();
       const enc = encryptSecret(secret);
-      const code = await generateTotpCode(secret);
-      expect(await verifyTotp(enc, code)).toBe(true);
-      expect(await verifyTotp(enc, code === "000000" ? "000001" : "000000")).toBe(false);
+      const code = await generateTotpCode(secret, { epoch: Math.floor(t0 / 1000) });
+      const expected = Math.floor(t0 / 1000 / TOTP_PERIOD_S);
+      expect(await verifyTotp(enc, code, null)).toBe(expected);
     } finally {
-      if (saved === undefined) delete process.env.MFA_ENCRYPTION_KEY;
-      else process.env.MFA_ENCRYPTION_KEY = saved;
+      vi.useRealTimers();
     }
+  });
+
+  it("accepts the adjacent step within window=1 unless it was already used", async () => {
+    vi.useFakeTimers();
+    try {
+      const t0 = 1_700_000_123_000;
+      vi.setSystemTime(t0);
+      const secret = generateTotpSecret();
+      const enc = encryptSecret(secret);
+      const currentStep = Math.floor(t0 / 1000 / TOTP_PERIOD_S);
+      // code generated for the PREVIOUS step (inside the ±1 window)
+      const prevCode = await generateTotpCode(secret, { epoch: (currentStep - 1) * TOTP_PERIOD_S });
+      expect(await verifyTotp(enc, prevCode, currentStep - 2)).toBe(currentStep - 1);
+      // ...but if the user already authenticated at the current (later) step,
+      // the older code is a replay and must be refused.
+      expect(await verifyTotp(enc, prevCode, currentStep)).toBeNull();
+      expect(await verifyTotp(enc, prevCode, currentStep - 1)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns null instead of throwing for a malformed token (backup-code-shaped)", async () => {
+    const secret = generateTotpSecret();
+    const enc = encryptSecret(secret);
+    await expect(verifyTotp(enc, "abcd-ef12", null)).resolves.toBeNull();
+    await expect(verifyTotp(enc, "not-a-token", null)).resolves.toBeNull();
   });
 });
 

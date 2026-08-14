@@ -144,6 +144,12 @@ export const en = {
     invalidPayload: "Payload must be a valid JSON object",
     noJobs: "No OTA jobs yet.",
     readonlyRole: "Read-only role — device management requires operator or admin",
+    // Wave 4 / C30 T1: undecodable-frame counter (transparent gateways)
+    c30Undecodable: "Undecodable C30 frames",
+    c30UndecodableHint: "Dropped, never guessed — no read block could be attributed",
+    c30ReasonAmbiguous: "ambiguous",
+    c30ReasonNoMatch: "no block match",
+    c30ReasonSpanTooWide: "span too wide",
   },
   devices: {
     allTypes: "All types",
@@ -214,6 +220,9 @@ export const en = {
     energyExport: "Energy export",
     demand: "Demand",
     updatedAt: "Updated",
+    // Wave 4 / C30 T3: plausibility-bounds rejection counter
+    rejectedValues: "Rejected values (out of range)",
+    rejectedValuesHint: "Decoded but outside the profile's min/max — dropped before storage",
   },
   alarms: {
     title: "Alarms",
@@ -461,6 +470,16 @@ export const en = {
   lang: {
     en: "English",
     mk: "Македонски",
+  },
+  // audit wave 4: API-key scope model labels (4 scopes; NULL = read-only).
+  // Scope names stay untranslated — they are API literals.
+  apiKeysScopes: {
+    read: "read",
+    control: "control",
+    telemetryRead: "telemetry:read",
+    emsWrite: "ems:write",
+    legacyReadOnly: "read-only (legacy)",
+    hint: "No scopes ticked = read-only key",
   },
 };
 

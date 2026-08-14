@@ -189,7 +189,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.001,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -198,7 +200,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -225,7 +229,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -471,7 +477,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i16",
         "scale": 0.001,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -480,7 +488,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -508,7 +518,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -526,7 +538,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -535,7 +549,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -572,7 +588,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "chargeEnergyTotalKwh",
@@ -730,7 +748,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u32",
         "scale": 0.001,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -739,7 +759,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u32",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -766,7 +788,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i32",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -890,7 +914,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "reactivePowerKvar",
@@ -908,7 +934,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "float32",
         "scale": 0.01,
-        "unit": "%"
+        "unit": "%",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "energyTotalKwh",
@@ -953,7 +981,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -1097,7 +1127,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "type": "float32",
         "scale": 1,
         "unit": "Hz",
-        "wordSwap": true
+        "wordSwap": true,
+        "min": 40,
+        "max": 70
       },
       {
         "key": "reactivePowerKvar",
@@ -1117,7 +1149,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "type": "float32",
         "scale": 0.01,
         "unit": "%",
-        "wordSwap": true
+        "wordSwap": true,
+        "min": -1,
+        "max": 1
       },
       {
         "key": "energyTotalKwh",
@@ -1167,7 +1201,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "type": "float32",
         "scale": 1,
         "unit": "°C",
-        "wordSwap": true
+        "wordSwap": true,
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -1330,7 +1366,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -1411,7 +1449,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "heatsinkTempC",
@@ -1420,7 +1460,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -1540,7 +1582,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -1567,7 +1611,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "internalTempC",
@@ -1576,7 +1622,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -1603,7 +1651,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -1639,7 +1689,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "chargeEnergyTotalKwh",
@@ -1831,7 +1883,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -1858,7 +1912,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -1876,7 +1932,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -1885,7 +1943,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -2137,7 +2197,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -2164,7 +2226,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -2191,7 +2255,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -2200,7 +2266,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -2236,7 +2304,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       }
     ],
     "sourceUrl": "https://github.com/marcelblijleven/goodwe (et.py)"
@@ -2392,7 +2462,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.001,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -2401,7 +2473,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -2428,7 +2502,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "internalTempC",
@@ -2437,7 +2513,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -2464,7 +2542,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -2473,7 +2553,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -2509,7 +2591,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cyclesCount",
@@ -2591,7 +2675,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "bmsStatusCode",
@@ -2636,7 +2722,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "chargeEnergyTotalKwh",
@@ -2663,7 +2751,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       }
     ],
     "sourceUrl": "https://www.victronenergy.com/live/ccgx:modbustcp_faq and register list https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list-3.71.xlsx"
@@ -2747,7 +2837,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "reactivePowerKvar",
@@ -2765,7 +2857,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.01,
-        "unit": "%"
+        "unit": "%",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "energyTotalKwh",
@@ -2810,7 +2904,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -2946,7 +3042,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "reactivePowerKvar",
@@ -2964,7 +3062,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.01,
-        "unit": "%"
+        "unit": "%",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "energyTotalKwh",
@@ -3009,7 +3109,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -3145,7 +3247,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "reactivePowerKvar",
@@ -3163,7 +3267,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.01,
-        "unit": "%"
+        "unit": "%",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "energyTotalKwh",
@@ -3208,7 +3314,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "heatsinkTempC",
@@ -3217,7 +3325,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -3344,7 +3454,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -3380,7 +3492,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -3473,7 +3587,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -3509,7 +3625,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -3602,7 +3720,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -3638,7 +3758,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -3815,7 +3937,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.001,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -3824,7 +3948,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -3853,7 +3979,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "faultCode",
@@ -3871,7 +3999,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -3909,7 +4039,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "chargeEnergyTotalKwh",
@@ -4062,7 +4194,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -4098,7 +4232,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -4281,7 +4417,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i16",
         "scale": 0.01,
-        "unit": ""
+        "unit": "",
+        "min": -1,
+        "max": 1
       },
       {
         "key": "frequencyHz",
@@ -4290,7 +4428,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "u16",
         "scale": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "energyTodayKwh",
@@ -4317,7 +4457,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",
@@ -4374,7 +4516,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -4383,7 +4527,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -4410,7 +4556,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cellTempMinC",
@@ -4419,7 +4567,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 0.1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cyclesCount",
@@ -4467,7 +4617,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -4476,7 +4628,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "u16",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -4503,7 +4657,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cellTempMinC",
@@ -4512,7 +4668,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 3,
         "type": "i16",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cyclesCount",
@@ -4551,7 +4709,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -4560,7 +4720,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -4614,7 +4776,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cellTempMinC",
@@ -4623,7 +4787,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cyclesCount",
@@ -4671,7 +4837,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "sohPercent",
@@ -4680,7 +4848,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "%"
+        "unit": "%",
+        "min": 0,
+        "max": 100
       },
       {
         "key": "batteryVoltageV",
@@ -4734,7 +4904,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cellTempMinC",
@@ -4743,7 +4915,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "cyclesCount",
@@ -4844,7 +5018,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "Hz"
+        "unit": "Hz",
+        "min": 40,
+        "max": 70
       },
       {
         "key": "voltageL1",
@@ -4880,7 +5056,9 @@ export const DEVICE_PROFILE_LIBRARY: DeviceProfileEntry[] = [
         "functionCode": 4,
         "type": "float32",
         "scale": 1,
-        "unit": "°C"
+        "unit": "°C",
+        "min": -40,
+        "max": 125
       },
       {
         "key": "statusCode",

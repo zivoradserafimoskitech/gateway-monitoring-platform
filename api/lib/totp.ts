@@ -115,9 +115,52 @@ export function decryptSecret(secretEnc: string): string {
   return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString("utf8");
 }
 
-/** Verify a code against the ENCRYPTED secret stored in users.totp_secret_enc. */
-export async function verifyTotp(secretEnc: string, code: string, window = 1): Promise<boolean> {
-  return verifyTotpCode(decryptSecret(secretEnc), code, { window });
+/**
+ * Verify a code against the ENCRYPTED secret stored in users.totp_secret_enc.
+ *
+ * Returns the accepted time-step number, or null when the code is invalid.
+ * Replay protection (audit wave4): a step `<= lastUsedStep` is never accepted,
+ * so a code captured by a phishing proxy / shoulder-surf / screen share cannot
+ * be replayed inside the ±window period (up to 90s otherwise). Callers MUST
+ * persist the returned step to users.totp_last_step before treating the
+ * operation as successful.
+ *
+ * otplib's `verify` does not report WHICH step matched, so each candidate
+ * step is probed individually (most likely first: current, −1, +1, …) with
+ * `epochTolerance: 0`, and the first valid step `> lastUsedStep` wins.
+ * (otplib epoch is in SECONDS — verified against 13.4.1.)
+ */
+export async function verifyTotp(
+  secretEnc: string,
+  code: string,
+  lastUsedStep: number | null,
+  window = 1,
+): Promise<number | null> {
+  const secret = decryptSecret(secretEnc);
+  const currentStep = Math.floor(Date.now() / 1000 / TOTP_PERIOD_S);
+  const candidates: number[] = [currentStep];
+  for (let i = 1; i <= window; i++) candidates.push(currentStep - i, currentStep + i);
+  for (const step of candidates) {
+    if (step < 0) continue;
+    if (lastUsedStep !== null && step <= lastUsedStep) continue; // already used → replay
+    try {
+      const result = await verify({
+        secret,
+        token: code.trim(),
+        digits: 6,
+        epoch: step * TOTP_PERIOD_S,
+        epochTolerance: 0,
+      });
+      if (result.valid) return step;
+    } catch (e) {
+      // Same contract as verifyTotpCode (197cd74): a malformed token (e.g. a
+      // 9-char backup code like "xxxx-xxxx") is an invalid TOTP, not an
+      // exception — return null so callers fall through to backup codes.
+      if (e instanceof Error && /token|digit|invalid/i.test(e.message)) return null;
+      throw e;
+    }
+  }
+  return null;
 }
 
 // ─── Backup codes ────────────────────────────────────────────────────────────

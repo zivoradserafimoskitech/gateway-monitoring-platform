@@ -146,6 +146,12 @@ export const mk: Dictionary = {
     invalidPayload: "Товарот мора да биде важечки JSON објект",
     noJobs: "Сè уште нема OTA задачи.",
     readonlyRole: "Улога само за читање — управувањето бара оператор или админ",
+    // Wave 4 / C30 T1: бројач на недекодливи рамки (транспарентни гејтвеи)
+    c30Undecodable: "Недекодливи C30 рамки",
+    c30UndecodableHint: "Отфрлени, никогаш погодени — не може да се припише блок за читање",
+    c30ReasonAmbiguous: "двосмислена",
+    c30ReasonNoMatch: "нема совпаѓање на блок",
+    c30ReasonSpanTooWide: "преширок опсег",
   },
   devices: {
     allTypes: "Сите типови",
@@ -216,6 +222,9 @@ export const mk: Dictionary = {
     energyExport: "Извезена енергија",
     demand: "Максимумер",
     updatedAt: "Ажурирано",
+    // Wave 4 / C30 T3: бројач на одбиени вредности по граници на валидност
+    rejectedValues: "Одбиени вредности (надвор од опсег)",
+    rejectedValuesHint: "Декодирани, но надвор од min/max на профилот — отфрлени пред складирање",
   },
   alarms: {
     title: "Аларми",
@@ -463,5 +472,15 @@ export const mk: Dictionary = {
   lang: {
     en: "English",
     mk: "Македонски",
+  },
+  // audit wave 4: лабели за scope-моделот на API клучеви (4 опсези; NULL = само читање).
+  // Имињата на опсезите не се преведуваат — тие се API литерали.
+  apiKeysScopes: {
+    read: "read",
+    control: "control",
+    telemetryRead: "telemetry:read",
+    emsWrite: "ems:write",
+    legacyReadOnly: "само читање (legacy)",
+    hint: "Без означени опсези = клуч само за читање",
   },
 };

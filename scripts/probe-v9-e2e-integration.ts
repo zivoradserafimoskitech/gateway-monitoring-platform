@@ -109,7 +109,9 @@ async function main() {
 
   // ── setup ────────────────────────────────────────────────────────────────
   await trpc("auth.login", { email: "admin@enertrek.local", password: "admin1234" }, "admin");
-  const key = (await trpc("apiKeys.create", { name: "probe-v9-e2e", role: "viewer" }, "admin")) as { id: number; key: string };
+  // audit wave 4: this probe pushes plans via REST PUT (Part A/B), so after
+  // the NULL=read-only flip the key needs explicit write scopes.
+  const key = (await trpc("apiKeys.create", { name: "probe-v9-e2e", role: "operator", scopes: ["read", "control", "ems:write"] }, "admin")) as { id: number; key: string };
   const raw = key.key;
 
   const allMeters = await db.select().from(meters);

@@ -36,9 +36,12 @@ export const apiKeysRouter = createRouter({
         name: z.string().min(1).max(255),
         role: z.enum(["admin", "operator", "viewer"]).default("viewer"),
         // audit P1-7: optional expiry (ISO8601) and scope restriction.
-        // Omitted/null scopes = full access per role (legacy behavior).
+        // audit wave 4: NULL = read-only (legacy keys) — was full access.
+        // Role does NOT imply scope: writes need explicit scopes
+        // ("control" + "ems:write" for PUT ems-plan, "telemetry:read" for
+        // GET /devices/:id/telemetry).
         expiresAt: z.string().datetime().optional(),
-        scopes: z.array(z.enum(["read", "control"])).optional(),
+        scopes: z.array(z.enum(["read", "control", "telemetry:read", "ems:write"])).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

@@ -14,13 +14,18 @@
 //    scaled value, then a read-back verification (status "ok" only when the
 //    register reads back the written value).
 //  - C30 transparent-bus devices: FC6 frame published to the gateway downlink
-//    topic (status "sent" — the bus is asynchronous, no read-back).
+//    topic, then an FC3 read of the same register registered in the C30
+//    outstanding-read registry (Wave 4 / T4). Status stays "sent" while the
+//    bus has not answered; the correlated response flips the commands row to
+//    "ok"/"failed", and the outstanding sweep fails rows with no read-back
+//    within 30s.
 //  - G30 JSON gateways: rejected (no downlink control channel).
 import ModbusRTU from "modbus-serial";
 import { eq } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { commands, deviceProfiles, gateways } from "@db/schema";
-import { crc16 } from "../modbus";
+import { crc16, buildReadRequest } from "../modbus";
+import { registerOutstanding, attachVerifyCommand } from "../mqtt/c30-outstanding";
 import type { Meter } from "@db/schema";
 
 export interface ControllableDef {
@@ -60,6 +65,9 @@ function buildWriteRequest(slave: number, address: number, value: number): Buffe
 export interface ControlResult {
   status: "ok" | "sent" | "failed";
   detail: string;
+  /** Wave 4 / T4: C30 writes carry the outstanding read-back registration so
+   *  executeAndLog can link the control commands row once inserted. */
+  verify?: { gatewayId: number; slave: number; fc: 3 | 4 };
 }
 
 /**
@@ -126,7 +134,25 @@ export async function executeControl(meter: Meter, key: string, value: number): 
   if (slave < 1 || slave > 255) return { status: "failed", detail: `bus address ${slave} out of Modbus range` };
   const frame = buildWriteRequest(slave, def.address, registerValue);
   await sendControlFrame(gateway, frame);
-  return { status: "sent", detail: `FC6 frame sent to ${gateway.uid} downlink (register ${def.address} = ${registerValue}) — asynchronous bus, no read-back` };
+  // Wave 4 / T4: read-back verification through the T1 correlation machinery.
+  // The FC6 echo alone proves nothing on a transparent bus — issue an FC3 read
+  // of the written register and register it as outstanding; the correlated
+  // response (or the 30 s sweep) flips the commands row to ok/failed.
+  const readFrame = buildReadRequest(slave, 3, def.address, 1);
+  await sendControlFrame(gateway, readFrame);
+  registerOutstanding({
+    gatewayId: gateway.id,
+    slave,
+    fc: 3,
+    start: def.address,
+    quantity: 1,
+    verifyExpected: registerValue,
+  });
+  return {
+    status: "sent",
+    detail: `FC6 frame sent to ${gateway.uid} downlink (register ${def.address} = ${registerValue}) — read-back verification pending (30s)`,
+    verify: { gatewayId: gateway.id, slave, fc: 3 },
+  };
 }
 
 /** Execute + ALWAYS log to commands (audit trail), rethrowing ControlError. */
@@ -134,18 +160,27 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
   const db = getDb();
   try {
     const result = await executeControl(meter, key, value);
-    await db.insert(commands).values({
-      gatewayId: meter.gatewayId,
-      meterId: meter.id,
-      kind: "control",
-      payloadHex: "-",
-      topic: `control:${meter.model}`,
-      status: result.status,
-      userId,
-      controlKey: key,
-      controlValue: value,
-      result: result.detail,
-    });
+    const inserted = await db
+      .insert(commands)
+      .values({
+        gatewayId: meter.gatewayId,
+        meterId: meter.id,
+        kind: "control",
+        payloadHex: "-",
+        topic: `control:${meter.model}`,
+        status: result.status,
+        userId,
+        controlKey: key,
+        controlValue: value,
+        result: result.detail,
+      })
+      .$returningId();
+    // Wave 4 / T4: link the audit row to the outstanding read-back so the
+    // correlated response (or sweep) can update THIS row.
+    const controlCommandId = inserted[0]?.id;
+    if (result.verify && controlCommandId !== undefined) {
+      attachVerifyCommand(result.verify.gatewayId, result.verify.slave, result.verify.fc, controlCommandId);
+    }
     return result;
   } catch (err) {
     if (err instanceof ControlError) {

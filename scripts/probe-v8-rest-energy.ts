@@ -8,6 +8,10 @@
 //  d) range > 31 days / bad bucketMin / from>=to / unparsable dates → 400.
 //  e) no key → 401.
 //  f) revoked key → 401 immediately (then the key row is the cleanup).
+//  g) audit wave 4: GET /devices/1/telemetry multi-metric grid with a
+//     [read, telemetry:read] key — 1h/15min → 4 consecutive UTC-aligned
+//     buckets, null-fill for gaps (samples:0), live data in ≥1 bucket; the
+//     plain [read] energy key gets 403 on /telemetry (endpoint scope).
 // Run: npx tsx scripts/probe-v8-rest-energy.ts  (dev server on :3000)
 const BASE = "http://localhost:3000";
 const jars: Record<string, string> = {};
@@ -46,9 +50,14 @@ interface Bucket { ts: string; importKwh: number | null; exportKwh: number | nul
 
 async function main() {
   await trpc("auth.login", { email: "admin@enertrek.local", password: "admin1234" }, "admin");
-  const created = (await trpc("apiKeys.create", { name: "probe-v8-energy", role: "viewer" }, "admin")) as { id: number; key: string; prefix: string };
+  // audit wave 4: explicit read scope (NULL is now read-only too, but probe
+  // keys declare scopes explicitly per the new model).
+  const created = (await trpc("apiKeys.create", { name: "probe-v8-energy", role: "viewer", scopes: ["read"] }, "admin")) as { id: number; key: string; prefix: string };
   const raw = created.key;
   probe("apiKeys.create returns raw etk_ key once", raw.startsWith("etk_") && raw.length > 40, { prefix: created.prefix });
+  // Separate key for the /telemetry grid check (endpoint scope telemetry:read).
+  const telemKey = (await trpc("apiKeys.create", { name: "probe-v8-telemetry", role: "viewer", scopes: ["read", "telemetry:read"] }, "admin")) as { id: number; key: string };
+  const telemRaw = telemKey.key;
 
   try {
     // ── (a) last 2h, 15-min buckets ────────────────────────────────────────
@@ -144,9 +153,34 @@ async function main() {
     // ── (e) 401 without key ────────────────────────────────────────────────
     const noKey = await v1(`/devices/1/energy?${q}`);
     probe("(e) no key → 401", noKey.status === 401, { status: noKey.status });
+
+    // ── (g) audit wave 4: /telemetry multi-metric grid ─────────────────────
+    // Meter 1 is live (see (a)). 1h at 15 min → exactly 4 consecutive
+    // UTC-aligned buckets; gaps are present with all keys null + samples:0,
+    // and at least one bucket carries real samples with numeric values.
+    // Window = the LAST FULL HOUR (toHour-1h → toHour): the most likely to
+    // hold live samples — a fixed-hours-back window goes stale whenever the
+    // feed restarts.
+    const gFrom = toHour - hourMs;
+    interface TelemBucket { ts: string; values: Record<string, number | null>; samples: number }
+    const g = await v1(`/devices/1/telemetry?from=${new Date(gFrom).toISOString()}&to=${new Date(toHour).toISOString()}&keys=activePowerKw,voltageL1&bucketMin=15`, telemRaw);
+    const gb: TelemBucket[] = g.body?.buckets ?? [];
+    const gAligned = gb.every((b, i) => new Date(b.ts).getTime() === gFrom + i * bucketMs);
+    const gNullFill = gb.every((b) => (b.samples === 0 ? b.values.activePowerKw === null && b.values.voltageL1 === null : true));
+    const gLive = gb.filter((b) => b.samples > 0);
+    probe(
+      "(g) telemetry 1h/15min grid: 4 aligned buckets, null-fill on gaps, live values present",
+      g.status === 200 && g.body.bucketMin === 15 && gb.length === 4 && gAligned && gNullFill &&
+        gLive.length >= 1 && gLive.every((b) => typeof b.values.activePowerKw === "number"),
+      { status: g.status, n: gb.length, live: gLive.length, first: gb[0], keys: g.body?.keys },
+    );
+    // The plain [read] energy key must NOT pass the telemetry:read endpoint scope.
+    const denied = await v1(`/devices/1/telemetry?from=${new Date(fromHour).toISOString()}&to=${new Date(fromHour + hourMs).toISOString()}&keys=activePowerKw&bucketMin=15`, raw);
+    probe("(g) read-only energy key → 403 on /telemetry (telemetry:read required)", denied.status === 403, { status: denied.status });
   } finally {
     // ── (f) revoke → 401; revocation is the cleanup (no raw key persists) ──
     await trpc("apiKeys.revoke", { id: created.id }, "admin");
+    await trpc("apiKeys.revoke", { id: telemKey.id }, "admin").catch(() => undefined);
     const after = await v1("/devices/1/energy?from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z&bucketMin=60", raw);
     probe("(f) revoked key → 401 immediately", after.status === 401, { status: after.status });
   }

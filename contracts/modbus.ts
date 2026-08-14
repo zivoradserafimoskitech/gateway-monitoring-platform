@@ -26,6 +26,12 @@ export interface RegisterDef {
   // Needed by protocols with biased registers (e.g. ESMU/BAMS: current at
   // 0.1 A/bit with −1600 A offset, temperature at 1 °C/bit with −40 °C offset).
   offset?: number;
+  // Optional plausibility bounds on the SCALED value (Wave 4 / C30 T3):
+  // decodeRegisters drops out-of-range values into `rejected` instead of
+  // emitting them — a wrong scale/byte-order/misaligned frame then shows up as
+  // a rejection spike instead of silently wrong stored telemetry.
+  min?: number; // reject decoded values below this
+  max?: number; // reject decoded values above this
   // Optional per-unit address shift for multi-object devices behind one TCP
   // endpoint (e.g. ESMU/BAMS ESBCM strings: string N lives at unit N+1, block
   // base = map address + (unitId − firstUnit) × stride). The poller and the
@@ -99,35 +105,39 @@ export const GATEWAY_MODELS = ["G30", "C30"] as const;
 export type GatewayModel = (typeof GATEWAY_MODELS)[number];
 
 // ─── Default register maps ───────────────────────────────────────────────────
+// Bounds (min/max, Wave 4 / C30 T3) are plausibility limits on the SCALED
+// value — a misaligned decode or wrong scale is rejected, not stored.
+// Voltages are L-N (0–300 V); currents cover CT-fed DIN-rail ratings
+// (0–10 kA); active/reactive power stay unbounded (bidirectional, export<0).
 // Three-phase float32 layout (FC04 input registers).
 const threePhaseMap: RegisterDef[] = [
-  { key: "voltageL1", label: "Voltage L1", address: 0x0000, functionCode: 4, type: "float32", scale: 1, unit: "V" },
-  { key: "voltageL2", label: "Voltage L2", address: 0x0002, functionCode: 4, type: "float32", scale: 1, unit: "V" },
-  { key: "voltageL3", label: "Voltage L3", address: 0x0004, functionCode: 4, type: "float32", scale: 1, unit: "V" },
-  { key: "currentL1", label: "Current L1", address: 0x0006, functionCode: 4, type: "float32", scale: 1, unit: "A" },
-  { key: "currentL2", label: "Current L2", address: 0x0008, functionCode: 4, type: "float32", scale: 1, unit: "A" },
-  { key: "currentL3", label: "Current L3", address: 0x000a, functionCode: 4, type: "float32", scale: 1, unit: "A" },
+  { key: "voltageL1", label: "Voltage L1", address: 0x0000, functionCode: 4, type: "float32", scale: 1, unit: "V", min: 0, max: 300 },
+  { key: "voltageL2", label: "Voltage L2", address: 0x0002, functionCode: 4, type: "float32", scale: 1, unit: "V", min: 0, max: 300 },
+  { key: "voltageL3", label: "Voltage L3", address: 0x0004, functionCode: 4, type: "float32", scale: 1, unit: "V", min: 0, max: 300 },
+  { key: "currentL1", label: "Current L1", address: 0x0006, functionCode: 4, type: "float32", scale: 1, unit: "A", min: 0, max: 10000 },
+  { key: "currentL2", label: "Current L2", address: 0x0008, functionCode: 4, type: "float32", scale: 1, unit: "A", min: 0, max: 10000 },
+  { key: "currentL3", label: "Current L3", address: 0x000a, functionCode: 4, type: "float32", scale: 1, unit: "A", min: 0, max: 10000 },
   { key: "activePowerKw", label: "Total active power", address: 0x0034, functionCode: 4, type: "float32", scale: 0.001, unit: "kW" },
   { key: "reactivePowerKvar", label: "Total reactive power", address: 0x003c, functionCode: 4, type: "float32", scale: 0.001, unit: "kvar" },
-  { key: "apparentPowerKva", label: "Total apparent power", address: 0x0038, functionCode: 4, type: "float32", scale: 0.001, unit: "kVA" },
-  { key: "powerFactor", label: "Total power factor", address: 0x003e, functionCode: 4, type: "float32", scale: 1, unit: "" },
-  { key: "frequencyHz", label: "Frequency", address: 0x0046, functionCode: 4, type: "float32", scale: 1, unit: "Hz" },
-  { key: "energyImportKwh", label: "Import active energy", address: 0x0048, functionCode: 4, type: "float32", scale: 1, unit: "kWh" },
-  { key: "energyExportKwh", label: "Export active energy", address: 0x004a, functionCode: 4, type: "float32", scale: 1, unit: "kWh" },
-  { key: "demandKw", label: "Active power demand", address: 0x0054, functionCode: 4, type: "float32", scale: 0.001, unit: "kW" },
+  { key: "apparentPowerKva", label: "Total apparent power", address: 0x0038, functionCode: 4, type: "float32", scale: 0.001, unit: "kVA", min: 0 },
+  { key: "powerFactor", label: "Total power factor", address: 0x003e, functionCode: 4, type: "float32", scale: 1, unit: "", min: -1, max: 1 },
+  { key: "frequencyHz", label: "Frequency", address: 0x0046, functionCode: 4, type: "float32", scale: 1, unit: "Hz", min: 40, max: 70 },
+  { key: "energyImportKwh", label: "Import active energy", address: 0x0048, functionCode: 4, type: "float32", scale: 1, unit: "kWh", min: 0 },
+  { key: "energyExportKwh", label: "Export active energy", address: 0x004a, functionCode: 4, type: "float32", scale: 1, unit: "kWh", min: 0 },
+  { key: "demandKw", label: "Active power demand", address: 0x0054, functionCode: 4, type: "float32", scale: 0.001, unit: "kW", min: 0 },
 ];
 
 // Single-phase float32 layout (FC04 input registers).
 const singlePhaseMap: RegisterDef[] = [
-  { key: "voltageL1", label: "Voltage", address: 0x0000, functionCode: 4, type: "float32", scale: 1, unit: "V" },
-  { key: "currentL1", label: "Current", address: 0x0006, functionCode: 4, type: "float32", scale: 1, unit: "A" },
+  { key: "voltageL1", label: "Voltage", address: 0x0000, functionCode: 4, type: "float32", scale: 1, unit: "V", min: 0, max: 300 },
+  { key: "currentL1", label: "Current", address: 0x0006, functionCode: 4, type: "float32", scale: 1, unit: "A", min: 0, max: 10000 },
   { key: "activePowerKw", label: "Active power", address: 0x000c, functionCode: 4, type: "float32", scale: 0.001, unit: "kW" },
-  { key: "apparentPowerKva", label: "Apparent power", address: 0x0012, functionCode: 4, type: "float32", scale: 0.001, unit: "kVA" },
+  { key: "apparentPowerKva", label: "Apparent power", address: 0x0012, functionCode: 4, type: "float32", scale: 0.001, unit: "kVA", min: 0 },
   { key: "reactivePowerKvar", label: "Reactive power", address: 0x0018, functionCode: 4, type: "float32", scale: 0.001, unit: "kvar" },
-  { key: "powerFactor", label: "Power factor", address: 0x001e, functionCode: 4, type: "float32", scale: 1, unit: "" },
-  { key: "frequencyHz", label: "Frequency", address: 0x0046, functionCode: 4, type: "float32", scale: 1, unit: "Hz" },
-  { key: "energyImportKwh", label: "Import active energy", address: 0x0048, functionCode: 4, type: "float32", scale: 1, unit: "kWh" },
-  { key: "energyExportKwh", label: "Export active energy", address: 0x004a, functionCode: 4, type: "float32", scale: 1, unit: "kWh" },
+  { key: "powerFactor", label: "Power factor", address: 0x001e, functionCode: 4, type: "float32", scale: 1, unit: "", min: -1, max: 1 },
+  { key: "frequencyHz", label: "Frequency", address: 0x0046, functionCode: 4, type: "float32", scale: 1, unit: "Hz", min: 40, max: 70 },
+  { key: "energyImportKwh", label: "Import active energy", address: 0x0048, functionCode: 4, type: "float32", scale: 1, unit: "kWh", min: 0 },
+  { key: "energyExportKwh", label: "Export active energy", address: 0x004a, functionCode: 4, type: "float32", scale: 1, unit: "kWh", min: 0 },
 ];
 
 export const DEFAULT_REGISTER_MAPS: Record<MeterModel, RegisterDef[]> = {

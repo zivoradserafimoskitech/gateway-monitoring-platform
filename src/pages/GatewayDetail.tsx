@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
@@ -68,6 +68,42 @@ export default function GatewayDetail() {
   const meters = detail.data?.meters ?? [];
   const commands = detail.data?.commands ?? [];
 
+  // Wave 4 / C30 T1: surface c30_frames_undecodable_total from /metrics next to
+  // the gateway stats — dropped frames are the visible signal of the
+  // "drop over guess" policy doing its job (or of a misconfigured profile).
+  const [c30Stats, setC30Stats] = useState<{ total: number; perMin: number; byReason: Record<string, number> } | null>(null);
+  useEffect(() => {
+    if (gw?.transport !== "transparent") return;
+    let alive = true;
+    let prev: { at: number; total: number } | null = null;
+    const load = async () => {
+      try {
+        const text = await (await fetch("/metrics")).text();
+        const byReason: Record<string, number> = {};
+        let total = 0;
+        for (const line of text.split("\n")) {
+          const m = line.match(/^c30_frames_undecodable_total\{reason="([^"]+)"\}\s+([0-9.]+)/);
+          if (m) {
+            byReason[m[1]] = Number(m[2]);
+            total += Number(m[2]);
+          }
+        }
+        const now = Date.now();
+        const perMin = prev && total >= prev.total ? ((total - prev.total) / (now - prev.at)) * 60_000 : 0;
+        prev = { at: now, total };
+        if (alive) setC30Stats({ total, perMin, byReason });
+      } catch {
+        /* /metrics unavailable — card stays hidden */
+      }
+    };
+    void load();
+    const i = setInterval(load, 15_000);
+    return () => {
+      alive = false;
+      clearInterval(i);
+    };
+  }, [gw?.transport]);
+
   if (!gw) return <p className="text-sm text-slate-500">{t.common.loading}</p>;
 
   return (
@@ -109,6 +145,33 @@ export default function GatewayDetail() {
           </CardHeader>
           <CardContent className="text-sm">{gw.lastSeenAt ? fmtTime(gw.lastSeenAt) : t.common.never}</CardContent>
         </Card>
+        {gw.transport === "transparent" && c30Stats && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">{t.gateways.c30Undecodable}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm">
+              <div>
+                <span className={c30Stats.total > 0 ? "font-semibold text-amber-600" : ""}>{c30Stats.total}</span>
+                <span className="text-xs text-slate-400"> · {c30Stats.perMin.toFixed(1)}/min</span>
+              </div>
+              <div className="mt-1 text-xs text-slate-500" title={t.gateways.c30UndecodableHint}>
+                {(["ambiguous", "no_match", "span_too_wide"] as const)
+                  .filter((r) => (c30Stats.byReason[r] ?? 0) > 0)
+                  .map((r) => {
+                    const label =
+                      r === "ambiguous"
+                        ? t.gateways.c30ReasonAmbiguous
+                        : r === "no_match"
+                          ? t.gateways.c30ReasonNoMatch
+                          : t.gateways.c30ReasonSpanTooWide;
+                    return `${label}: ${c30Stats.byReason[r]}`;
+                  })
+                  .join(" · ") || t.gateways.c30UndecodableHint}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <Card>
