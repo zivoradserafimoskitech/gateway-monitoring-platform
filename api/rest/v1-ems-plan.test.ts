@@ -16,7 +16,7 @@ const state = vi.hoisted(() => ({
   } | null,
   deviceFound: true,
   executed: [] as Array<{ sql: string; params: unknown[] }>,
-  selectRows: [] as unknown[][],
+  selectRows: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../queries/connection", () => ({ getDb: () => fakeDb() }));

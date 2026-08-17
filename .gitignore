@@ -31,6 +31,8 @@ dist-ssr
 *.sqlite
 *.sqlite3
 db/migrations/*.sql
+# Wave 7: demo-image build artifact (generated in-image, must stay a fresh dir)
+db/demo-schema/
 # TypeScript cache
 *.tsbuildinfo
 # Build outputs

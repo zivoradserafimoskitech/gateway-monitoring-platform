@@ -1,0 +1,18 @@
+# Slim app-only image (pre-Wave-7 root Dockerfile) — kept as the Hetzner
+# reference. The all-in-one root Dockerfile is byte-identical in behavior to
+# this one when an external DATABASE_URL is provided (the entrypoint execs
+# `npm start` directly and never touches MariaDB/seeds/simulators).
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+CMD ["npm", "start"]

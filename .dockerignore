@@ -10,3 +10,8 @@ dist
 # Local dev/verification artifacts
 verifier/runs
 upload
+# Runtime logs (demo image writes to /app/logs at runtime)
+logs
+# Wave 7: generated inside the image — must be a fresh out dir at build time
+# so drizzle-kit emits a full schema snapshot, never a diff.
+db/demo-schema

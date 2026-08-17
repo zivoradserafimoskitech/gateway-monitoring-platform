@@ -161,7 +161,10 @@ if (env.isProduction) {
   serveStaticFiles(app);
 
   const port = parseInt(process.env.PORT || "3000");
-  serve({ fetch: app.fetch, port }, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+  // Wave 7: bind all interfaces explicitly (container preview reaches the app
+  // from outside the container). HOST overrides for special deployments.
+  const hostname = process.env.HOST || "0.0.0.0";
+  serve({ fetch: app.fetch, port, hostname }, () => {
+    console.log(`Server running on http://${hostname}:${port}/`);
   });
 }
