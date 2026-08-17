@@ -19,14 +19,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Save } from "lucide-react";
+import { Save, Download } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
+import { ProfileImportDialog } from "@/components/ProfileImportDialog";
+import { ProfileVerifyWizard } from "@/components/ProfileVerifyWizard";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
 import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
 import type { RegisterDef } from "@contracts/modbus";
+
+// Wave 5 / T3: shape of the writable whitelist JSON (mirrors ControllableMap
+// in api/control/execute.ts — kept local to avoid importing server code).
+type ProfileVerifyWizardControllable = Record<
+  string,
+  { address: number; fc?: 6 | 16; min: number; max: number; scale?: number; unit?: string; description?: string }
+>;
 
 export default function Settings() {
   const { t } = useI18n();
@@ -34,9 +43,13 @@ export default function Settings() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">{t.settings.title}</h1>
-        <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">{t.settings.title}</h1>
+          <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
+        </div>
+        {/* Wave 5 / T2: adding a vendor profile is data entry, not a code change */}
+        <ProfileImportDialog />
       </div>
       {/* v8/D2: organizations — superadmin only */}
       <OrganizationsCard />
@@ -55,11 +68,33 @@ export default function Settings() {
           deviceType={p.deviceType}
           protocol={p.protocol}
           source={p.source}
+          verificationStatus={p.verificationStatus}
+          allowUnverifiedControl={p.allowUnverifiedControl}
+          dischargePositive={p.dischargePositive}
+          controllable={p.controllable as ProfileVerifyWizardControllable | null}
           initialMap={p.registerMap as RegisterDef[]}
         />
       ))}
     </div>
   );
+}
+
+// Wave 5 / T1: verification status badge — draft profiles block control writes.
+function VerificationBadge({ status }: { status: "draft" | "bench_verified" | "field_verified" }) {
+  const { t } = useI18n();
+  const styles =
+    status === "field_verified"
+      ? "bg-emerald-100 text-emerald-700"
+      : status === "bench_verified"
+        ? "bg-sky-100 text-sky-700"
+        : "bg-amber-100 text-amber-700";
+  const label =
+    status === "field_verified"
+      ? t.settings.verificationField
+      : status === "bench_verified"
+        ? t.settings.verificationBench
+        : t.settings.verificationUnverified;
+  return <span className={"rounded-full px-2 py-0.5 text-[10px] font-medium " + styles}>{label}</span>;
 }
 
 function ProfileCard({
@@ -70,6 +105,10 @@ function ProfileCard({
   deviceType,
   protocol,
   source,
+  verificationStatus,
+  allowUnverifiedControl,
+  dischargePositive,
+  controllable,
   initialMap,
 }: {
   id: number;
@@ -79,6 +118,10 @@ function ProfileCard({
   deviceType: string;
   protocol: string;
   source: string;
+  verificationStatus: "draft" | "bench_verified" | "field_verified";
+  allowUnverifiedControl: boolean;
+  dischargePositive: boolean | null;
+  controllable: ProfileVerifyWizardControllable | null;
   initialMap: RegisterDef[];
 }) {
   const { t } = useI18n();
@@ -90,6 +133,21 @@ function ProfileCard({
     onSuccess: () => {
       utils.profiles.list.invalidate();
       toast.success(t.settings.mapSaved);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  // Wave 5 / T2: export the profile back to the canonical CSV (share between
+  // installations, diff after a vendor firmware revision).
+  const exportCsv = trpc.profiles.exportCsv.useMutation({
+    onSuccess: (res) => {
+      const url = URL.createObjectURL(new Blob([res.csv], { type: "text/csv" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = res.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(t.settings.csvExported);
     },
     onError: (e) => toast.error(e.message),
   });
@@ -121,12 +179,33 @@ function ProfileCard({
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-500">
               {protocol}
             </span>
+            <VerificationBadge status={verificationStatus} />
+            {allowUnverifiedControl && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                ⚠ {t.settings.commissioningOverride}
+              </span>
+            )}
           </CardTitle>
           <p className="mt-1 text-xs text-slate-500">{label}</p>
         </div>
-        <Button size="sm" className="gap-2" disabled={save.isPending} onClick={() => save.mutate({ id, registerMap: map })}>
-          <Save className="h-4 w-4" /> {t.settings.saveMap}
-        </Button>
+        <div className="flex gap-2">
+          {/* Wave 5 / T3: guided bench verification turns draft → bench_verified */}
+          <ProfileVerifyWizard
+            id={id}
+            model={model}
+            label={label}
+            verificationStatus={verificationStatus}
+            allowUnverifiedControl={allowUnverifiedControl}
+            dischargePositive={dischargePositive}
+            controllable={controllable}
+          />
+          <Button variant="outline" size="sm" className="gap-2" disabled={exportCsv.isPending} onClick={() => exportCsv.mutate({ id })}>
+            <Download className="h-4 w-4" /> {t.settings.csvExport}
+          </Button>
+          <Button size="sm" className="gap-2" disabled={save.isPending} onClick={() => save.mutate({ id, registerMap: map })}>
+            <Save className="h-4 w-4" /> {t.settings.saveMap}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <Table>

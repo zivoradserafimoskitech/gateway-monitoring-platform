@@ -254,6 +254,28 @@ export const deviceProfiles = mysqlTable(
     // scale?, unit?, description? } } — ONLY keys listed here can be written
     // via control.execute; everything else is rejected before any bus traffic.
     controllable: json("controllable"),
+    // Wave 5 / T1: verification status gates CONTROL (writes). draft =
+    // register map not yet verified against real hardware → executeControl
+    // refuses writes (reads stay allowed — that is how you verify).
+    // bench_verified is earned via the bench-verification workflow (Task 3);
+    // field_verified is set manually after live-site runtime.
+    verificationStatus: mysqlEnum("verification_status", ["draft", "bench_verified", "field_verified"])
+      .notNull()
+      .default("draft"),
+    verifiedBy: bigint("verified_by", { mode: "number", unsigned: true }),
+    verifiedAt: timestamp("verified_at"),
+    // Firmware version, serial, what was tested.
+    verifiedNotes: text("verified_notes"),
+    // Vendor document + revision the map came from (required on import, T2).
+    sourceDocument: varchar("source_document", { length: 500 }),
+    // Commissioning escape hatch (admin-only): allows writes to a DRAFT
+    // profile, but every write is logged with a visible WARNING marker.
+    allowUnverifiedControl: boolean("allow_unverified_control").notNull().default(false),
+    // Wave 5 / T3: sign convention recorded during bench verification —
+    // true = batteryPowerKw reads POSITIVE while discharging, false = negative,
+    // NULL = never recorded (blocks bench_verified for profiles that have a
+    // controllable power setpoint).
+    dischargePositive: boolean("discharge_positive"),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

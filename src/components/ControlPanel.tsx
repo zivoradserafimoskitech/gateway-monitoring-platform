@@ -7,7 +7,7 @@ import { useI18n } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtTime } from "@/components/shared";
-import { Loader2, Send } from "lucide-react";
+import { AlertTriangle, Loader2, Send } from "lucide-react";
 
 interface ControllableDef {
   address: number;
@@ -24,6 +24,9 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   const me = trpc.auth.me.useQuery();
   const canWrite = me.data?.user?.role === "admin" || me.data?.user?.role === "operator";
   const wl = trpc.control.controllableFor.useQuery({ meterId });
+  // Wave 5 / T1: verification state of the meter's device profile — a draft
+  // profile blocks control writes; the commissioning override must be visible.
+  const profileStatus = trpc.control.profileStatus.useQuery({ meterId });
   const history = trpc.control.history.useQuery({ meterId, limit: 10 }, { refetchInterval: 15000 });
   const utils = trpc.useUtils();
   const execute = trpc.control.execute.useMutation({
@@ -36,6 +39,32 @@ export function ControlPanel({ meterId }: { meterId: number }) {
 
   const entries = Object.entries(wl.data ?? {}) as [string, ControllableDef][];
   if (wl.isLoading || entries.length === 0) return null;
+
+  // Wave 5 / T1: draft profile → control unavailable (the server also refuses
+  // the write; this is the visible explanation). Override → controls work but
+  // carry a persistent warning chip.
+  const verification = profileStatus.data;
+  const draftBlocked = verification?.verificationStatus === "draft" && !verification.allowUnverifiedControl;
+  const overrideActive = verification?.verificationStatus === "draft" && verification.allowUnverifiedControl === true;
+
+  if (draftBlocked) {
+    return (
+      <Card className="border-amber-200">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            {t.control.title}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <p className="rounded-md bg-amber-50 p-2 text-sm font-medium text-amber-800">
+            {t.control.unavailableUnverified}
+          </p>
+          <p className="text-xs text-slate-500">{t.control.unverifiedHint}</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const run = async (key: string, def: ControllableDef) => {
     const raw = values[key];
@@ -60,6 +89,12 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         <CardTitle>{t.control.title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {overrideActive && (
+          <p className="flex items-center gap-2 rounded-md bg-amber-100 p-2 text-sm font-semibold text-amber-800">
+            <AlertTriangle className="h-4 w-4" />
+            {t.control.commissioningOverride}
+          </p>
+        )}
         <div className="space-y-2">
           {entries.map(([key, def]) => (
             <div key={key} className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 p-2">

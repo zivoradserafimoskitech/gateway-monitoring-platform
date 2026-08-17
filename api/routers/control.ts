@@ -6,7 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { commands, meters } from "@db/schema";
-import { ControlError, controllableForModel, executeAndLog } from "../control/execute";
+import { ControlError, controllableForModel, executeAndLog, verificationForModel } from "../control/execute";
 import { assertOrgRead, assertOrgWrite, meterOrg } from "../lib/org-scope";
 
 export const controlRouter = createRouter({
@@ -19,6 +19,18 @@ export const controlRouter = createRouter({
       const rows = await db.select().from(meters).where(eq(meters.id, input.meterId)).limit(1);
       if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
       return controllableForModel(rows[0].model);
+    }),
+
+  // Wave 5 / T1: verification state of the meter's device profile (drives the
+  // "control unavailable — profile unverified" UI). null = no profile at all.
+  profileStatus: authed
+    .input(z.object({ meterId: z.number() }))
+    .query(async ({ input, ctx }) => {
+      assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device"); // v8/D2
+      const db = getDb();
+      const rows = await db.select().from(meters).where(eq(meters.id, input.meterId)).limit(1);
+      if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
+      return verificationForModel(rows[0].model);
     }),
 
   execute: operator

@@ -125,6 +125,32 @@ export interface DecodeResult {
   rejected: Array<{ key: string; value: number }>;
 }
 
+/**
+ * Decode the RAW (unscaled) value of one register def out of a read-block
+ * buffer. Extracted from decodeRegisters (Wave 5 / T2) so the profile-import
+ * preview can show raw next to scaled — a wrong scale is obvious when
+ * socPercent reads 6553.5. Task 3's bench verification polls keys the same way.
+ */
+export function decodeRawValue(def: RegisterDef, data: Buffer, baseAddress: number): number | undefined {
+  const size = wordsOf(def.type) * 2;
+  const offset = (def.address - baseAddress) * 2;
+  if (offset < 0 || offset + size > data.length) return undefined;
+  const view = def.wordSwap && size === 4 ? swapWords(data, offset, size) : data;
+  const off = def.wordSwap && size === 4 ? 0 : offset;
+  switch (def.type) {
+    case "float32":
+      return view.readFloatBE(off);
+    case "u32":
+      return view.readUInt32BE(off);
+    case "i32":
+      return view.readInt32BE(off);
+    case "u16":
+      return view.readUInt16BE(off);
+    case "i16":
+      return view.readInt16BE(off);
+  }
+}
+
 export function decodeRegisters(
   map: RegisterDef[],
   data: Buffer,
@@ -133,30 +159,8 @@ export function decodeRegisters(
   const out: Record<string, number> = {};
   const rejected: Array<{ key: string; value: number }> = [];
   for (const def of map) {
-    const size = wordsOf(def.type) * 2;
-    const offset = (def.address - baseAddress) * 2;
-    if (offset < 0 || offset + size > data.length) continue;
-    const view = def.wordSwap && size === 4 ? swapWords(data, offset, size) : data;
-    const off = def.wordSwap && size === 4 ? 0 : offset;
-    let raw: number;
-    switch (def.type) {
-      case "float32":
-        raw = view.readFloatBE(off);
-        break;
-      case "u32":
-        raw = view.readUInt32BE(off);
-        break;
-      case "i32":
-        raw = view.readInt32BE(off);
-        break;
-      case "u16":
-        raw = view.readUInt16BE(off);
-        break;
-      case "i16":
-        raw = view.readInt16BE(off);
-        break;
-    }
-    if (Number.isFinite(raw)) {
+    const raw = decodeRawValue(def, data, baseAddress);
+    if (raw !== undefined && Number.isFinite(raw)) {
       const v = Math.round((raw * def.scale + (def.offset ?? 0)) * 10000) / 10000;
       if ((def.min !== undefined && v < def.min) || (def.max !== undefined && v > def.max)) {
         rejected.push({ key: def.key, value: v });

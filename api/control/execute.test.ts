@@ -9,7 +9,12 @@ import { deviceProfiles, gateways } from "@db/schema";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
-  profiles: [] as Array<{ model: string; controllable: unknown }>,
+  profiles: [] as Array<{
+    model: string;
+    controllable: unknown;
+    verificationStatus?: "draft" | "bench_verified" | "field_verified";
+    allowUnverifiedControl?: boolean;
+  }>,
   gateways: [] as Array<{ id: number; transport: string; uid: string; model: string }>,
   inserted: [] as Array<Record<string, unknown>>,
   sentFrames: [] as Array<{ gatewayUid: string; frame: Buffer }>,
@@ -77,7 +82,8 @@ const TRANSPARENT_GW = { id: 7, transport: "transparent", uid: "gw-1", model: "C
 const WL = { dischargePowerKw: { address: 10, min: 0, max: 100 } };
 
 beforeEach(() => {
-  state.profiles = [{ model: "BESS-A", controllable: WL }];
+  // Default profile: verified on the bench — writes proceed normally.
+  state.profiles = [{ model: "BESS-A", controllable: WL, verificationStatus: "bench_verified", allowUnverifiedControl: false }];
   state.gateways = [TRANSPARENT_GW];
   state.inserted = [];
   state.sentFrames = [];
@@ -95,8 +101,16 @@ test("interlock: a non-whitelisted key is rejected before any bus traffic", asyn
 });
 
 test("interlock: a model with no writable registers says so explicitly", async () => {
-  state.profiles = [{ model: "BESS-A", controllable: null }];
+  state.profiles = [{ model: "BESS-A", controllable: null, verificationStatus: "bench_verified" }];
   await assert.rejects(executeControl(meter(), "anything", 1), (e: Error) => e.message.includes("model has no writable registers"));
+});
+
+test("interlock: draft profile with no writable registers still reports the whitelist, not verification", async () => {
+  // Ordering pin: the whitelist lookup runs BEFORE the verification gate, so
+  // a keyless draft model keeps the existing "no writable registers" error.
+  state.profiles = [{ model: "BESS-A", controllable: null, verificationStatus: "draft", allowUnverifiedControl: false }];
+  await assert.rejects(executeControl(meter(), "anything", 1), (e: Error) => e.message.includes("model has no writable registers"));
+  assert.equal(state.sentFrames.length, 0);
 });
 
 // ─── Range interlock ─────────────────────────────────────────────────────────
@@ -117,12 +131,16 @@ test("interlock: boundary values are in range", async () => {
 });
 
 test("interlock: FC16 registers are refused (FC6 only)", async () => {
-  state.profiles = [{ model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 10, fc: 16 } } }];
+  state.profiles = [
+    { model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 10, fc: 16 } }, verificationStatus: "bench_verified" },
+  ];
   await assert.rejects(executeControl(meter(), "x", 5), (e: Error) => e.message.includes("FC6 only"));
 });
 
 test("interlock: scaled values must fit a 16-bit register", async () => {
-  state.profiles = [{ model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 100_000, scale: 10 } } }];
+  state.profiles = [
+    { model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 100_000, scale: 10 } }, verificationStatus: "bench_verified" },
+  ];
   await assert.rejects(executeControl(meter(), "x", 100_000), (e: Error) => e.message.includes("does not fit a 16-bit register"));
 });
 
@@ -185,4 +203,74 @@ test("executeAndLog: a rejected setpoint is still audited (status failed, 'rejec
   assert.equal(row.status, "failed");
   assert.match(String(row.result), /^rejected: /);
   assert.equal(row.userId, null); // system commands (EMS controller) log null userId
+});
+
+// ─── Wave 5 / T1: profile verification gate ──────────────────────────────────
+const DRAFT_PROFILE = { model: "BESS-A", controllable: WL, verificationStatus: "draft" as const, allowUnverifiedControl: false };
+
+test("verification gate: a draft profile blocks even a whitelisted key, before any bus traffic", async () => {
+  state.profiles = [DRAFT_PROFILE];
+  await assert.rejects(
+    executeControl(meter(), "dischargePowerKw", 40),
+    (e: Error) =>
+      e instanceof ControlError &&
+      e.message.includes('Profile "BESS-A" is unverified') &&
+      e.message.includes("Settings → Device profiles → Verify"),
+  );
+  // No downlink frame was sent — the gate fires before any bus traffic.
+  assert.equal(state.sentFrames.length, 0);
+});
+
+test("verification gate: the blocked write is still audited as a rejected command", async () => {
+  state.profiles = [DRAFT_PROFILE];
+  await assert.rejects(executeAndLog(meter(), "dischargePowerKw", 40, 42), ControlError);
+  assert.equal(state.sentFrames.length, 0);
+  assert.equal(state.inserted.length, 1);
+  const row = state.inserted[0];
+  assert.equal(row.status, "failed");
+  assert.match(String(row.result), /^rejected: .*unverified/);
+  assert.equal(row.userId, 42);
+});
+
+test("verification gate: draft + allowUnverifiedControl proceeds and the logged row carries the WARNING marker", async () => {
+  state.profiles = [{ ...DRAFT_PROFILE, allowUnverifiedControl: true }];
+  const r = await executeAndLog(meter(), "dischargePowerKw", 40, 42);
+  assert.equal(r.status, "sent");
+  assert.match(r.detail, /^WARNING: commissioning override \(allowUnverifiedControl\) active — /);
+  assert.equal(state.sentFrames.length, 2); // write DID hit the bus
+  assert.equal(state.inserted.length, 1);
+  const row = state.inserted[0];
+  assert.equal(row.status, "sent");
+  assert.match(String(row.result), /^WARNING: commissioning override \(allowUnverifiedControl\) active — /);
+});
+
+test("verification gate: override WARNING also marks transport-level failures", async () => {
+  state.profiles = [{ ...DRAFT_PROFILE, allowUnverifiedControl: true }];
+  state.gateways = [{ id: 7, transport: "json", uid: "gw-g30", model: "G30" }];
+  const r = await executeControl(meter(), "dischargePowerKw", 40);
+  assert.equal(r.status, "failed");
+  assert.match(r.detail, /^WARNING: commissioning override.*no downlink control channel/);
+});
+
+test("verification gate: bench_verified proceeds normally with no WARNING marker", async () => {
+  state.profiles = [{ model: "BESS-A", controllable: WL, verificationStatus: "bench_verified", allowUnverifiedControl: false }];
+  const r = await executeControl(meter(), "dischargePowerKw", 40);
+  assert.equal(r.status, "sent");
+  assert.ok(!r.detail.includes("WARNING"));
+  assert.equal(state.sentFrames.length, 2);
+});
+
+test("verification gate: field_verified proceeds normally with no WARNING marker", async () => {
+  state.profiles = [{ model: "BESS-A", controllable: WL, verificationStatus: "field_verified", allowUnverifiedControl: false }];
+  const r = await executeControl(meter(), "dischargePowerKw", 40);
+  assert.equal(r.status, "sent");
+  assert.ok(!r.detail.includes("WARNING"));
+});
+
+test("verification gate: a model with NO profile at all keeps the existing behavior (not blocked by the gate)", async () => {
+  state.profiles = [];
+  await assert.rejects(executeControl(meter(), "dischargePowerKw", 40), (e: Error) =>
+    e.message.includes("model has no writable registers"),
+  );
+  assert.equal(state.sentFrames.length, 0);
 });

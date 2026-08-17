@@ -4,9 +4,14 @@
 //  1. WHITELIST: only keys declared in device_profiles.controllable for the
 //     device's model can be written — everything else is rejected before any
 //     bus traffic.
-//  2. RANGE: values are clamp-checked against the key's min/max.
-//  3. RBAC: the tRPC layer restricts execution to operator/admin (C1).
-//  4. AUDIT: every attempt (success AND failure) writes a commands row with
+//  2. VERIFICATION (Wave 5 / T1): a profile whose register map is still
+//     "draft" blocks ALL writes — even whitelisted keys — until verified
+//     against real hardware. The admin-only allowUnverifiedControl override
+//     exists for commissioning; every write under it is logged with a
+//     WARNING marker. Reads are never gated (reading is how you verify).
+//  3. RANGE: values are clamp-checked against the key's min/max.
+//  4. RBAC: the tRPC layer restricts execution to operator/admin (C1).
+//  5. AUDIT: every attempt (success AND failure) writes a commands row with
 //     userId, and the tRPC audit middleware logs the mutation.
 //
 // Execution paths:
@@ -49,6 +54,31 @@ export async function controllableForModel(model: string): Promise<ControllableM
   return c ?? {};
 }
 
+/** Wave 5 / T1: verification fields of a model's profile (null = no profile). */
+export interface ProfileVerification {
+  verificationStatus: "draft" | "bench_verified" | "field_verified";
+  allowUnverifiedControl: boolean;
+}
+
+export async function verificationForModel(model: string): Promise<ProfileVerification | null> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      verificationStatus: deviceProfiles.verificationStatus,
+      allowUnverifiedControl: deviceProfiles.allowUnverifiedControl,
+    })
+    .from(deviceProfiles)
+    .where(eq(deviceProfiles.model, model))
+    .limit(1);
+  const r = rows[0];
+  if (!r) return null;
+  return { verificationStatus: r.verificationStatus, allowUnverifiedControl: r.allowUnverifiedControl === true };
+}
+
+/** Audit-log marker prepended to the command detail of every write executed
+ *  under the allowUnverifiedControl commissioning override. */
+export const UNVERIFIED_OVERRIDE_WARNING = "WARNING: commissioning override (allowUnverifiedControl) active — ";
+
 function buildWriteRequest(slave: number, address: number, value: number): Buffer {
   const body = Buffer.alloc(6);
   body.writeUInt8(slave, 0);
@@ -84,6 +114,23 @@ export async function executeControl(meter: Meter, key: string, value: number): 
         (Object.keys(allowed).length ? ` (allowed: ${Object.keys(allowed).join(", ")})` : " (model has no writable registers)"),
     );
   }
+  // Wave 5 / T1: verification gate — AFTER the whitelist lookup, BEFORE any
+  // bus traffic. A draft (unverified) register map blocks even a whitelisted
+  // key: an unreviewed address on a write path can hit a protection threshold
+  // or calibration constant on a live battery. Reads are unaffected.
+  const verification = await verificationForModel(meter.model);
+  const draftOverride =
+    verification !== null && verification.verificationStatus === "draft" && verification.allowUnverifiedControl;
+  if (verification !== null && verification.verificationStatus === "draft" && !verification.allowUnverifiedControl) {
+    throw new ControlError(
+      `Profile "${meter.model}" is unverified. Control is blocked until the register ` +
+        `map has been verified against real hardware (Settings → Device profiles → Verify).`,
+    );
+  }
+  // Under the commissioning override the write proceeds but every logged
+  // command row carries a clearly visible WARNING marker.
+  const withWarn = (r: ControlResult): ControlResult =>
+    draftOverride ? { ...r, detail: UNVERIFIED_OVERRIDE_WARNING + r.detail } : r;
   if (!Number.isFinite(value) || value < def.min || value > def.max) {
     throw new ControlError(`value ${value} out of range for '${key}' [${def.min}..${def.max}]`);
   }
@@ -108,11 +155,11 @@ export async function executeControl(meter: Meter, key: string, value: number): 
       const read = await client.readHoldingRegisters(def.address, 1);
       const actual = read.data?.[0];
       if (actual !== registerValue) {
-        return { status: "failed", detail: `read-back mismatch: wrote ${registerValue} but register ${def.address} reads ${actual}` };
+        return withWarn({ status: "failed", detail: `read-back mismatch: wrote ${registerValue} but register ${def.address} reads ${actual}` });
       }
-      return { status: "ok", detail: `wrote ${value}${def.unit ? ` ${def.unit}` : ""} (register ${def.address} = ${registerValue}) — verified by read-back` };
+      return withWarn({ status: "ok", detail: `wrote ${value}${def.unit ? ` ${def.unit}` : ""} (register ${def.address} = ${registerValue}) — verified by read-back` });
     } catch (err) {
-      return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
+      return withWarn({ status: "failed", detail: err instanceof Error ? err.message : String(err) });
     } finally {
       try {
         await client.close(() => undefined);
@@ -125,13 +172,13 @@ export async function executeControl(meter: Meter, key: string, value: number): 
   // Bus device behind a gateway: only C30 transparent has a downlink channel.
   const gwRows = await db.select().from(gateways).where(eq(gateways.id, meter.gatewayId)).limit(1);
   const gateway = gwRows[0];
-  if (!gateway) return { status: "failed", detail: `gateway ${meter.gatewayId} not found` };
+  if (!gateway) return withWarn({ status: "failed", detail: `gateway ${meter.gatewayId} not found` });
   if (gateway.transport !== "transparent") {
-    return { status: "failed", detail: `model ${meter.model} is behind a ${gateway.model} gateway which has no downlink control channel (C30 transparent only)` };
+    return withWarn({ status: "failed", detail: `model ${meter.model} is behind a ${gateway.model} gateway which has no downlink control channel (C30 transparent only)` });
   }
   const { sendControlFrame } = await import("../mqtt/service");
   const slave = meter.unitId ?? meter.modbusAddress;
-  if (slave < 1 || slave > 255) return { status: "failed", detail: `bus address ${slave} out of Modbus range` };
+  if (slave < 1 || slave > 255) return withWarn({ status: "failed", detail: `bus address ${slave} out of Modbus range` });
   const frame = buildWriteRequest(slave, def.address, registerValue);
   await sendControlFrame(gateway, frame);
   // Wave 4 / T4: read-back verification through the T1 correlation machinery.
@@ -148,11 +195,11 @@ export async function executeControl(meter: Meter, key: string, value: number): 
     quantity: 1,
     verifyExpected: registerValue,
   });
-  return {
+  return withWarn({
     status: "sent",
     detail: `FC6 frame sent to ${gateway.uid} downlink (register ${def.address} = ${registerValue}) — read-back verification pending (30s)`,
     verify: { gatewayId: gateway.id, slave, fc: 3 },
-  };
+  });
 }
 
 /** Execute + ALWAYS log to commands (audit trail), rethrowing ControlError. */
