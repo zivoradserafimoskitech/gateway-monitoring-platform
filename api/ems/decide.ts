@@ -47,14 +47,50 @@ export function scheduleDue(s: EmsSchedule, dow: number, min: number): boolean {
   return min >= s.startMin || min < s.endMin; // wraps midnight
 }
 
+// ─── Fail-closed SoC guard (audit wave 6) ────────────────────────────────────
+// Replaces the old fail-open socGuardBlocks (removed, no alias). The old guard
+// returned "not blocked" when SoC was unknown — a BESS could be discharged
+// below its safe minimum while telemetry was down. The new guard FAILS CLOSED:
+// once at least one SoC limit is configured, an unknown (missing or stale, see
+// freshForControl) SoC BLOCKS charge/discharge.
+export interface SocLimits {
+  minSoc: number | null;
+  maxSoc: number | null;
+}
+
+export interface SocGuardResult {
+  blocked: boolean;
+  reason: string | null;
+}
+
 /**
- * SOC guard (only evaluated by the controller when targetSoc is set):
- * discharge blocked at/below targetSoc, charge blocked at/above — the last
- * setpoint stays in place. Vacuous for idle and for missing SOC telemetry.
+ * SoC guard decision. Rules (exact):
+ *  1. idle → never blocked (vacuous).
+ *  2. no limits configured (both null) → never blocked — unchanged legacy
+ *     behavior for schedules without targetSoc and plans without min/maxSoc.
+ *  3. at least one limit configured + soc unknown → BLOCKED (fail-closed).
+ *  4. discharge with soc <= minSoc → BLOCKED (boundary inclusive).
+ *  5. charge with soc >= maxSoc → BLOCKED (boundary inclusive).
+ *  6. otherwise → not blocked.
+ * Schedules map targetSoc → { minSoc: targetSoc, maxSoc: targetSoc } (same
+ * at/under and at/above semantics as the legacy guard, plus rule 3).
  */
-export function socGuardBlocks(mode: EmsMode, soc: number | null | undefined, targetSoc: number | null): boolean {
-  if (soc == null || targetSoc == null) return false;
-  return (mode === "discharge" && soc <= targetSoc) || (mode === "charge" && soc >= targetSoc);
+export function socGuardDecision(
+  mode: EmsMode,
+  soc: number | null | undefined,
+  limits: SocLimits,
+): SocGuardResult {
+  if (mode === "idle") return { blocked: false, reason: null };
+  const { minSoc, maxSoc } = limits;
+  if (minSoc == null && maxSoc == null) return { blocked: false, reason: null };
+  if (soc == null) return { blocked: true, reason: "soc unknown (fail-closed)" };
+  if (mode === "discharge" && minSoc != null && soc <= minSoc) {
+    return { blocked: true, reason: `soc ${soc}% <= min ${minSoc}%` };
+  }
+  if (mode === "charge" && maxSoc != null && soc >= maxSoc) {
+    return { blocked: true, reason: `soc ${soc}% >= max ${maxSoc}%` };
+  }
+  return { blocked: false, reason: null };
 }
 
 // ─── Peak shaving ────────────────────────────────────────────────────────────

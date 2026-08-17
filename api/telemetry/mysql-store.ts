@@ -8,12 +8,14 @@ import type {
   DailyReportOpts,
   DailyReportRow,
   EnergyIntervalBucket,
+  FreshTelemetry,
   HistoryPoint,
   MetricSeriesBucket,
   TelemetryRow,
   TelemetryStore,
   TrendPoint,
 } from "./types";
+import { env } from "../lib/env";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 import { retentionCutoff } from "./rollup";
 
@@ -124,6 +126,19 @@ export class MySqlTelemetryStore implements TelemetryStore {
       ...((typeof r.valuesJson === "string" ? JSON.parse(r.valuesJson) : (r.valuesJson ?? {})) as Record<string, number>),
     };
     return { meterId: r.meterId, ts: r.ts, values };
+  }
+
+  // audit wave 6: age-bounded read for EMS control decisions. One query (the
+  // same one as latest()), age measured against the APP clock. Safe because
+  // telemetry.ts is always written app-side (persistTelemetry: new Date();
+  // the column's defaultNow() never fires on the ingest path) and the write
+  // pool pins UTC on driver + session — verified against the dev TiDB:
+  // naive-UTC MAX(ts) tracks the app clock, not the shifted server clock.
+  async freshForControl(meterId: number, maxAgeMs: number = env.controlTelemetryMaxAgeMs): Promise<FreshTelemetry> {
+    const row = await this.latest(meterId);
+    if (!row) return { row: null, fresh: false, ageMs: null };
+    const ageMs = Date.now() - row.ts.getTime();
+    return { row, fresh: ageMs <= maxAgeMs, ageMs };
   }
 
   async latestAll(): Promise<Map<number, TelemetryRow>> {

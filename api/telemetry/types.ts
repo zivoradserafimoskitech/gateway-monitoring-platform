@@ -117,9 +117,30 @@ export function assertValidMetricKeys(keys: string[]): void {
   }
 }
 
+// audit wave 6 (BESS control safety): freshness-bounded read for CONTROL
+// decisions only. The EMS controller must never charge/discharge a battery on
+// the basis of stale telemetry — with at least one SoC limit configured, a
+// stale or missing row makes socGuardDecision fail CLOSED (block).
+export interface FreshTelemetry {
+  /** Latest row if one exists (returned even when stale), else null. */
+  row: TelemetryRow | null;
+  /** True only when a row exists AND ageMs <= maxAgeMs. */
+  fresh: boolean;
+  /** Date.now() − row.ts at read time; null when there is no row. */
+  ageMs: number | null;
+}
+
 export interface TelemetryStore {
   writeBatch(rows: TelemetryRow[]): Promise<void>;
   latest(meterId: number): Promise<TelemetryRow | null>;
+  /**
+   * latest() + an age bound, for EMS control decisions ONLY. ageMs is computed
+   * against the APP clock (telemetry.ts is always written app-side — verified
+   * in wave 6, see mysql-store comment); maxAgeMs defaults to
+   * env.controlTelemetryMaxAgeMs (CONTROL_TELEMETRY_MAX_AGE_MS, 120000).
+   * latest() itself is UNCHANGED — dashboards/reads have no age bound.
+   */
+  freshForControl(meterId: number, maxAgeMs?: number): Promise<FreshTelemetry>;
   /** Latest row for EVERY meter in one set-based query (fleet dashboards). */
   latestAll(): Promise<Map<number, TelemetryRow>>;
   history(

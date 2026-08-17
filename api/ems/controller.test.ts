@@ -14,19 +14,39 @@ import { MySqlDialect } from "drizzle-orm/mysql-core";
 const state = vi.hoisted(() => ({
   db: null as unknown,
   telemetry: new Map<number, Record<string, number>>(),
+  // audit wave 6: per-meter telemetry ts for freshForControl (default: now —
+  // fresh). Set an old Date to simulate a stale feed (fail-closed tests).
+  telemetryTs: new Map<number, Date>(),
   whitelists: new Map<string, Record<string, { address: number; min: number; max: number }>>(),
-  planRows: [] as Array<{ id: number; meterId: number; source: string; setpoints: unknown }>,
+  planRows: [] as Array<{
+    id: number;
+    meterId: number;
+    source: string;
+    setpoints: unknown;
+    minSoc?: number | null;
+    maxSoc?: number | null;
+  }>,
   calls: [] as Array<{ meterId: number; key: string; value: number; userId: number | null }>,
   executedSql: [] as string[],
 }));
 
 vi.mock("../queries/connection", () => ({ getDb: () => state.db }));
 
+// Mock of the store contract incl. audit wave 6 freshForControl: the default
+// max age is env.controlTelemetryMaxAgeMs (120000); the mock mirrors it.
+const MOCK_MAX_AGE_MS = 120_000;
 vi.mock("../telemetry", () => ({
   getTelemetryStore: () => ({
     latest: async (meterId: number) => {
       const values = state.telemetry.get(meterId);
-      return values ? { meterId, ts: new Date(), values } : null;
+      return values ? { meterId, ts: state.telemetryTs.get(meterId) ?? new Date(), values } : null;
+    },
+    freshForControl: async (meterId: number, maxAgeMs: number = MOCK_MAX_AGE_MS) => {
+      const values = state.telemetry.get(meterId);
+      if (!values) return { row: null, fresh: false, ageMs: null };
+      const ts = state.telemetryTs.get(meterId) ?? new Date();
+      const ageMs = Date.now() - ts.getTime();
+      return { row: { meterId, ts, values }, fresh: ageMs <= maxAgeMs, ageMs };
     },
   }),
 }));
@@ -138,6 +158,7 @@ async function freshTick(): Promise<() => Promise<void>> {
 beforeEach(() => {
   vi.resetModules(); // fresh lastCmd/peakState maps per test
   state.telemetry.clear();
+  state.telemetryTs.clear();
   state.whitelists.clear();
   state.planRows = [];
   state.calls = [];
@@ -277,6 +298,195 @@ test("peak shaving: hysteresis + min-move — re-trim only on ≥10% moves, stop
   setImport(160);
   await tick(); // new event after the stop: min(60, 50, 100) = 50 (maxDischargeKw cap)
   assert.deepEqual(state.calls.map((c) => c.value), [30, 36, 0, 50]);
+});
+
+// ─── audit wave 6: fail-closed SoC guard + plan SoC limits ───────────────────
+test("schedules: targetSoc + STALE telemetry → fail-closed block (no setpoint sent)", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsSchedules, [allDaySchedule({ targetSoc: 20 })]);
+  state.whitelists.set("BESS-A", WL_DISCHARGE);
+  state.telemetry.set(1, { socPercent: 55 }); // SoC itself would allow discharge…
+  state.telemetryTs.set(1, new Date(Date.now() - 10 * 60_000)); // …but the row is 10 min old (> 2 min bound)
+
+  const tick = await freshTick();
+  await tick();
+  assert.equal(state.calls.length, 0); // existing schedule-block behavior: setpoint untouched
+
+  state.telemetryTs.set(1, new Date()); // feed recovers → schedule runs again
+  await tick();
+  assert.deepEqual(state.calls, [{ meterId: 1, key: "dischargePowerKw", value: 40, userId: null }]);
+});
+
+test("schedules: targetSoc + NO telemetry at all → fail-closed block", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsSchedules, [allDaySchedule({ targetSoc: 20 })]);
+  state.whitelists.set("BESS-A", WL_DISCHARGE);
+  // no telemetry row for meter 1 at all
+
+  const tick = await freshTick();
+  await tick();
+  assert.equal(state.calls.length, 0);
+});
+
+test("plans: minSoc + soc below min → blocked plan setpoint is replaced by idle 0 kW with the reason", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsSchedules, [allDaySchedule()]); // must stand down — the plan owns the tick
+  state.whitelists.set("BESS-A", WL_BIPOLAR);
+  state.telemetry.set(1, { socPercent: 15 });
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() - 3600_000).toISOString(), kw: 25 }], // discharge 25 kW
+      minSoc: 20,
+      maxSoc: null,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+
+  // Deliberate strengthening: explicit idle 0 kW instead of the plan's 25 kW.
+  assert.deepEqual(state.calls, [{ meterId: 1, key: "chargeDischargePowerKw", value: 0, userId: null }]);
+  // Audit attribution is kept on the blocked command too.
+  const tag = state.executedSql.find((q) => /update commands/i.test(q));
+  assert.ok(tag, "blocked plan command result must still be tagged");
+  assert.match(tag, /plan:volttrade/);
+
+  // Guard clears when SoC recovers above the minimum.
+  state.telemetry.set(1, { socPercent: 50 });
+  await tick();
+  assert.deepEqual(state.calls[1], { meterId: 1, key: "chargeDischargePowerKw", value: 25, userId: null });
+});
+
+test("plans: maxSoc + stale SoC → fail-closed block of a plan CHARGE (idle 0 kW)", async () => {
+  const { schema } = await setup();
+  state.whitelists.set("BESS-A", WL_BIPOLAR);
+  state.telemetry.set(1, { socPercent: 50 });
+  state.telemetryTs.set(1, new Date(Date.now() - 10 * 60_000)); // stale
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() - 3600_000).toISOString(), kw: -20 }], // charge 20 kW
+      minSoc: null,
+      maxSoc: 90,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+  assert.deepEqual(state.calls, [{ meterId: 1, key: "chargeDischargePowerKw", value: 0, userId: null }]);
+});
+
+test("plans: charge with soc below maxSoc is allowed (guard passes inside the band)", async () => {
+  const { schema } = await setup();
+  state.whitelists.set("BESS-A", WL_BIPOLAR);
+  state.telemetry.set(1, { socPercent: 50 });
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() - 3600_000).toISOString(), kw: -20 }],
+      minSoc: 20,
+      maxSoc: 90,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+  assert.deepEqual(state.calls, [{ meterId: 1, key: "chargeDischargePowerKw", value: -20, userId: null }]);
+});
+
+test("plans without SoC limits are unchanged (regression) — even with NO telemetry", async () => {
+  const { schema } = await setup();
+  state.whitelists.set("BESS-A", WL_BIPOLAR);
+  // no telemetry for meter 1 at all — a plan without limits must NOT fail closed
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() - 3600_000).toISOString(), kw: -20 }],
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+  assert.deepEqual(state.calls, [{ meterId: 1, key: "chargeDischargePowerKw", value: -20, userId: null }]);
+});
+
+test("peak shaving: active plan minSoc on the same BESS blocks the discharge start (conservative override)", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsPeakShaving, [peakConfig()]);
+  state.whitelists.set("BESS-A", WL_DISCHARGE);
+  state.telemetry.set(2, { activePowerKw: 130 }); // over threshold — would start
+  state.telemetry.set(1, { socPercent: 15 }); // …but the BESS is at/below the plan's min
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() + 3600_000).toISOString(), kw: 25 }], // future only — plan sends nothing
+      minSoc: 20,
+      maxSoc: null,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+  assert.equal(state.calls.length, 0); // peak did not start; plan had nothing due
+});
+
+test("peak shaving: a RUNNING event is cut to idle 0 kW when the plan minSoc becomes violated", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsPeakShaving, [peakConfig()]);
+  state.whitelists.set("BESS-A", WL_DISCHARGE);
+  state.telemetry.set(2, { activePowerKw: 130 });
+  state.telemetry.set(1, { socPercent: 50 });
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() + 3600_000).toISOString(), kw: 25 }], // future only
+      minSoc: 20,
+      maxSoc: null,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick(); // starts: min(30, 50, 100) = 30 — SoC 50 > min 20, allowed
+  assert.deepEqual(state.calls.map((c) => c.value), [30]);
+
+  state.telemetry.set(1, { socPercent: 18 }); // SoC dropped below the plan minimum
+  await tick(); // blocked → active event cut to idle 0 kW
+  assert.deepEqual(state.calls.map((c) => c.value), [30, 0]);
+});
+
+test("peak shaving: unknown/stale BESS SoC fails closed under the plan-limits override", async () => {
+  const { schema, tables } = await setup();
+  tables.set(schema.emsPeakShaving, [peakConfig()]);
+  state.whitelists.set("BESS-A", WL_DISCHARGE);
+  state.telemetry.set(2, { activePowerKw: 130 });
+  // NO BESS telemetry at all → soc unknown → blocked (fail-closed)
+  state.planRows = [
+    {
+      id: 9,
+      meterId: 1,
+      source: "volttrade",
+      setpoints: [{ ts: new Date(Date.now() + 3600_000).toISOString(), kw: 25 }],
+      minSoc: 20,
+      maxSoc: null,
+    },
+  ];
+
+  const tick = await freshTick();
+  await tick();
+  assert.equal(state.calls.length, 0);
 });
 
 test("robustness: the tick never throws, even when the DB is down", async () => {

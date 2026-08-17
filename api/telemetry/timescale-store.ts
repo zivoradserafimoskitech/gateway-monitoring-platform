@@ -12,6 +12,7 @@ import type {
   DailyReportOpts,
   DailyReportRow,
   EnergyIntervalBucket,
+  FreshTelemetry,
   HistoryPoint,
   MetricSeriesBucket,
   TelemetryRow,
@@ -19,6 +20,7 @@ import type {
   TrendPoint,
 } from "./types";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
+import { env } from "../lib/env";
 
 const COLS = [
   "ts",
@@ -114,6 +116,17 @@ export class TimescaleTelemetryStore implements TelemetryStore {
         ...json,
       },
     };
+  }
+
+  // audit wave 6: same freshForControl contract as the MySQL store — one
+  // latest-style query, age against the app clock. ts here is timestamptz
+  // written from the app-supplied Date (writeBatch binds r.ts), so the age
+  // comparison is epoch-based and timezone-proof.
+  async freshForControl(meterId: number, maxAgeMs: number = env.controlTelemetryMaxAgeMs): Promise<FreshTelemetry> {
+    const row = await this.latest(meterId);
+    if (!row) return { row: null, fresh: false, ageMs: null };
+    const ageMs = Date.now() - row.ts.getTime();
+    return { row, fresh: ageMs <= maxAgeMs, ageMs };
   }
 
   async latestAll(): Promise<Map<number, TelemetryRow>> {

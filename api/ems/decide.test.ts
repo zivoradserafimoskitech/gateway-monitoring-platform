@@ -18,7 +18,7 @@ import {
   planKwAt,
   scheduleDue,
   setpointValue,
-  socGuardBlocks,
+  socGuardDecision,
 } from "./decide";
 
 const def = (over: Partial<ControllableDef> = {}): ControllableDef => ({ address: 1, min: 0, max: 100, ...over });
@@ -118,24 +118,62 @@ test("scheduleDue: window with start > end wraps midnight", () => {
   assert.equal(scheduleDue(s, 3, 1319), false);
 });
 
-// ─── socGuardBlocks ──────────────────────────────────────────────────────────
-test("socGuardBlocks: discharge blocked at/below target, allowed above", () => {
-  assert.equal(socGuardBlocks("discharge", 20, 20), true); // at → blocked
-  assert.equal(socGuardBlocks("discharge", 19.9, 20), true);
-  assert.equal(socGuardBlocks("discharge", 20.1, 20), false);
+// ─── socGuardDecision (audit wave 6, fail-closed — replaces socGuardBlocks) ──
+// NOTE: the old socGuardBlocks FAILED OPEN on unknown SoC; that behavior was
+// the audit finding and is deliberately gone. These tests pin the new rules.
+test("socGuardDecision rule 1: idle is vacuous, even with limits and unknown soc", () => {
+  assert.deepEqual(socGuardDecision("idle", 10, { minSoc: 20, maxSoc: 80 }), { blocked: false, reason: null });
+  assert.deepEqual(socGuardDecision("idle", null, { minSoc: 20, maxSoc: 80 }), { blocked: false, reason: null });
 });
 
-test("socGuardBlocks: charge blocked at/above target, allowed below", () => {
-  assert.equal(socGuardBlocks("charge", 80, 80), true); // at → blocked
-  assert.equal(socGuardBlocks("charge", 80.1, 80), true);
-  assert.equal(socGuardBlocks("charge", 79.9, 80), false);
+test("socGuardDecision rule 2: no limits configured → never blocked (legacy behavior)", () => {
+  const none = { minSoc: null, maxSoc: null };
+  assert.deepEqual(socGuardDecision("discharge", 5, none), { blocked: false, reason: null });
+  assert.deepEqual(socGuardDecision("charge", 99, none), { blocked: false, reason: null });
+  // …and unknown SoC stays allowed here — unchanged for schedules without
+  // targetSoc and plans without min/maxSoc.
+  assert.deepEqual(socGuardDecision("discharge", null, none), { blocked: false, reason: null });
 });
 
-test("socGuardBlocks: vacuous for idle, missing SOC, or no target", () => {
-  assert.equal(socGuardBlocks("idle", 10, 20), false);
-  assert.equal(socGuardBlocks("discharge", null, 20), false);
-  assert.equal(socGuardBlocks("discharge", undefined, 20), false);
-  assert.equal(socGuardBlocks("discharge", 5, null), false); // plans carry no targetSoc
+test("socGuardDecision rule 3: limits configured + soc unknown → BLOCKED (fail-closed)", () => {
+  for (const soc of [null, undefined]) {
+    const d = socGuardDecision("discharge", soc, { minSoc: 20, maxSoc: null });
+    assert.deepEqual(d, { blocked: true, reason: "soc unknown (fail-closed)" });
+    const c = socGuardDecision("charge", soc, { minSoc: null, maxSoc: 80 });
+    assert.deepEqual(c, { blocked: true, reason: "soc unknown (fail-closed)" });
+  }
+});
+
+test("socGuardDecision rule 4: discharge blocked at/below minSoc, allowed above", () => {
+  const limits = { minSoc: 20, maxSoc: null };
+  assert.deepEqual(socGuardDecision("discharge", 20, limits), { blocked: true, reason: "soc 20% <= min 20%" }); // at → blocked
+  assert.equal(socGuardDecision("discharge", 19.9, limits).blocked, true);
+  assert.deepEqual(socGuardDecision("discharge", 20.1, limits), { blocked: false, reason: null });
+});
+
+test("socGuardDecision rule 5: charge blocked at/above maxSoc, allowed below", () => {
+  const limits = { minSoc: null, maxSoc: 80 };
+  assert.deepEqual(socGuardDecision("charge", 80, limits), { blocked: true, reason: "soc 80% >= max 80%" }); // at → blocked
+  assert.equal(socGuardDecision("charge", 80.1, limits).blocked, true);
+  assert.deepEqual(socGuardDecision("charge", 79.9, limits), { blocked: false, reason: null });
+});
+
+test("socGuardDecision rule 6: inside the band → not blocked; opposite-direction limits don't bind", () => {
+  const limits = { minSoc: 20, maxSoc: 80 };
+  assert.deepEqual(socGuardDecision("discharge", 50, limits), { blocked: false, reason: null });
+  assert.deepEqual(socGuardDecision("charge", 50, limits), { blocked: false, reason: null });
+  // discharge is NOT blocked by maxSoc, charge is NOT blocked by minSoc
+  assert.deepEqual(socGuardDecision("discharge", 90, limits), { blocked: false, reason: null });
+  assert.deepEqual(socGuardDecision("charge", 10, limits), { blocked: false, reason: null });
+});
+
+test("socGuardDecision: schedule mapping targetSoc → {minSoc,maxSoc} keeps legacy semantics + fail-closed", () => {
+  // discharge at/under target blocked, charge at/above target blocked — same
+  // as the old guard — but unknown soc now blocks instead of passing.
+  const t = { minSoc: 20, maxSoc: 20 };
+  assert.equal(socGuardDecision("discharge", 20, t).blocked, true);
+  assert.equal(socGuardDecision("charge", 20, t).blocked, true);
+  assert.equal(socGuardDecision("discharge", null, t).blocked, true); // WAS fail-open
 });
 
 // ─── peak shaving ────────────────────────────────────────────────────────────

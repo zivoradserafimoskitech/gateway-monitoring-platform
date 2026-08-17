@@ -18,7 +18,9 @@
 //      discharge → +targetKw, charge → ±targetKw (negative only when the
 //      register's range allows it), idle → 0 kW. targetKw null = register max.
 //  - SOC guard (targetSoc set): discharge skipped at/below targetSoc, charge
-//    skipped at/above — the last setpoint stays in place.
+//    skipped at/above — the last setpoint stays in place. audit wave 6: the
+//    guard FAILS CLOSED — SoC is read via freshForControl (age-bounded), and
+//    a missing/stale/unknown SoC blocks the schedule's charge/discharge.
 //  - Schedules do NOT auto-reset the BESS when the window ends — add an
 //    explicit "idle" schedule to zero the setpoint (documented behavior).
 //
@@ -29,6 +31,14 @@
 //  - import < thresholdKw − hysteresisKw → stop (setpoint 0).
 //  - While active the setpoint is only re-sent when it moved by
 //    ≥ max(1 kW, 10 % of maxDischargeKw) — telemetry wiggle must not spam the bus.
+//  - audit wave 6, CONSERVATIVE SAFETY OVERRIDE (deliberate, documented):
+//    peak shaving has no own SoC config, but if an ACTIVE ems_plan with
+//    configured SoC limits exists for the same bessMeterId, those limits also
+//    bind the peak-shaving DISCHARGE (socGuardDecision, fail-closed on
+//    stale/missing SoC). Blocked → don't start; an already-active event is
+//    cut to idle 0 kW (same as a stop). This does NOT change the
+//    peak > plan > schedule priority — it is a top-down safety clamp,
+//    analogous to EMS STOP, applied before any peak decision.
 //
 // EMS plans (v9 Contract A — externally pushed, e.g. by the VoltTrade
 // optimizer): priority per meter per tick is peak-shaving > plan > schedules:
@@ -39,9 +49,11 @@
 //    setpoint with ts ≤ now. kw > 0 = discharge, kw < 0 = charge (negative
 //    only when the register's range allows), 0 = idle. Executed through the
 //    same executeAndLog path (userId null) as schedules; the command's result
-//    string is prefixed `plan:<source>` for audit attribution. Plans carry no
-//    targetSoc, so the schedule SOC guard (only active when targetSoc is set)
-//    is vacuous for them — the C12 interlock/range checks apply identically.
+//    string is prefixed `plan:<source>` for audit attribution. audit wave 6:
+//    plans MAY carry minSoc/maxSoc limits (migration 0020) — when configured,
+//    the fail-closed SoC guard binds plan setpoints and a blocked setpoint is
+//    replaced by an explicit idle 0 kW (deliberate strengthening, see
+//    evalPlans). Plans without limits behave exactly as before.
 //  - A meter that executed a plan setpoint skips schedule evaluation.
 //  - Plans fully past valid_to are lazily marked expired by one bounded sweep
 //    per tick (LIMIT 500) — never a per-meter scan.
@@ -69,7 +81,7 @@ import {
   planKwAt,
   scheduleDue,
   setpointValue,
-  socGuardBlocks,
+  socGuardDecision,
   localClock,
 } from "./decide";
 
@@ -192,11 +204,16 @@ async function evalSchedules(now: Date, skip: Set<number> = new Set()): Promise<
         fired.add(s.meterId);
         continue;
       }
-      // SOC guard (uses the BESS's own latest telemetry).
+      // SOC guard (fail-closed, audit wave 6 — uses the BESS's own telemetry
+      // via freshForControl). targetSoc maps to {minSoc,maxSoc} = targetSoc
+      // (legacy semantics). A STALE or missing row → soc=null → BLOCKED: an
+      // unknown battery state must never drive a (dis)charge.
       if (s.targetSoc != null) {
-        const latest = await getTelemetryStore().latest(s.meterId);
-        const soc = latest?.values.socPercent;
-        if (socGuardBlocks(s.mode, soc, s.targetSoc)) {
+        const ft = await getTelemetryStore().freshForControl(s.meterId);
+        const soc = ft.fresh ? (ft.row?.values.socPercent ?? null) : null;
+        const guard = socGuardDecision(s.mode, soc, { minSoc: s.targetSoc, maxSoc: s.targetSoc });
+        if (guard.blocked) {
+          console.warn(`[ems] schedule ${s.id} "${s.name}" blocked by SoC guard: ${guard.reason}`);
           fired.add(s.meterId);
           continue; // guard active — leave the previous setpoint untouched
         }
@@ -210,6 +227,29 @@ async function evalSchedules(now: Date, skip: Set<number> = new Set()): Promise<
   }
 }
 
+/**
+ * audit wave 6: active plans (valid_from ≤ now ≤ valid_to, latest created_at
+ * per meter wins — same rule as evalPlans) that carry SoC limits, keyed by
+ * meter. Used by evalPeakShaving as the conservative safety override.
+ */
+async function activePlanSocLimits(
+  meterIds: number[],
+  nowStr: string,
+): Promise<Map<number, { minSoc: number | null; maxSoc: number | null }>> {
+  const map = new Map<number, { minSoc: number | null; maxSoc: number | null }>();
+  const ids = [...new Set(meterIds)];
+  if (ids.length === 0) return map;
+  const res = await getDb().execute(
+    sql`select meter_id as meterId, min_soc as minSoc, max_soc as maxSoc from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} and meter_id in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}) and (min_soc is not null or max_soc is not null) order by meter_id, created_at desc, id desc`,
+  );
+  for (const r of res[0] as unknown as Array<{ meterId: number; minSoc: number | null; maxSoc: number | null }>) {
+    if (map.has(r.meterId)) continue; // latest created_at already won (order above)
+    if (r.minSoc == null && r.maxSoc == null) continue; // belt & braces with the WHERE clause
+    map.set(r.meterId, { minSoc: r.minSoc ?? null, maxSoc: r.maxSoc ?? null });
+  }
+  return map;
+}
+
 /** Returns the BESS meter ids peak shaving drove this tick (v9 priority gate). */
 async function evalPeakShaving(): Promise<Set<number>> {
   const drove = new Set<number>();
@@ -219,11 +259,49 @@ async function evalPeakShaving(): Promise<Set<number>> {
   const meterMap = await loadMeters(configs.flatMap((c) => [c.sourceMeterId, c.bessMeterId]));
   const wlCache = new Map<string, ControllableMap>();
   const store = getTelemetryStore();
+  // audit wave 6: SoC limits of any ACTIVE plan on a BESS bind peak-shaving
+  // discharge for that BESS (see the header comment — safety override).
+  const planLimits = await activePlanSocLimits(
+    configs.map((c) => c.bessMeterId),
+    utcStr(new Date()),
+  );
 
   for (const c of configs) {
     try {
       const bess = meterMap.get(c.bessMeterId);
       if (!bess) continue;
+
+      // Safety override FIRST — it binds even when source-meter telemetry is
+      // missing: an active event must still be cut to idle on a SoC violation.
+      const limits = planLimits.get(c.bessMeterId);
+      if (limits) {
+        const ft = await store.freshForControl(c.bessMeterId);
+        const soc = ft.fresh ? (ft.row?.values.socPercent ?? null) : null;
+        const guard = socGuardDecision("discharge", soc, limits);
+        if (guard.blocked) {
+          const st = peakState.get(c.id) ?? { active: false, lastSent: null };
+          if (st.active) {
+            // Cut the running event to idle 0 kW (deliberate strengthening —
+            // same stop semantics as dropping below threshold − hysteresis).
+            let wl = wlCache.get(bess.model);
+            if (!wl) {
+              wl = await controllableForModel(bess.model);
+              wlCache.set(bess.model, wl);
+            }
+            const sel = pickSetpointKey(wl, "discharge");
+            if (sel) await send(bess, sel.key, 0, `peak-shaving #${c.id} BLOCKED by active plan SoC limits: ${guard.reason} → idle 0 kW`);
+            peakState.set(c.id, { active: false, lastSent: null });
+            drove.add(c.bessMeterId); // the cut-to-idle command owns this tick
+          } else {
+            // Don't start: leave the meter to plan/schedule evaluation (the
+            // plan guard applies there too, so this cannot fail open).
+            peakState.set(c.id, st);
+            console.warn(`[ems] peak-shaving #${c.id} start blocked by active plan SoC limits: ${guard.reason}`);
+          }
+          continue;
+        }
+      }
+
       const latest = await store.latest(c.sourceMeterId);
       const importKw = latest?.values.activePowerKw;
       if (importKw == null) continue; // no telemetry yet — nothing to decide on
@@ -302,6 +380,10 @@ interface PlanTickRow {
   meterId: number;
   source: string;
   setpoints: Array<{ ts: string; kw: number }> | string;
+  // audit wave 6: optional SoC limits (migration 0020); both null = no guard
+  // (legacy plans — behavior unchanged).
+  minSoc: number | null;
+  maxSoc: number | null;
 }
 
 /**
@@ -317,7 +399,7 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
   // Active plans covering now; latest created_at per meter wins (overlap is
   // already prevented by the PUT supersede semantics, this is belt & braces).
   const res = await db.execute(
-    sql`select id, meter_id as meterId, source, setpoints from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} order by meter_id, created_at desc, id desc`,
+    sql`select id, meter_id as meterId, source, setpoints, min_soc as minSoc, max_soc as maxSoc from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} order by meter_id, created_at desc, id desc`,
   );
   const plans = res[0] as unknown as PlanTickRow[];
   if (plans.length === 0) return fired;
@@ -349,8 +431,31 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
         fired.add(meterId);
         continue;
       }
-      // No targetSoc on plans: the schedule SOC guard (active only when
-      // targetSoc is set) does not apply; C12 interlock/range checks do.
+      // audit wave 6: plans MAY carry SoC limits (min_soc/max_soc, migration
+      // 0020). When at least one is configured the fail-closed guard applies,
+      // with the SoC read via freshForControl (stale/missing → soc=null →
+      // BLOCKED). DELIBERATE STRENGTHENING (documented, per SPEC): a blocked
+      // plan setpoint is replaced by an explicit idle 0 kW command instead of
+      // leaving the previous setpoint in place — the previous setpoint may be
+      // exactly the dangerous (dis)charge. The reason is logged and written
+      // into the command audit trail. Plans without limits keep the legacy
+      // behavior (guard vacuous; C12 interlock/range checks unchanged).
+      if (plan.minSoc != null || plan.maxSoc != null) {
+        const ft = await getTelemetryStore().freshForControl(meterId);
+        const soc = ft.fresh ? (ft.row?.values.socPercent ?? null) : null;
+        const guard = socGuardDecision(mode, soc, { minSoc: plan.minSoc ?? null, maxSoc: plan.maxSoc ?? null });
+        if (guard.blocked) {
+          await send(
+            meter,
+            sel.key,
+            0,
+            `plan #${plan.id} (${plan.source}) BLOCKED by SoC guard: ${guard.reason} → idle 0 kW`,
+            `plan:${plan.source}`,
+          );
+          fired.add(meterId); // the plan still owns this tick — schedules stand down
+          continue;
+        }
+      }
       const value = setpointValue(mode, sel.def, Math.abs(kw));
       await send(meter, sel.key, value, `plan #${plan.id} (${plan.source}, ${kw} kW)`, `plan:${plan.source}`);
       fired.add(meterId);

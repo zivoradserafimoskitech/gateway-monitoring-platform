@@ -568,6 +568,11 @@ export const emsPlans = mysqlTable(
     validFrom: timestamp("valid_from").notNull(),
     validTo: timestamp("valid_to").notNull(),
     setpoints: json("setpoints").notNull(), // [{ ts: string, kw: number }]
+    // audit wave 6 (migration 0020): optional SoC limits, enforced fail-closed
+    // by the EMS controller (blocked → idle 0 kW); also bind peak-shaving
+    // discharge on the same BESS while the plan is active.
+    minSoc: double("min_soc"),
+    maxSoc: double("max_soc"),
     status: varchar("status", { length: 16 }).notNull().default("active"), // active|superseded|expired
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

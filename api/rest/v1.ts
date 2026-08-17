@@ -251,6 +251,8 @@ restV1.get("/devices/:id/telemetry", async (c) => {
 // control-register semantics "+ = discharge"). validFrom/validTo are ISO8601;
 // they are stored UTC-naive (project convention — always via utcStr, never
 // through driver Date serialization which follows the host timezone).
+// audit wave 6: optional minSoc/maxSoc (0–100, minSoc < maxSoc when both are
+// present) are persisted and enforced fail-closed by the EMS controller.
 const PLAN_MAX_SPAN_MS = 48 * 3_600_000;
 const PLAN_MAX_SETPOINTS = 192;
 const PLAN_MAX_ABS_KW = 500;
@@ -270,6 +272,8 @@ interface PlanRow {
   validFrom: string;
   validTo: string;
   setpoints: PlanSetpoint[] | string;
+  minSoc: number | null;
+  maxSoc: number | null;
   status: string;
   createdAt: string;
 }
@@ -277,8 +281,17 @@ interface PlanRow {
 const PLAN_COLS = sql`id, meter_id as meterId, org_id as orgId, source,
   date_format(valid_from, '%Y-%m-%dT%H:%i:%sZ') as validFrom,
   date_format(valid_to, '%Y-%m-%dT%H:%i:%sZ') as validTo,
-  setpoints, status,
+  setpoints, min_soc as minSoc, max_soc as maxSoc, status,
   date_format(created_at, '%Y-%m-%dT%H:%i:%sZ') as createdAt`;
+
+// audit wave 6: optional SoC limits on a plan (fail-closed enforcement in the
+// EMS controller; blocked setpoint → idle 0 kW). null/absent = no limit.
+// Each limit must be in [0, 100]; when both are present minSoc < maxSoc.
+function parseSocLimit(v: unknown): number | null | "invalid" {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 100) return "invalid";
+  return v;
+}
 
 function normalizePlan(row: PlanRow) {
   return {
@@ -338,6 +351,19 @@ restV1.put("/devices/:id/ems-plan", async (c) => {
     setpoints.push({ ts: new Date(tsMs).toISOString(), kw });
   }
 
+  // audit wave 6: optional SoC limits (camelCase numbers; ERP/Lovable maps
+  // asset soc_min_pct/soc_max_pct → minSoc/maxSoc). 400 on out-of-range or
+  // minSoc >= maxSoc; null/absent = no limit.
+  const bb = b as { minSoc?: unknown; maxSoc?: unknown };
+  const minSoc = parseSocLimit(bb.minSoc);
+  const maxSoc = parseSocLimit(bb.maxSoc);
+  if (minSoc === "invalid" || maxSoc === "invalid") {
+    return c.json({ error: "minSoc/maxSoc must be numbers in [0, 100] (or null)" }, 400);
+  }
+  if (minSoc !== null && maxSoc !== null && minSoc >= maxSoc) {
+    return c.json({ error: "minSoc must be less than maxSoc" }, 400);
+  }
+
   // Upsert/supersede semantics: any active plan of this meter overlapping
   // [validFrom, validTo) is superseded, then the new plan is inserted active.
   const vf = utcStr(new Date(fromMs));
@@ -347,10 +373,10 @@ restV1.put("/devices/:id/ems-plan", async (c) => {
   );
   const superseded = Number((sup[0] as { affectedRows?: number }).affectedRows ?? 0);
   const ins = await db.execute(
-    sql`insert into ems_plans (meter_id, org_id, source, valid_from, valid_to, setpoints, status) values (${id}, ${org}, ${source}, ${vf}, ${vt}, ${JSON.stringify(setpoints)}, 'active')`,
+    sql`insert into ems_plans (meter_id, org_id, source, valid_from, valid_to, setpoints, min_soc, max_soc, status) values (${id}, ${org}, ${source}, ${vf}, ${vt}, ${JSON.stringify(setpoints)}, ${minSoc}, ${maxSoc}, 'active')`,
   );
   const planId = Number((ins[0] as { insertId?: number }).insertId ?? 0);
-  return c.json({ planId, status: "active" as const, superseded }, 200);
+  return c.json({ planId, status: "active" as const, superseded, minSoc, maxSoc }, 200);
 });
 
 restV1.get("/devices/:id/ems-plan", async (c) => {
