@@ -328,9 +328,16 @@ DB dedup key. Missing, in rough priority order:
 
   Fixed by rewriting only the host to `registry.npmjs.org`. Versions and integrity hashes are
   untouched, so npm still verifies every downloaded tarball against the hash the mirror's copy
-  produced. If the mirror was a deliberate supply-chain control rather than an artefact of the
-  machine the lockfile was generated on, revert that change and give continuous integration a
-  runner that can reach the mirror instead.
+  produced.
+
+  **Was the mirror deliberate?** The evidence says no. A mirror used as a supply-chain control
+  is pinned in a committed `.npmrc` so that every developer and every CI run resolves through
+  it; this repository tracks no `.npmrc`, and the host appears nowhere outside the lockfile —
+  not in the workflow, the Dockerfiles, the compose files or the documentation. The URLs
+  arrived in the initial commit, which is what a lockfile generated on one machine looks like.
+  Nothing was ever configured to reach that host from CI, and CI never did. Treat it as an
+  artefact of the machine the project was scaffolded on. A CI guard now fails the build if
+  non-public hosts reappear.
 - `db/seed.ts` is an empty TODO template, so there is no supported way to bootstrap a first
   admin outside the demo Docker path.
 - `README.md` is the Vite starter template with operations notes prepended. No setup steps, no
@@ -497,6 +504,9 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 4 | Meters going offline raised nothing | A `meterOffline` alarm is raised against the same unique dedup key and cleared when the device reports again |
 | 4 | No return-to-normal notification | `alarm_notifications.kind` gains "resolved" (migration 0022). It goes only to the channels that were actually notified about that alarm; manual resolution stays silent |
 | 6 | No pagination on the public API | `/devices` and `/alarms` accept `limit` and `cursor` and return `nextCursor`. Opt-in, so an existing client's response is unchanged. Keyset rather than offset, and the alarm cursor carries timestamp **and** id because one sweep raises many alarms sharing a timestamp |
+| 3 | No setpoint deadman | `device_profiles.watchdog` (migration 0023) plus a refresh pass at the end of each EMS tick. Off unless a profile declares it. Goes through `executeControl`, so the whitelist, verification gate, range clamp and read-back all still apply, and not through `executeAndLog`, so a refresh every few seconds does not bury the audit trail. A configured interval too close to the device timeout is tightened rather than trusted, and a controller tick too slow to serve it is reported loudly |
+| 7 | Two high and two moderate advisories | `hono` 4.13.7 and `mysql2` 3.24.4 raised past their advisories; `browserslist` and `js-yaml` pinned through npm `overrides`. The musl metadata npm dropped in the process was restored by hand, because both images are Alpine and that field selects the musl binaries |
+| 7 | The private mirror could come back silently | A CI step fails, before the install, if any tarball resolves from a non-public host. Verified both ways |
 | 6 | HTTP listener not closed on shutdown | The listener stops accepting connections on `SIGTERM`/`SIGINT` while in-flight requests finish. The write-ahead log already drained |
 
 ### Deliberately not changed
@@ -507,25 +517,19 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **§1.4, null-org auto-provisioning.** The correct fix derives the tenant from a
   broker-authenticated client identity, which requires broker configuration this change cannot
   make on its own.
-- **§3 setpoint deadman.** The single most valuable remaining item, and the one I am least
-  willing to write blind: it means holding a vendor watchdog register open on a cycle shorter
-  than the inverter's timeout, and the correct register and timeout differ per model. Writing
-  that against hardware I cannot test risks the exact failure it is meant to prevent. It needs
-  a bench with a real battery.
-- **§4 alarm duration and debounce.** Deliberately deferred: a "breached for N minutes"
-  condition needs breach state that survives a restart and is shared between replicas, which is
-  the §1.2 problem. Building it on the current per-process `Map` would make it look like it
-  works while failing quietly on restart.
+- **§4 alarm duration and debounce** remains the one deferred item — see below.
+  A "breached for N minutes" condition needs breach state that survives a restart and is shared
+  between replicas, which is the §1.2 problem. Building it on the current per-process `Map`
+  would make it look like it works while failing quietly on restart.
 - **§6 Timescale continuous aggregates, §8 the missing screens.** Substantial new work rather
   than repairs.
-- **Sixteen advisories remain open**, now visible on every run through the informational audit
-  step. The two high ones (`browserslist`, `js-yaml`) are build-time only. More relevant: three
-  moderate ones sit in packages that **do** ship — `hono` (including a `parseBody` memory
-  exhaustion), `mysql2` (a decompression-bomb denial of service in the compressed protocol
-  handler), and `uuid` via `exceljs`. They are below the gate's high threshold, so they do not
-  block, but the Hono and mysql2 ones are worth scheduling: both are reachable by input. `npm
-  audit fix` resolves most of them without a breaking change. This needs an install, which the
-  review environment could not perform.
+- **Advisories: 16 down to 11, and no high ones left.** Measured on the runner before and after:
+  16 (1 low, 13 moderate, 2 high) became 11 (1 low, 10 moderate, 0 high). Of the eleven, exactly
+  one is in a package that ships — `uuid` below 11.1.1, reached through `exceljs`. It is the one
+  npm cannot resolve without a breaking change: its suggested fix downgrades `exceljs` from 4.x
+  to 3.4.0, which is not a trade worth making for a missing bounds check in a code path the
+  report generator does not use. Revisit when exceljs ships a newer `uuid`. The remaining ten are
+  build tooling (vitest, esbuild via drizzle-kit, postcss) and are reported but do not block.
 - **The Playwright job still cannot pass on a GitHub-hosted runner**, as `docs/ci.md` already
   documents: it needs a database the runner does not have. That is why it is dispatch-only. The
   stale brand assertion in its login spec is fixed, but the job itself remains unverifiable
