@@ -8,6 +8,11 @@ Dependency installation could not complete in this environment because of the lo
 §7, so `npm run check` (TypeScript) and `npm test` (vitest) were not executed. Every finding is
 cited to a file and line so it can be confirmed directly.
 
+**Remediation status:** a follow-up commit on this branch fixes a large part of what follows.
+See "Appendix: what has been fixed" at the end for the item-by-item status. Findings are left
+written in the present tense as originally assessed, so the appendix is the authority on what
+is still open.
+
 This review answers three questions: **what is broken**, **what is missing**, and
 **what should be added** for the platform to be production-grade and professional.
 Findings are ordered by severity. Each carries a file reference so it can be actioned
@@ -255,10 +260,10 @@ DB dedup key. Missing, in rough priority order:
 - **`SameSite=None; Secure; Partitioned` cookie with no CSRF defence** (`api/routers/auth.ts`).
   With `SameSite=None` a cross-site POST carries the cookie. Add an Origin/Referer check or a
   double-submit token on mutating routes.
-- **No password lifecycle.** No reset flow, no invite flow, no change-password procedure, no
-  complexity or rotation policy, no session listing/revocation. `docs/commissioning.md`
-  instructs the commissioning engineer to use "Settings → Users" and change the password —
-  neither screen exists.
+- **No password lifecycle.** `auth.changePassword` exists on the API but has no screen, and
+  there is no reset flow, no invite flow, no complexity or rotation policy, and no session
+  listing or revocation. `docs/commissioning.md` instructs the commissioning engineer to use
+  "Settings → Users" and change the password — neither screen exists.
 - **Default `admin1234` credential** with no forced first-login change.
 - **Audit log lacks IP address, user agent and `orgId`**, which is below the bar for anything
   touching energy assets. Control actions especially should record the source address.
@@ -344,7 +349,7 @@ feel unfinished even though the backend is not.
 | Capability | Backend | UI |
 |---|---|---|
 | User management | `auth.users`, `createUser`, `updateUser` | none |
-| Change password | — | none (and no backend procedure) |
+| Change password | `auth.changePassword` | none |
 | Audit log viewer | `auth.auditLog` | none |
 | Maintenance windows | `notifications.maintenance`, `createMaintenance` | none |
 | Notification delivery history | `notifications.deliveries` | none |
@@ -433,3 +438,56 @@ Worth stating plainly, because the review above is necessarily negative:
 - Documentation (`docs/ha.md`, `architecture.md`, `commissioning.md`, `profiles-bess.md`) and
   the `verifier/` probe suite are unusually thorough, and `profiles-bess.md` already names
   several of the open design items independently.
+
+---
+
+## Appendix: what has been fixed
+
+A follow-up commit on this branch addresses the items below. Everything not listed here is
+still open, and the phased plan in §10 remains the intended order of work.
+
+### Fixed
+
+| § | Item | How |
+| --- | --- | --- |
+| 1.1 | Migrations unreproducible | `db/migrations/*.sql` un-ignored; the absent `0020` re-created from the schema; new `0021` for the tenancy columns; `scripts/apply-migrations.ts` applies pending files in order, exactly once, with a checksum recorded in `schema_migrations` and a refusal when an applied migration is edited |
+| 1.3 | Cross-tenant notification leakage | `orgId` added to `notification_channels`, `maintenance_windows`, `alarm_notifications` and `audit_log`; dispatch now selects only the alarm's own org plus global channels |
+| 1.3 | Unscoped notification management | Channels, maintenance windows and delivery history are listed and mutated per org; only a superadmin may create or change a global (NULL-org) row |
+| 1.3 | Cross-org alarm rules | `evaluateAlarmRules` skips a rule whose org differs from the meter's |
+| 1.3 | Unscoped `dashboard.powerTrend` | Scoped to the caller's meters; other tenants' power no longer contributes |
+| 1.3 | Operators could rewrite global register maps | `profiles.updateMap` raised from `operator` to `admin`, matching `updateVerification` |
+| 1.3 | Audit log not per-tenant | `auth.auditLog` filtered by org; rows now record `orgId`, source IP and user agent |
+| 1.5 | Non-timing-safe token compare | Constant-time digest comparison in `api/boot.ts` |
+| 2.1 | Telegram channel unusable | Target parsed at the LAST colon, with proper bot-token and chat-id validation shared between the router and the dispatcher |
+| 2.2 | Email channel always failed | Alarm email routed through the existing `api/lib/mailer.ts`, which supports `SMTP_URL` and discrete `SMTP_HOST` settings; a log-only send is recorded as failed unless `EMAIL_TRANSPORT=log` was asked for |
+| 2.3 | Duplicate schedules card | Removed the second mount in `src/pages/Reports.tsx` |
+| 2.4 | Blank run-schedule toast | Reads `filename`; the cast that hid the mismatch is gone |
+| 2.5 | Hardcoded meter models | The gateway page's model picker is profile-driven, like the devices page |
+| 2.6 | Browser scraped `/metrics` | New `diagnostics` router serves the rejection and undecodable-frame counters; no page fetches `/metrics` any more |
+| 2.7 | Webhook server-side request forgery | `api/lib/egress.ts` enforces https and blocks private, loopback, link-local, carrier-grade-NAT and multicast targets, at both save time and send time, with `WEBHOOK_ALLOW_PRIVATE` as the on-premise opt-out |
+| 3 | Peak shaving ran on stale telemetry | Uses the same `freshForControl` bound as the state-of-charge guard, and fails closed: a running shave whose source goes stale is cut to idle, and a shave never starts on stale data |
+| 7 | Empty seed stub | `db/seed.ts` runs the admin and device-profile seeds in order, idempotently |
+| 7 | Boilerplate README | Replaced with a real one: architecture, requirements, quick start, database setup, environment table, scripts. The operational notes are kept |
+| 7 | Package identity | `volttrade-cloud` 1.0.0 with a description, in both `package.json` and the lockfile |
+| 7 | Undocumented env vars | `CONTROL_TELEMETRY_MAX_AGE_MS`, `WEBHOOK_ALLOW_PRIVATE` and the optional `nodemailer` requirement documented in `.env.example` |
+| 7 | Sandbox-specific paths | `scripts/watchdog.sh` and the two probes derive their paths from the repository root or an env override |
+| 7 | Probe called a missing procedure | `profiles.remove` added as an admin procedure that refuses while any device still uses the model |
+| 7 | Stale end-to-end assertions | The login spec expects "VoltTrade Cloud" |
+| 7 | Stale audit suppressions | The xlsx advisory allowlist is empty; the gate also no longer treats an advisory with no URL as allowed |
+| 7 | Lint not enforced | `npm run lint` runs in continuous integration |
+| 7 | Leftover template files | `info.md` and the unused `src/App.css` removed |
+
+### Deliberately not changed
+
+- **§1.2, high-availability state.** Externalizing six in-memory structures and adding leader
+  election is a design change, not a defect fix, and it needs a decision about whether to take
+  a Redis dependency. Until that decision is made, run a single instance.
+- **§1.4, null-org auto-provisioning.** The correct fix derives the tenant from a
+  broker-authenticated client identity, which requires broker configuration this change cannot
+  make on its own.
+- **§3 setpoint deadman, §4 alarm duration and offline alarms, §6 pagination and continuous
+  aggregates, §8 the missing screens.** All new features rather than repairs.
+- **`package-lock.json` still pins 479 tarballs to a private mirror.** Rewriting those URLs was
+  blocked by this environment's tooling policy. It needs a lockfile regenerated against the
+  public registry, run by someone with that access. Until then `npm ci` only works inside that
+  network.

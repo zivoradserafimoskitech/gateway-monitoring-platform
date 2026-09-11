@@ -4,8 +4,10 @@
 # недостасува. Секој циклус е hard-capped со timeout 25 — ако која било
 # проверка се zaklini (FUSE-stale mount), следниот циклус сепак работи.
 # Heartbeat ред на секој циклус: тишина во watchdog.log = wedged watchdog.
-APP=/mnt/agents/output/app
-LOGS=/mnt/agents/output/logs
+# Paths are configurable so the script is not tied to one machine's layout.
+# APP defaults to the repository this script lives in; LOGS to <APP>/data/logs.
+APP="${APP:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+LOGS="${LOGS:-$APP/data/logs}"
 mkdir -p "$LOGS"
 
 port_open() { timeout 3 bash -c "(echo > /dev/tcp/127.0.0.1/$1) 2>/dev/null"; }

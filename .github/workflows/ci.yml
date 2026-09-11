@@ -41,6 +41,9 @@ jobs:
       - name: Typecheck
         run: npm run check
 
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests with coverage thresholds
         run: npm run test:coverage
         # vitest.config.ts enforces: lines 21 / statements 19 / branches 11 /
@@ -51,21 +54,25 @@ jobs:
         run: npm run build
 
       - name: npm audit gate (high+)
-        # `npm audit --audit-level=high` currently reports exactly one high:
-        # xlsx (GHSA-4r6h-8v6p-xvw6 prototype pollution, GHSA-5pgg-2g8v-p4x9
-        # ReDoS) — a direct production dependency with NO fix published by
-        # upstream (SheetJS CVEs are only fixed in their paid CDN builds).
-        # The 6 remaining moderates are dev-only (esbuild <0.25 via
-        # drizzle-kit/@esbuild-kit, vite dev chain) and never ship to the
-        # runtime image. Gate = hard-fail on any high/critical advisory that
-        # is NOT this documented xlsx pair; revisit when a fix lands.
+        # Hard-fail on ANY high/critical advisory.
+        #
+        # The allowlist used to carry the two xlsx advisories
+        # (GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9). xlsx was replaced by
+        # exceljs and is no longer a dependency, so those entries suppressed
+        # nothing and would have hidden a genuine future finding on a package
+        # that happened to reuse the id. The allowlist is now empty: add an
+        # entry only alongside a comment naming the package, why no fix
+        # exists, and when to revisit.
         env:
-          AUDIT_ALLOW: "GHSA-4r6h-8v6p-xvw6,GHSA-5pgg-2g8v-p4x9"
+          AUDIT_ALLOW: ""
         run: |
           npm audit --audit-level=high --json > audit.json || true
           node -e '
             const fs = require("fs");
-            const allow = new Set(process.env.AUDIT_ALLOW.split(","));
+            // Drop empty entries: "".split(",") is [""], which would put the
+            // empty string in the set and silently allow any advisory whose
+            // url is missing.
+            const allow = new Set((process.env.AUDIT_ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean));
             const audit = JSON.parse(fs.readFileSync("audit.json", "utf8"));
             const bad = [];
             for (const [pkg, v] of Object.entries(audit.vulnerabilities ?? {})) {
@@ -73,14 +80,14 @@ jobs:
               for (const via of v.via) {
                 if (typeof via !== "object") continue;
                 const id = (via.url ?? "").split("/").pop();
-                if (!allow.has(id)) bad.push(`${v.severity}: ${pkg} — ${via.title} (${via.url})`);
+                if (!id || !allow.has(id)) bad.push(`${v.severity}: ${pkg} — ${via.title} (${via.url})`);
               }
             }
             if (bad.length) {
               console.error("New high/critical vulnerabilities found:\n" + bad.join("\n"));
               process.exit(1);
             }
-            console.log("audit gate OK — only known-allowlisted advisories present");
+            console.log("audit gate OK — no high/critical advisories outside the allowlist");
           '
 
       # ---------------------------------------------------------------------

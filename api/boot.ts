@@ -127,12 +127,22 @@ app.get("/readyz", async (c) => {
   );
 });
 
+// Constant-time header comparison. A plain `!==` leaks the shared secret one
+// byte at a time through response timing, so hash both sides to a fixed length
+// first (timingSafeEqual throws on a length mismatch) and compare the digests.
+function timingSafeMatches(received: string | undefined, expected: string): boolean {
+  if (received === undefined) return false;
+  const a = crypto.createHash("sha256").update(received).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 // Optional bearer-token guard for real deployments (v4 F-01): when API_TOKEN is
 // set, every API call must send `Authorization: Bearer <token>`. The frontend
 // sends it from VITE_API_TOKEN (build time). Unset = open demo mode.
 app.use("/api/trpc/*", async (c, next) => {
   const token = process.env.API_TOKEN;
-  if (token && c.req.header("authorization") !== `Bearer ${token}`) {
+  if (token && !timingSafeMatches(c.req.header("authorization"), `Bearer ${token}`)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   await next();

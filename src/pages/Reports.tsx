@@ -87,8 +87,6 @@ export default function Reports() {
         <p className="text-sm text-slate-500">{t.reports.subtitle}</p>
       </div>
 
-      <ReportSchedulesCard />
-
       <Card>
         <CardContent className="grid items-end gap-4 p-4 md:grid-cols-6">
           <div className="space-y-2">

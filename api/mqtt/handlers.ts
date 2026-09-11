@@ -247,6 +247,10 @@ async function evaluateAlarmRules(
   for (const rule of rules) {
     if (rule.metric === "gatewayOffline") continue; // handled by the offline sweep
     if (rule.meterId && rule.meterId !== meter.id) continue;
+    // Tenancy: a fleet-wide rule (meterId null) belongs to the org that
+    // created it and must not evaluate against another tenant's meters. A
+    // NULL-org rule is a global/system rule and applies everywhere.
+    if (rule.orgId != null && rule.orgId !== (meter.orgId ?? null)) continue;
     const value = values[rule.metric];
     if (value === undefined || value === null) continue;
 

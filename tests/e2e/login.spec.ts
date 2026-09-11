@@ -7,7 +7,7 @@ import { test, expect, type Page } from "@playwright/test";
 // select by input type instead of getByLabel.
 async function signIn(page: Page, email: string, password: string) {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Enertrek Cloud" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "VoltTrade Cloud" })).toBeVisible();
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[type="password"]').fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -15,7 +15,7 @@ async function signIn(page: Page, email: string, password: string) {
 
 test("login page is shown at / when unauthenticated", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Enertrek Cloud" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "VoltTrade Cloud" })).toBeVisible();
   await expect(page.locator('input[type="email"]')).toBeVisible();
   await expect(page.locator('input[type="password"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
@@ -27,7 +27,7 @@ test("admin logs in, sees the dashboard, and signs out", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
 
   await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "Enertrek Cloud" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "VoltTrade Cloud" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
 });
 

@@ -384,9 +384,15 @@ export const auditLog = mysqlTable(
     procedure: varchar("procedure", { length: 128 }).notNull(),
     // short human digest of the mutation input (no secrets)
     summary: varchar("summary", { length: 500 }),
+    // Acting user's org — without it a per-tenant audit view is impossible.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    // Source of the call. Anything that commands plant must be attributable to
+    // an address, not just an account.
+    ip: varchar("ip", { length: 45 }),
+    userAgent: varchar("user_agent", { length: 255 }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("audit_created_idx").on(t.createdAt)],
+  (t) => [index("audit_created_idx").on(t.createdAt), index("audit_org_idx").on(t.orgId)],
 );
 export type AuditLogRow = typeof auditLog.$inferSelect;
 
@@ -455,9 +461,14 @@ export const notificationChannels = mysqlTable(
     // alarms; escalation=false receive the initial breach notification.
     escalation: int("escalation").notNull().default(0),
     enabled: int("enabled").notNull().default(1),
+    // Owning org. NULL = global channel (superadmin-managed) — it receives
+    // every org's alarms, which is why only a superadmin may create one.
+    // Without this column every tenant's alarms went to every tenant's
+    // webhook, Telegram chat and mailbox.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("channels_enabled_idx").on(t.enabled)],
+  (t) => [index("channels_enabled_idx").on(t.enabled), index("channels_org_idx").on(t.orgId)],
 );
 export type NotificationChannel = typeof notificationChannels.$inferSelect;
 
@@ -470,9 +481,16 @@ export const alarmNotifications = mysqlTable(
     kind: mysqlEnum("kind", ["initial", "escalation"]).notNull().default("initial"),
     status: mysqlEnum("status", ["sent", "failed"]).notNull(),
     error: varchar("error", { length: 500 }),
+    // Denormalized from the alarm's meter/gateway so delivery history can be
+    // listed per tenant without joining the whole alarm chain.
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("alarm_notif_alarm_idx").on(t.alarmId), index("alarm_notif_kind_idx").on(t.alarmId, t.kind, t.channelId)],
+  (t) => [
+    index("alarm_notif_alarm_idx").on(t.alarmId),
+    index("alarm_notif_kind_idx").on(t.alarmId, t.kind, t.channelId),
+    index("alarm_notif_org_idx").on(t.orgId),
+  ],
 );
 export type AlarmNotification = typeof alarmNotifications.$inferSelect;
 
@@ -486,9 +504,11 @@ export const maintenanceWindows = mysqlTable(
     startsAt: timestamp("starts_at").notNull(),
     endsAt: timestamp("ends_at").notNull(),
     note: varchar("note", { length: 500 }),
+    // Owning org. NULL = global suppression window (superadmin-managed).
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("maint_site_idx").on(t.siteId)],
+  (t) => [index("maint_site_idx").on(t.siteId), index("maint_org_idx").on(t.orgId)],
 );
 export type MaintenanceWindow = typeof maintenanceWindows.$inferSelect;
 

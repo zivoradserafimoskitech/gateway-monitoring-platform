@@ -39,6 +39,29 @@ function summarize(input: unknown): string {
   }
 }
 
+
+// ─── Audit attribution ───────────────────────────────────────────────────────
+// Anything that commands plant must be attributable to a source address, not
+// just an account. The address comes from the reverse proxy's forwarding
+// headers (the fetch Request carries no socket), so it is only as trustworthy
+// as the proxy in front of the app — see docs/ha.md for the expected topology.
+function clientIp(req: Request): string | null {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) {
+    const first = fwd.split(",")[0]?.trim();
+    if (first) return first.slice(0, 45);
+  }
+  return req.headers.get("x-real-ip")?.slice(0, 45) ?? null;
+}
+
+function auditAttribution(ctx: TrpcContext) {
+  return {
+    orgId: ctx.user?.orgId ?? null,
+    ip: clientIp(ctx.req),
+    userAgent: ctx.req.headers.get("user-agent")?.slice(0, 255) ?? null,
+  };
+}
+
 function requireRole(roles: Array<"admin" | "operator" | "viewer">) {
   return t.middleware(async ({ ctx, next, path, type, getRawInput }) => {
     // v7/C12: denied mutations are audited too — an operator attempting a
@@ -55,6 +78,7 @@ function requireRole(roles: Array<"admin" | "operator" | "viewer">) {
               email: ctx.user.email,
               procedure: path,
               summary: `DENIED(FORBIDDEN): ${summarize(raw)}`,
+              ...auditAttribution(ctx),
             })
             .catch(() => undefined);
         }
@@ -76,6 +100,7 @@ function requireRole(roles: Array<"admin" | "operator" | "viewer">) {
           email: ctx.user!.email,
           procedure: path,
           summary,
+          ...auditAttribution(ctx),
         })
         .catch((e) => console.warn("[audit] insert failed:", e instanceof Error ? e.message : e));
     }
