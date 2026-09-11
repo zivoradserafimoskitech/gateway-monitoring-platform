@@ -1,13 +1,15 @@
 # D7.1 — CI/CD quality gates.
 #
-# Gates (quality job, runs on every push/PR to main):
+# Gates (quality job, runs on every push/PR to main, or on demand for any
+# branch via the Actions "Run workflow" button / workflow_dispatch):
 #   1. npm ci
 #   2. typecheck (tsc -b — the root tsconfig is a solution file with project
 #      references, so plain `tsc --noEmit` would no-op; `npm run check` = tsc -b)
 #   3. vitest with v8 coverage thresholds (enforced in vitest.config.ts)
 #   4. production build (vite build + esbuild api bundle)
-#   5. npm audit gate at --audit-level=high (hard fail on any NEW high/critical;
-#      the only known high is xlsx — see the audit step comment)
+#   5. lint (eslint)
+#   6. npm audit gate at --audit-level=high (hard fails on ANY high/critical;
+#      the allowlist is empty — see the audit step comment)
 #
 # E2E (Playwright) job: manual (workflow_dispatch) only — see the e2e job
 # comment and docs/ci.md for why it cannot run on GitHub-hosted runners.
