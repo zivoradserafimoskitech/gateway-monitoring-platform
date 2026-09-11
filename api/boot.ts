@@ -174,7 +174,20 @@ if (env.isProduction) {
   // Wave 7: bind all interfaces explicitly (container preview reaches the app
   // from outside the container). HOST overrides for special deployments.
   const hostname = process.env.HOST || "0.0.0.0";
-  serve({ fetch: app.fetch, port, hostname }, () => {
+  const server = serve({ fetch: app.fetch, port, hostname }, () => {
     console.log(`Server running on http://${hostname}:${port}/`);
   });
+
+  // Stop accepting new requests as soon as the orchestrator asks us to stop.
+  // The telemetry write-ahead log already drains its queue on these signals
+  // and then exits (api/telemetry/index.ts); closing the listener first means
+  // in-flight requests finish while no new ones are admitted, instead of the
+  // process exiting underneath a request that is still being served.
+  // close() only stops the listener — established connections finish normally.
+  const closeListener = (sig: string) => {
+    console.log(`[http] ${sig} received — no longer accepting new connections`);
+    server.close();
+  };
+  process.once("SIGTERM", () => closeListener("SIGTERM"));
+  process.once("SIGINT", () => closeListener("SIGINT"));
 }

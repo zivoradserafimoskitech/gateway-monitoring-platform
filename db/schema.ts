@@ -478,7 +478,10 @@ export const alarmNotifications = mysqlTable(
     id: serial("id").primaryKey(),
     alarmId: bigint("alarm_id", { mode: "number", unsigned: true }).notNull(),
     channelId: bigint("channel_id", { mode: "number", unsigned: true }).notNull(),
-    kind: mysqlEnum("kind", ["initial", "escalation"]).notNull().default("initial"),
+    // "resolved" closes the loop: whoever was told an alarm fired is told when
+    // it clears. Without it an operator who got the page never learns the
+    // condition ended.
+    kind: mysqlEnum("kind", ["initial", "escalation", "resolved"]).notNull().default("initial"),
     status: mysqlEnum("status", ["sent", "failed"]).notNull(),
     error: varchar("error", { length: 500 }),
     // Denormalized from the alarm's meter/gateway so delivery history can be

@@ -2,17 +2,19 @@
 //
 //   GET /api/v1/sites                all sites
 //   GET /api/v1/devices              meters + gateway/site context
+//                                    [?limit=&cursor=] opt-in keyset paging
 //   GET /api/v1/devices/:id/latest   latest telemetry row for one device
 //   GET /api/v1/devices/:id/energy   v8/D2: settlement energy intervals
 //   GET /api/v1/devices/:id/telemetry audit wave 4/Task 4: multi-metric bucketed series
 //   PUT /api/v1/devices/:id/ems-plan v9 Contract A: push an EMS plan (upsert)
 //   GET /api/v1/devices/:id/ems-plan v9 Contract A: active/next EMS plan
 //   GET /api/v1/alarms[?status=]     alarms (default: active)
+//                                    [&limit=&cursor=] opt-in keyset paging
 //
 // Auth: `Authorization: Bearer etk_...` with a non-revoked key. Keys are
 // managed via the tRPC apiKeys router (admin) — see docs/api-v1.md.
 import { Hono } from "hono";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
@@ -89,8 +91,45 @@ restV1.get("/sites", async (c) => {
   return c.json({ sites: rows });
 });
 
+// ─── Pagination ──────────────────────────────────────────────────────────────
+// Opt-in and strictly additive: without a `limit` parameter these endpoints
+// return exactly what they always returned, so existing integrations cannot
+// start silently losing rows. With `limit`, the response carries `nextCursor`
+// (null when the page is the last one) to pass back as `cursor`.
+//
+// Keyset, not OFFSET: the alarm table grows continuously, and an offset page
+// skips or repeats rows whenever something is inserted between requests.
+const MAX_PAGE = 500;
+
+export function pageLimit(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return Math.min(n, MAX_PAGE);
+}
+
+// Alarms are ordered by (triggeredAt desc, id desc), so the cursor has to
+// carry both: many alarms can share a timestamp.
+export function parseAlarmCursor(raw: string | undefined): { ts: Date; id: number } | null {
+  if (!raw) return null;
+  const [msPart, idPart] = raw.split("_");
+  // Both halves must be present and non-empty: Number("") is 0, so a bare "_"
+  // would otherwise parse as a valid cursor at the epoch.
+  if (!msPart || !idPart) return null;
+  const ms = Number(msPart);
+  const id = Number(idPart);
+  if (!Number.isFinite(ms) || !Number.isInteger(id)) return null;
+  return { ts: new Date(ms), id };
+}
+
 restV1.get("/devices", async (c) => {
   const db = getDb();
+  const limit = pageLimit(c.req.query("limit"));
+  const rawCursor = c.req.query("cursor");
+  const cursorId = rawCursor === undefined ? null : Number(rawCursor);
+  if (cursorId !== null && !Number.isInteger(cursorId)) {
+    return c.json({ error: "cursor must be a device id" }, 400);
+  }
   // Contract core (v8/D2): { id, name, model, deviceType, siteId, gatewayId,
   // status } — plus backward-compatible extras (gateway context, effectiveSiteId).
   const rows = await db
@@ -110,11 +149,24 @@ restV1.get("/devices", async (c) => {
     })
     .from(meters)
     .leftJoin(gateways, eq(meters.gatewayId, gateways.id))
-    .where(eq(meters.orgId, c.get("apiKey").orgId ?? -1))
-    .orderBy(meters.id);
+    .where(
+      and(
+        eq(meters.orgId, c.get("apiKey").orgId ?? -1),
+        cursorId === null ? undefined : gt(meters.id, cursorId),
+      ),
+    )
+    .orderBy(meters.id)
+    .$dynamic();
+  const page = limit === null ? await rows : await rows.limit(limit + 1);
+  const hasMore = limit !== null && page.length > limit;
+  const items = hasMore ? page.slice(0, limit) : page;
   // v6 coalesce rule: a meter's effective site = own site ?? gateway's site.
-  const withSite = rows.map((r) => ({ ...r, effectiveSiteId: r.siteId ?? r.gatewaySiteId ?? null }));
-  return c.json({ devices: withSite });
+  const withSite = items.map((r) => ({ ...r, effectiveSiteId: r.siteId ?? r.gatewaySiteId ?? null }));
+  if (limit === null) return c.json({ devices: withSite });
+  return c.json({
+    devices: withSite,
+    nextCursor: hasMore ? String(items[items.length - 1].id) : null,
+  });
 });
 
 restV1.get("/devices/:id/latest", async (c) => {
@@ -439,11 +491,39 @@ restV1.get("/alarms", async (c) => {
     acknowledgedAt: alarms.acknowledgedAt,
     resolvedAt: alarms.resolvedAt,
   };
+  const limit = pageLimit(c.req.query("limit"));
+  const rawCursor = c.req.query("cursor");
+  if (rawCursor !== undefined && parseAlarmCursor(rawCursor) === null) {
+    return c.json({ error: "cursor must be <triggeredAtMs>_<id>" }, 400);
+  }
+  const cursor = parseAlarmCursor(rawCursor);
+  // Keyset on the full sort key: alarms raised in the same sweep share a
+  // timestamp, so paging on the timestamp alone would drop or repeat them.
+  const after = cursor
+    ? or(
+        lt(alarms.triggeredAt, cursor.ts),
+        and(eq(alarms.triggeredAt, cursor.ts), lt(alarms.id, cursor.id)),
+      )
+    : undefined;
+  const take = limit ?? 500;
   const rows = await db
     .select(cols)
     .from(alarms)
-    .where(and(status === "all" ? undefined : eq(alarms.status, status as "active" | "acknowledged" | "resolved"), orgScope))
-    .orderBy(desc(alarms.triggeredAt))
-    .limit(500);
-  return c.json({ alarms: rows });
+    .where(
+      and(
+        status === "all" ? undefined : eq(alarms.status, status as "active" | "acknowledged" | "resolved"),
+        orgScope,
+        after,
+      ),
+    )
+    .orderBy(desc(alarms.triggeredAt), desc(alarms.id))
+    .limit(take + 1);
+  const hasMore = rows.length > take;
+  const items = hasMore ? rows.slice(0, take) : rows;
+  if (limit === null) return c.json({ alarms: items });
+  const last = items[items.length - 1];
+  return c.json({
+    alarms: items,
+    nextCursor: hasMore && last ? `${new Date(last.triggeredAt).getTime()}_${last.id}` : null,
+  });
 });
