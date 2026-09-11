@@ -132,7 +132,10 @@ restV1.get("/devices", async (c) => {
   }
   // Contract core (v8/D2): { id, name, model, deviceType, siteId, gatewayId,
   // status } — plus backward-compatible extras (gateway context, effectiveSiteId).
-  const rows = await db
+  // No await here: the query builder has to stay a builder so the paginated
+  // branch can still attach .limit(). Awaiting it first turns it into the row
+  // array and the limit is no longer available.
+  const query = db
     .select({
       id: meters.id,
       name: meters.name,
@@ -155,9 +158,10 @@ restV1.get("/devices", async (c) => {
         cursorId === null ? undefined : gt(meters.id, cursorId),
       ),
     )
-    .orderBy(meters.id)
-    .$dynamic();
-  const page = limit === null ? await rows : await rows.limit(limit + 1);
+    .orderBy(meters.id);
+  // limit + 1 is the has-more probe: one row beyond the page is fetched and
+  // then dropped, which avoids a second COUNT query.
+  const page = limit === null ? await query : await query.limit(limit + 1);
   const hasMore = limit !== null && page.length > limit;
   const items = hasMore ? page.slice(0, limit) : page;
   // v6 coalesce rule: a meter's effective site = own site ?? gateway's site.

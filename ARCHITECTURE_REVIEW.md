@@ -241,9 +241,10 @@ DB dedup key. Missing, in rough priority order:
    sample raises an alarm.
 2. **Return-to-normal notification.** Clearing is recorded but not dispatched, so an operator
    who received the raise never learns it resolved.
-3. **Device-offline alarms.** Liveness is tracked in memory and surfaced in the UI, but going
-   offline raises no alarm and notifies nobody. For a *monitoring* platform this is the most
-   conspicuous omission.
+3. **Device-offline alarms.** A gateway going offline *does* raise an alarm row
+   (`api/mqtt/service.ts`), but the sweep never calls the dispatcher, so it notifies nobody. A
+   meter going offline raises nothing at all — only its status flips. For a *monitoring*
+   platform this is the most conspicuous omission.
 4. **Severity-based routing.** All channels get everything; there is no critical-vs-warning
    routing, no per-severity escalation delay, no on-call rotation.
 5. **Acknowledgement metadata.** No `acknowledgedBy`, no note, no suppression-with-reason.
@@ -300,8 +301,9 @@ DB dedup key. Missing, in rough priority order:
   templates.
 - **No structured logging and no log levels.** Diagnosing a field incident means reading
   `console.log` output.
-- **No graceful shutdown.** The HTTP server, MQTT client, poller and WAL are not drained on
-  `SIGTERM`, so a rolling restart can lose the in-flight batch.
+- **Partial graceful shutdown.** The telemetry write-ahead log does drain on `SIGTERM`
+  (`api/telemetry/index.ts`), which is the part that matters for data loss. The HTTP listener is
+  not closed, so the process can exit underneath a request still being served.
 - **Backups are application-level JSONL**, which will not scale and is not a
   point-in-time-recoverable database backup.
 - **Container hygiene:** the root `Dockerfile` installs devDependencies, bundles MariaDB for
@@ -491,6 +493,11 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 7 | Lint not enforced, on a config that did not fit the codebase | ESLint now describes the three kinds of code here (Node server and tooling, React frontend, Playwright specs) instead of applying browser and React rules to everything. Vendored shadcn primitives are ignored. All 55 errors the first enforced run reported are resolved |
 | 7 | Audit gate suppressed advisories for a package no longer present | The allowlist is empty. The blocking gate runs over runtime dependencies only, and a second non-blocking step reports build-time advisories so they stay visible |
 | 7 | Leftover template files | `info.md` and the unused `src/App.css` removed |
+| 4 | Offline alarms notified nobody | The sweep now dispatches the gateway-offline alarm it was already raising |
+| 4 | Meters going offline raised nothing | A `meterOffline` alarm is raised against the same unique dedup key and cleared when the device reports again |
+| 4 | No return-to-normal notification | `alarm_notifications.kind` gains "resolved" (migration 0022). It goes only to the channels that were actually notified about that alarm; manual resolution stays silent |
+| 6 | No pagination on the public API | `/devices` and `/alarms` accept `limit` and `cursor` and return `nextCursor`. Opt-in, so an existing client's response is unchanged. Keyset rather than offset, and the alarm cursor carries timestamp **and** id because one sweep raises many alarms sharing a timestamp |
+| 6 | HTTP listener not closed on shutdown | The listener stops accepting connections on `SIGTERM`/`SIGINT` while in-flight requests finish. The write-ahead log already drained |
 
 ### Deliberately not changed
 
@@ -500,8 +507,17 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **§1.4, null-org auto-provisioning.** The correct fix derives the tenant from a
   broker-authenticated client identity, which requires broker configuration this change cannot
   make on its own.
-- **§3 setpoint deadman, §4 alarm duration and offline alarms, §6 pagination and continuous
-  aggregates, §8 the missing screens.** All new features rather than repairs.
+- **§3 setpoint deadman.** The single most valuable remaining item, and the one I am least
+  willing to write blind: it means holding a vendor watchdog register open on a cycle shorter
+  than the inverter's timeout, and the correct register and timeout differ per model. Writing
+  that against hardware I cannot test risks the exact failure it is meant to prevent. It needs
+  a bench with a real battery.
+- **§4 alarm duration and debounce.** Deliberately deferred: a "breached for N minutes"
+  condition needs breach state that survives a restart and is shared between replicas, which is
+  the §1.2 problem. Building it on the current per-process `Map` would make it look like it
+  works while failing quietly on restart.
+- **§6 Timescale continuous aggregates, §8 the missing screens.** Substantial new work rather
+  than repairs.
 - **Three build-time advisories remain open**: two in `browserslist` and one in `js-yaml`, all
   reached through the bundler and linter rather than anything that ships. They are reported on
   every run by the informational audit step. Clearing them means bumping the tooling that pulls
