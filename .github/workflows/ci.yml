@@ -8,8 +8,9 @@
 #   3. vitest with v8 coverage thresholds (enforced in vitest.config.ts)
 #   4. production build (vite build + esbuild api bundle)
 #   5. lint (eslint)
-#   6. npm audit gate at --audit-level=high (hard fails on ANY high/critical;
-#      the allowlist is empty — see the audit step comment)
+#   6. npm audit gate at --audit-level=high over the RUNTIME dependency tree
+#      (--omit=dev): hard fails on any high/critical that actually ships. A
+#      second, non-blocking step reports dev-only advisories.
 #
 # E2E (Playwright) job: manual (workflow_dispatch) only — see the e2e job
 # comment and docs/ci.md for why it cannot run on GitHub-hosted runners.
@@ -55,8 +56,15 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: npm audit gate (high+)
-        # Hard-fail on ANY high/critical advisory.
+      - name: npm audit gate (high+, runtime dependencies)
+        # BLOCKING on the production dependency tree — the packages that
+        # actually ship in the runtime image.
+        #
+        # Dev-only advisories are reported by the next step but do not fail the
+        # build. A vulnerability in the bundler or the linter is a real thing to
+        # track, but it is not reachable by an attacker against a deployed
+        # gateway, and letting it block every pull request is how audit gates
+        # end up permanently disabled.
         #
         # The allowlist used to carry the two xlsx advisories
         # (GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9). xlsx was replaced by
@@ -68,7 +76,7 @@ jobs:
         env:
           AUDIT_ALLOW: ""
         run: |
-          npm audit --audit-level=high --json > audit.json || true
+          npm audit --omit=dev --audit-level=high --json > audit.json || true
           node -e '
             const fs = require("fs");
             // Drop empty entries: "".split(",") is [""], which would put the
@@ -86,11 +94,18 @@ jobs:
               }
             }
             if (bad.length) {
-              console.error("New high/critical vulnerabilities found:\n" + bad.join("\n"));
+              console.error("High/critical vulnerabilities in RUNTIME dependencies:\n" + bad.join("\n"));
               process.exit(1);
             }
-            console.log("audit gate OK — no high/critical advisories outside the allowlist");
+            console.log("audit gate OK — no high/critical advisories in runtime dependencies");
           '
+
+      - name: npm audit report (dev dependencies, informational)
+        # Never fails the build. Surfaces build-time advisories so they are
+        # visible and can be scheduled, rather than silently accumulating.
+        if: always()
+        continue-on-error: true
+        run: npm audit --audit-level=high || true
 
       # ---------------------------------------------------------------------
       # Scale smoke (PLACEHOLDER — not a PR gate).
