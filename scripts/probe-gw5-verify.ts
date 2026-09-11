@@ -95,11 +95,11 @@ async function main() {
   // (4) export → import round-trip
   const exp = (await trpc("profiles.exportCsv", { id: profId(await trpc("profiles.list", undefined, "admin"), "sunspec-inverter-103") }, "admin")) as { filename: string; csv: string };
   check("(4a) exportCsv returns canonical header", exp.csv.startsWith("key,address,fc,type,scale,unit,writable,min,max,description"), exp.csv.slice(0, 60));
-  const imp = (await trpc(
+  await trpc(
     "profiles.importCsv",
     { csv: exp.csv, model: "sunspec-inverter-103-gw5copy", label: "gw5 round-trip copy", sourceDocument: "round-trip probe of sunspec-inverter-103 export (self-citing)", deviceType: "inverter" },
     "admin",
-  )) as any;
+  );
   const list2 = (await trpc("profiles.list", undefined, "admin")) as any[];
   const copy = list2.find((p) => p.model === "sunspec-inverter-103-gw5copy");
   check("(4b) import lands as draft with sourceDocument", copy?.verificationStatus === "draft" && !!copy?.sourceDocument, { s: copy?.verificationStatus });

@@ -101,7 +101,8 @@ async function main() {
     );
 
     // 3. mail transport
-    const logText = fs.existsSync("/mnt/agents/output/logs/dev.log") ? fs.readFileSync("/mnt/agents/output/logs/dev.log", "utf8") : "";
+    const devLog = process.env.DEV_LOG ?? `${process.cwd()}/data/logs/dev.log`;
+    const logText = fs.existsSync(devLog) ? fs.readFileSync(devLog, "utf8") : "";
     const mailLines = logText.split("\n").filter((l) => l.includes("[mailer] LOG TRANSPORT") && l.includes("probe@example.com"));
     probe(
       "email transport invoked (log transport + server log line)",

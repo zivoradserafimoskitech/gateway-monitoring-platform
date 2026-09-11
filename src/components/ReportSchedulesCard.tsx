@@ -45,7 +45,10 @@ export function ReportSchedulesCard() {
     onError: (e) => toast.error(e.message),
   });
   const runNow = trpc.reports.schedules.runNow.useMutation({
-    onSuccess: (r) => toast.success(t.reportSched.ranOk.replace("{file}", (r as { fileName?: string })?.fileName ?? "")),
+    // runSchedule returns `filename`; the cast to `fileName` silenced the type
+    // error and the toast always interpolated an empty string. Use the
+    // inferred result type so a future rename fails the build instead.
+    onSuccess: (r) => toast.success(t.reportSched.ranOk.replace("{file}", r.filename)),
     onError: (e) => toast.error(e.message),
   });
 

@@ -3,7 +3,7 @@ import "dotenv/config";
 import { assertDestructiveOk } from "./lib/db-guard";
 import { getDb } from "../api/queries/connection";
 import { gateways, meters, telemetry, alarms } from "../db/schema";
-import { like, or, inArray, eq } from "drizzle-orm";
+import { like, or, inArray } from "drizzle-orm";
 
 async function main() {
   assertDestructiveOk("cleanup-scale");

@@ -20,7 +20,10 @@ export function EmsPlanCard({ meterId }: { meterId: number }) {
   const { t } = useI18n();
   const plans = trpc.ems.plans.useQuery({ meterId, limit: 10 }, { refetchInterval: 15000 });
 
-  const now = Date.now();
+  // "Now" as of the last successful fetch. Calling Date.now() during render is
+  // impure — it changes on every re-render — and react-query already records
+  // when the data was read, which is the instant these rows describe anyway.
+  const now = plans.dataUpdatedAt;
   const rows = plans.data ?? [];
   const active = rows.find((p) => p.status === "active" && new Date(p.validFrom).getTime() <= now && new Date(p.validTo).getTime() > now)
     ?? rows.find((p) => p.status === "active" && new Date(p.validFrom).getTime() > now);

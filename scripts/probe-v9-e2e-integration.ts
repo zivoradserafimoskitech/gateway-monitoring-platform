@@ -12,7 +12,14 @@
  *   запис (result 'plan:volttrade-e2e%') + независен Modbus read-back.
  *
  * Прелоз: dev server :3000 (EMS_TICK_S=5), ESMU sim :5022, broker :1883.
- * Run: cd /mnt/agents/output/app && npx tsx scripts/probe-v9-e2e-integration.ts
+ * Run: npx tsx scripts/probe-v9-e2e-integration.ts   (from the repo root)
+ *
+ * PREREQUISITE — this probe does NOT run from a standalone checkout. It
+ * imports Contract B modules from the separate volttrade-erp repository via a
+ * relative path, so that repository must be checked out as a sibling three
+ * levels up (../../../work/volttrade-erp). Without it the import fails at
+ * startup. scripts/ is excluded from tsconfig.server.json, so this does not
+ * affect `npm run check` or the build.
  */
 import "dotenv/config";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -37,7 +44,7 @@ function probe(name: string, cond: boolean, detail?: unknown) {
   if (cond) { pass++; console.log(`  PASS ${name}${detail !== undefined ? ` (${typeof detail === "string" ? detail : JSON.stringify(detail)})` : ""}`); }
   else { fail++; fails.push(name); console.log(`  FAIL ${name}${detail !== undefined ? ` ${JSON.stringify(detail)}` : ""}`); }
 }
-const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+// (utcStr helper removed — unused since the probe switched to Date params)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 60000, stepMs = 2500): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;

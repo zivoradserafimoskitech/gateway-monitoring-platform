@@ -72,7 +72,7 @@ async function main() {
   probe("healthy tick raises no watchdog alarms", Number(afterHealthy.n) === 0, { active: Number(afterHealthy.n) });
 
   // forced condition via the same insert path used by the watchdog
-  const { notifyAlarmBreach } = await import("../api/alarms/notify");
+  await import("../api/alarms/notify");
   const insertWatchdog = async () =>
     db
       .insert(alarms)

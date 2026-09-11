@@ -35,40 +35,23 @@ export default function MeterDetail() {
   const meter = (meters.data ?? []).find((m) => m.id === meterId);
   const latest = trpc.meters.latest.useQuery({ meterId }, { refetchInterval: 5000 });
 
-  // Wave 4 / C30 T3: surface telemetry_values_rejected_total from /metrics —
-  // a profile with a wrong scale shows up here as a spike instead of silently
-  // stored bad data. Rate is computed between consecutive scrapes.
-  const [rejected, setRejected] = useState<{ total: number; perMin: number; byKey: Record<string, number> } | null>(null);
-  useEffect(() => {
-    let alive = true;
-    let prev: { at: number; total: number } | null = null;
-    const load = async () => {
-      try {
-        const text = await (await fetch("/metrics")).text();
-        const byKey: Record<string, number> = {};
-        let total = 0;
-        for (const line of text.split("\n")) {
-          const m = line.match(/^telemetry_values_rejected_total\{key="([^"]+)"\}\s+([0-9.]+)/);
-          if (m) {
-            byKey[m[1]] = Number(m[2]);
-            total += Number(m[2]);
-          }
-        }
-        const now = Date.now();
-        const perMin = prev && total >= prev.total ? ((total - prev.total) / (now - prev.at)) * 60_000 : 0;
-        prev = { at: now, total };
-        if (alive) setRejected({ total, perMin, byKey });
-      } catch {
-        /* /metrics unavailable — card stays hidden */
+  // Wave 4 / C30 T3: values dropped by the profile's plausibility bounds — a
+  // wrong scale shows up here as a spike instead of silently stored bad data.
+  // Read through the API, not by scraping /metrics from the browser: the
+  // recommended deployment restricts that endpoint to the monitoring system.
+  // Counters only: a per-minute rate needs cross-render memory, and rates
+  // belong in the monitoring system that already scrapes /metrics.
+  const rejections = trpc.diagnostics.telemetryRejections.useQuery(undefined, {
+    refetchInterval: 15_000,
+  });
+  const rejected = rejections.data
+    ? {
+        total: rejections.data.rejected,
+        byKey: Object.fromEntries(
+          Object.entries(rejections.data.byKey).map(([k, v]) => [k, v.rejected]),
+        ),
       }
-    };
-    void load();
-    const i = setInterval(load, 15_000);
-    return () => {
-      alive = false;
-      clearInterval(i);
-    };
-  }, []);
+    : null;
 
   // Stable query window: tick every 15 s, otherwise `new Date()` per render
   // would change the query key on every render and the chart would never settle.
@@ -203,7 +186,6 @@ export default function MeterDetail() {
           </CardHeader>
           <CardContent className="pb-4 text-sm" title={t.meters.rejectedValuesHint}>
             <span className="font-semibold text-amber-600">{rejected.total}</span>
-            <span className="text-xs text-slate-400"> · {rejected.perMin.toFixed(1)}/min</span>
             <span className="ml-2 text-xs text-slate-500">
               {Object.entries(rejected.byKey)
                 .sort(([, a], [, b]) => b - a)

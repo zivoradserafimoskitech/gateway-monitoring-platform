@@ -11,9 +11,35 @@ import {
   notificationChannels,
 } from "@db/schema";
 import type { Meter, NotificationChannel } from "@db/schema";
+import { assertEgressAllowed } from "../lib/egress";
+import { sendMail } from "../lib/mailer";
 
 const FETCH_TIMEOUT_MS = 5000;
 export const ESCALATE_AFTER_MS = parseInt(process.env.ALARM_ESCALATE_MIN ?? "15", 10) * 60_000;
+
+// ─── Telegram target parsing ─────────────────────────────────────────────────
+// A channel target is "<botToken>:<chatId>". The bot token ITSELF contains a
+// colon (`<botId>:<secret>`), so the separator is the LAST colon, not the
+// first — splitting on the first one yielded token="123456789" and
+// chatId="AAH..." and every send failed with 404.
+export interface TelegramTarget {
+  token: string;
+  chatId: string;
+}
+
+const TELEGRAM_BOT_TOKEN = /^\d{6,}:[A-Za-z0-9_-]{30,}$/;
+// Numeric chat/group id (groups are negative) or a public @channelname.
+const TELEGRAM_CHAT_ID = /^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
+
+export function parseTelegramTarget(target: string): TelegramTarget | null {
+  const sep = target.lastIndexOf(":");
+  if (sep <= 0 || sep === target.length - 1) return null;
+  const token = target.slice(0, sep);
+  const chatId = target.slice(sep + 1);
+  if (!TELEGRAM_BOT_TOKEN.test(token)) return null;
+  if (!TELEGRAM_CHAT_ID.test(chatId)) return null;
+  return { token, chatId };
+}
 
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 async function postJson(url: string, body: unknown): Promise<void> {
@@ -31,13 +57,17 @@ async function dispatch(
   payload: Record<string, unknown>,
 ): Promise<void> {
   if (channel.type === "webhook") {
+    // Re-check at send time, not only at creation: a hostname that resolved
+    // publicly when the channel was saved can be re-pointed at an internal
+    // address afterwards.
+    await assertEgressAllowed(channel.target);
     await postJson(channel.target, payload);
     return;
   }
   if (channel.type === "telegram") {
-    // target = "<botToken>:<chatId>"
-    const [token, chatId] = channel.target.split(":");
-    if (!token || !chatId) throw new Error("telegram target must be token:chatId");
+    const parsed = parseTelegramTarget(channel.target);
+    if (!parsed) throw new Error("telegram target must be <botToken>:<chatId>");
+    const { token, chatId } = parsed;
     const text = `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION " : ""}${payload.message}\n` +
       `meter=${payload.meterName ?? payload.meterId} value=${payload.value} threshold=${payload.threshold} severity=${payload.severity}`;
     await postJson(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -46,30 +76,86 @@ async function dispatch(
     });
     return;
   }
-  // email: SMTP via nodemailer when installed + SMTP_URL configured, else skip
-  if (!process.env.SMTP_URL) throw new Error("SMTP_URL not configured");
-  // Dynamic import evaluated at runtime — the dep is optional, so TS must not
-  // resolve it at compile time.
-  const mod: any = await (Function('return import("nodemailer")')() as Promise<any>).catch(() => null);
-  if (!mod) throw new Error("nodemailer not installed");
-  const transport = mod.default.createTransport(process.env.SMTP_URL);
-  await transport.sendMail({
-    to: channel.target,
-    subject: `[VoltTrade] Alarm: ${payload.message}`,
+  // email: go through the shared mailer (api/lib/mailer.ts) rather than
+  // importing nodemailer here. The private copy only honoured SMTP_URL, so a
+  // deployment configured with SMTP_HOST/PORT/USER could not send alarm mail
+  // at all, and it threw "nodemailer not installed" on every attempt because
+  // the optional dependency is normally absent.
+  const res = await sendMail({
+    to: [channel.target],
+    subject: `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION — " : ""}Alarm: ${payload.message}`,
     text: JSON.stringify(payload, null, 2),
   });
+  // The log transport is a legitimate dev/test choice, but silently recording
+  // "sent" when no mail left the box would hide a misconfigured production
+  // channel. Only accept it when it was asked for explicitly.
+  if (res.transport === "log" && process.env.EMAIL_TRANSPORT !== "log") {
+    throw new Error(
+      "no usable SMTP configuration — install nodemailer and set SMTP_URL or " +
+        "SMTP_HOST (set EMAIL_TRANSPORT=log to accept log-only delivery)",
+    );
+  }
+}
+
+// Which org does this alarm belong to? Meter org first, gateway org for
+// meter-less alarms. NULL means the device itself is unassigned.
+async function alarmOrgId(alarm: {
+  meterId: number | null;
+  gatewayId?: number | null;
+}): Promise<number | null> {
+  const db = getDb();
+  if (alarm.meterId != null) {
+    const m = await db
+      .select({ orgId: meters.orgId })
+      .from(meters)
+      .where(eq(meters.id, alarm.meterId))
+      .limit(1);
+    if (m[0]) return m[0].orgId ?? null;
+  }
+  if (alarm.gatewayId != null) {
+    const g = await db
+      .select({ orgId: gateways.orgId })
+      .from(gateways)
+      .where(eq(gateways.id, alarm.gatewayId))
+      .limit(1);
+    if (g[0]) return g[0].orgId ?? null;
+  }
+  return null;
 }
 
 async function dispatchToChannels(
-  alarm: { id: number; message: string; severity: string; value: number | null; threshold: number | null; meterId: number | null },
+  alarm: {
+    id: number;
+    message: string;
+    severity: string;
+    value: number | null;
+    threshold: number | null;
+    meterId: number | null;
+    gatewayId?: number | null;
+  },
   meterName: string | null,
   kind: "initial" | "escalation",
 ): Promise<{ sent: number; failed: number }> {
   const db = getDb();
+  // Tenancy: an alarm goes to its OWN org's channels plus any global
+  // (NULL-org, superadmin-managed) channel. Previously it went to every
+  // enabled channel in the installation, so one tenant's alarms were delivered
+  // to every other tenant's webhook, Telegram chat and mailbox.
+  const orgId = await alarmOrgId(alarm);
+  const orgCond =
+    orgId === null
+      ? isNull(notificationChannels.orgId)
+      : or(eq(notificationChannels.orgId, orgId), isNull(notificationChannels.orgId));
   const channels = await db
     .select()
     .from(notificationChannels)
-    .where(and(eq(notificationChannels.enabled, 1), eq(notificationChannels.escalation, kind === "escalation" ? 1 : 0)));
+    .where(
+      and(
+        eq(notificationChannels.enabled, 1),
+        eq(notificationChannels.escalation, kind === "escalation" ? 1 : 0),
+        orgCond,
+      ),
+    );
   let sent = 0;
   let failed = 0;
   for (const ch of channels) {
@@ -106,7 +192,9 @@ async function dispatchToChannels(
       error = e instanceof Error ? e.message : String(e);
       failed++;
     }
-    await db.insert(alarmNotifications).values({ alarmId: alarm.id, channelId: ch.id, kind, status, error });
+    await db
+      .insert(alarmNotifications)
+      .values({ alarmId: alarm.id, channelId: ch.id, kind, status, error, orgId });
   }
   return { sent, failed };
 }

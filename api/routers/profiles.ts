@@ -61,7 +61,11 @@ export const profilesRouter = createRouter({
     return db.select().from(deviceProfiles).orderBy(deviceProfiles.model);
   }),
 
-  updateMap: operator
+  // Device profiles are a GLOBAL catalogue shared by every tenant, and the
+  // register map decides which physical registers a control write lands on.
+  // An operator in one org must not be able to re-point another org's writes,
+  // so editing the map is admin-only — same bar as updateVerification below.
+  updateMap: admin
     .input(
       z.object({
         id: z.number(),
@@ -82,6 +86,34 @@ export const profilesRouter = createRouter({
       const rows = await db.select().from(deviceProfiles).where(eq(deviceProfiles.id, input.id)).limit(1);
       return rows[0];
     }),
+
+  // Delete a profile from the global catalogue. ADMIN ONLY, and refused while
+  // any device still references the model — removing a profile in use would
+  // strand those meters with no register map (and no controllable whitelist,
+  // which is a control-safety boundary, not just a display problem).
+  remove: admin.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ model: deviceProfiles.model })
+      .from(deviceProfiles)
+      .where(eq(deviceProfiles.id, input.id))
+      .limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Profile not found" });
+    const inUse = await db
+      .select({ id: meters.id })
+      .from(meters)
+      .where(eq(meters.model, rows[0].model))
+      .limit(1);
+    if (inUse[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `Profile ${rows[0].model} is still assigned to one or more devices`,
+      });
+    }
+    await db.delete(deviceProfiles).where(eq(deviceProfiles.id, input.id));
+    invalidateProfileCache();
+    return { ok: true };
+  }),
 
   // Wave 5 / T1: verification state + commissioning override. ADMIN ONLY —
   // allowUnverifiedControl bypasses the draft-profile control gate, so an

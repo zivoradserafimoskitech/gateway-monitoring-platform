@@ -361,7 +361,7 @@ test("plans: minSoc + soc below min → blocked plan setpoint is replaced by idl
 });
 
 test("plans: maxSoc + stale SoC → fail-closed block of a plan CHARGE (idle 0 kW)", async () => {
-  const { schema } = await setup();
+  await setup();
   state.whitelists.set("BESS-A", WL_BIPOLAR);
   state.telemetry.set(1, { socPercent: 50 });
   state.telemetryTs.set(1, new Date(Date.now() - 10 * 60_000)); // stale
@@ -382,7 +382,7 @@ test("plans: maxSoc + stale SoC → fail-closed block of a plan CHARGE (idle 0 k
 });
 
 test("plans: charge with soc below maxSoc is allowed (guard passes inside the band)", async () => {
-  const { schema } = await setup();
+  await setup();
   state.whitelists.set("BESS-A", WL_BIPOLAR);
   state.telemetry.set(1, { socPercent: 50 });
   state.planRows = [
@@ -402,7 +402,7 @@ test("plans: charge with soc below maxSoc is allowed (guard passes inside the ba
 });
 
 test("plans without SoC limits are unchanged (regression) — even with NO telemetry", async () => {
-  const { schema } = await setup();
+  await setup();
   state.whitelists.set("BESS-A", WL_BIPOLAR);
   // no telemetry for meter 1 at all — a plan without limits must NOT fail closed
   state.planRows = [

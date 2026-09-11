@@ -95,14 +95,26 @@ export const dashboardRouter = createRouter({
   // we sum across meters per bucket here.
   powerTrend: authed
     .input(z.object({ hours: z.number().min(1).max(168).default(24) }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const hours = input?.hours ?? 24;
       const from = new Date(Date.now() - hours * 3600_000);
       const bucketSec = Math.max(60, Math.floor((hours * 3600) / 120));
+      // The telemetry store has no org column, so scope by the caller's meters:
+      // without this the fleet trend summed every tenant's power together.
+      let visible: Set<number> | null = null;
+      if (!isSuper(ctx.user)) {
+        const mine = await getDb()
+          .select({ id: meters.id })
+          .from(meters)
+          .where(orgWhere(ctx.user, meters.orgId));
+        visible = new Set(mine.map((m) => m.id));
+        if (visible.size === 0) return [];
+      }
       const rows = await getTelemetryStore().powerTrend(from, bucketSec);
       const byBucket = new Map<number, number>();
       for (const r of rows) {
         if (r.avgKw === null) continue;
+        if (visible && !visible.has(r.meterId)) continue;
         byBucket.set(r.bucketSec, (byBucket.get(r.bucketSec) ?? 0) + r.avgKw);
       }
       return [...byBucket.entries()]

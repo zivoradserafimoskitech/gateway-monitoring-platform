@@ -8,6 +8,7 @@
 //       (default 120 s) → same plan forced to idle 0 kW with "soc unknown
 //       (fail-closed)" — the hardware-damage bug class is closed.
 // Run: npx tsx scripts/probe-gw6-soc-guard.ts   (AFTER probe-v9 has finished)
+import path from "node:path";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import ModbusRTU from "modbus-serial";
 import { readFileSync } from "node:fs";
@@ -18,7 +19,12 @@ import { commands, deviceProfiles, meters } from "../db/schema";
 const BASE = "http://localhost:3000";
 const jars: Record<string, string> = {};
 const SOURCE = "gw6-smoke";
-const DEV_LOG = "/mnt/agents/output/logs/dev.log";
+// Configurable: DEV_LOG env var, else <repo>/data/logs/dev.log. Was hardcoded
+// to one machine's sandbox layout, so the probe silently found no log
+// elsewhere.
+const APP_ROOT = process.env.APP_ROOT ?? path.resolve(import.meta.dirname, "..");
+const LOG_DIR = process.env.LOG_DIR ?? path.join(APP_ROOT, "data", "logs");
+const DEV_LOG = process.env.DEV_LOG ?? path.join(LOG_DIR, "dev.log");
 
 let fails = 0;
 function probe(name: string, ok: boolean, detail: unknown): void {
@@ -184,7 +190,7 @@ async function main() {
     await writeRegister(0).catch(() => undefined);
     // Restart the watchdog — it revives the dev server (if wedged) and the sims.
     try {
-      execSync("cd /mnt/agents/output/app && setsid nohup bash scripts/watchdog.sh >> /mnt/agents/output/logs/watchdog-stdout.log 2>&1 &");
+      execSync(`cd ${APP_ROOT} && setsid nohup bash scripts/watchdog.sh >> ${path.join(LOG_DIR, "watchdog-stdout.log")} 2>&1 &`);
     } catch { /* best effort */ }
     await sleep(15_000);
     const simsBack = execSync("ps -ef | grep 'device-simulator' | grep -v grep | wc -l").toString().trim();

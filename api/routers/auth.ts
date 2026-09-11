@@ -514,8 +514,14 @@ export const authRouter = createRouter({
 
   auditLog: admin
     .input(z.object({ limit: z.number().int().min(1).max(500).default(100) }))
-    .query(async ({ input }) => {
-      return getDb().select().from(auditLog).orderBy(desc(auditLog.createdAt)).limit(input.limit);
+    .query(async ({ ctx, input }) => {
+      // An org admin sees only their own org's trail; a superadmin sees all.
+      return getDb()
+        .select()
+        .from(auditLog)
+        .where(orgWhere(ctx.user, auditLog.orgId))
+        .orderBy(desc(auditLog.createdAt))
+        .limit(input.limit);
     }),
 });
 

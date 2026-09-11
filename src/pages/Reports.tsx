@@ -37,7 +37,7 @@ export default function Reports() {
   const [scope, setScope] = useState<"meter" | "site">("meter");
   const [meterId, setMeterId] = useState<string>("");
   const [siteId, setSiteId] = useState<string>("");
-  const [from, setFrom] = useState(toInputDate(new Date(Date.now() - 6 * 86400_000)));
+  const [from, setFrom] = useState(() => toInputDate(new Date(Date.now() - 6 * 86400_000)));
   const [to, setTo] = useState(toInputDate(new Date()));
   const [run, setRun] = useState(0);
 
@@ -86,8 +86,6 @@ export default function Reports() {
         <h1 className="text-2xl font-bold tracking-tight">{t.reports.title}</h1>
         <p className="text-sm text-slate-500">{t.reports.subtitle}</p>
       </div>
-
-      <ReportSchedulesCard />
 
       <Card>
         <CardContent className="grid items-end gap-4 p-4 md:grid-cols-6">

@@ -302,10 +302,43 @@ async function evalPeakShaving(): Promise<Set<number>> {
         }
       }
 
-      const latest = await store.latest(c.sourceMeterId);
-      const importKw = latest?.values.activePowerKw;
-      if (importKw == null) continue; // no telemetry yet — nothing to decide on
+      // audit: control decisions must never run on unbounded-age telemetry.
+      // The SoC guard already used freshForControl; peak shaving read
+      // store.latest() with no age bound, so a frozen source meter produced
+      // confident decisions from a stale reading. Fail closed instead: an
+      // ACTIVE shave whose source went stale is cut to idle, and a shave is
+      // never STARTED on stale data.
+      const fresh = await store.freshForControl(c.sourceMeterId);
       let st = peakState.get(c.id) ?? { active: false, lastSent: null };
+      if (!fresh.fresh) {
+        if (st.active) {
+          let wl = wlCache.get(bess.model);
+          if (!wl) {
+            wl = await controllableForModel(bess.model);
+            wlCache.set(bess.model, wl);
+          }
+          const sel = pickSetpointKey(wl, "discharge");
+          const age = fresh.ageMs == null ? "no telemetry" : `${Math.round(fresh.ageMs / 1000)}s old`;
+          if (sel) {
+            await send(
+              bess,
+              sel.key,
+              0,
+              `peak-shaving #${c.id} STALE source meter ${c.sourceMeterId} (${age}) → idle 0 kW`,
+            );
+            drove.add(c.bessMeterId);
+          }
+          peakState.set(c.id, { active: false, lastSent: null });
+        } else {
+          console.warn(
+            `[ems] peak-shaving #${c.id}: source meter ${c.sourceMeterId} telemetry stale — not starting`,
+          );
+          peakState.set(c.id, st);
+        }
+        continue;
+      }
+      const importKw = fresh.row?.values.activePowerKw;
+      if (importKw == null) continue; // no power metric — nothing to decide on
 
       if (!st.active) {
         if (importKw <= c.thresholdKw) {

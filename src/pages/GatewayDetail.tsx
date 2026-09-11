@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
@@ -41,7 +41,11 @@ export default function GatewayDetail() {
   const detail = trpc.gateways.get.useQuery({ id: gatewayId }, { refetchInterval: 5000 });
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [model, setModel] = useState<"SEM2250" | "SEM3250" | "PEM3000">("PEM3000");
+  // Model choices come from the device-profile catalogue, like the Devices
+  // page. They used to be three hardcoded literals, so a newly imported
+  // profile could not be selected here at all.
+  const profiles = trpc.profiles.list.useQuery(undefined, { enabled: open });
+  const [model, setModel] = useState("");
   const [addr, setAddr] = useState("1");
 
   const createMeter = trpc.meters.create.useMutation({
@@ -68,41 +72,18 @@ export default function GatewayDetail() {
   const meters = detail.data?.meters ?? [];
   const commands = detail.data?.commands ?? [];
 
-  // Wave 4 / C30 T1: surface c30_frames_undecodable_total from /metrics next to
-  // the gateway stats — dropped frames are the visible signal of the
-  // "drop over guess" policy doing its job (or of a misconfigured profile).
-  const [c30Stats, setC30Stats] = useState<{ total: number; perMin: number; byReason: Record<string, number> } | null>(null);
-  useEffect(() => {
-    if (gw?.transport !== "transparent") return;
-    let alive = true;
-    let prev: { at: number; total: number } | null = null;
-    const load = async () => {
-      try {
-        const text = await (await fetch("/metrics")).text();
-        const byReason: Record<string, number> = {};
-        let total = 0;
-        for (const line of text.split("\n")) {
-          const m = line.match(/^c30_frames_undecodable_total\{reason="([^"]+)"\}\s+([0-9.]+)/);
-          if (m) {
-            byReason[m[1]] = Number(m[2]);
-            total += Number(m[2]);
-          }
-        }
-        const now = Date.now();
-        const perMin = prev && total >= prev.total ? ((total - prev.total) / (now - prev.at)) * 60_000 : 0;
-        prev = { at: now, total };
-        if (alive) setC30Stats({ total, perMin, byReason });
-      } catch {
-        /* /metrics unavailable — card stays hidden */
-      }
-    };
-    void load();
-    const i = setInterval(load, 15_000);
-    return () => {
-      alive = false;
-      clearInterval(i);
-    };
-  }, [gw?.transport]);
+  // Wave 4 / C30 T1: undecodable transparent frames next to the gateway stats —
+  // dropped frames are the visible signal of the "drop over guess" policy doing
+  // its job (or of a misconfigured profile). Read through the API rather than
+  // by scraping /metrics from the browser, which the recommended deployment
+  // restricts to the monitoring system. Counters only: a per-minute rate needs
+  // cross-render memory, and rates belong in the monitoring system that already
+  // scrapes /metrics, not in hand-rolled component state.
+  const c30Query = trpc.diagnostics.c30Undecodable.useQuery(undefined, {
+    enabled: gw?.transport === "transparent",
+    refetchInterval: 15_000,
+  });
+  const c30Stats = c30Query.data ?? null;
 
   if (!gw) return <p className="text-sm text-slate-500">{t.common.loading}</p>;
 
@@ -153,7 +134,6 @@ export default function GatewayDetail() {
             <CardContent className="text-sm">
               <div>
                 <span className={c30Stats.total > 0 ? "font-semibold text-amber-600" : ""}>{c30Stats.total}</span>
-                <span className="text-xs text-slate-400"> · {c30Stats.perMin.toFixed(1)}/min</span>
               </div>
               <div className="mt-1 text-xs text-slate-500" title={t.gateways.c30UndecodableHint}>
                 {(["ambiguous", "no_match", "span_too_wide"] as const)
@@ -297,14 +277,19 @@ export default function GatewayDetail() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>{t.common.model}</Label>
-                <Select value={model} onValueChange={(v) => setModel(v as typeof model)}>
+                <Select value={model} onValueChange={setModel}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder={t.devices.profile} />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="PEM3000">PEM3000 — 3φ</SelectItem>
-                    <SelectItem value="SEM3250">SEM3250 — 3φ</SelectItem>
-                    <SelectItem value="SEM2250">SEM2250 — 1φ</SelectItem>
+                  <SelectContent className="max-h-72">
+                    {(profiles.data ?? []).map((p) => (
+                      <SelectItem key={p.model} value={p.model}>
+                        <span className="font-medium">{p.brand ?? ""}</span> {p.label}
+                        <span className="ml-2 text-xs text-slate-400">
+                          {p.deviceType} · {p.protocol}
+                        </span>
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -325,7 +310,7 @@ export default function GatewayDetail() {
               {t.common.cancel}
             </Button>
             <Button
-              disabled={!name.trim() || createMeter.isPending}
+              disabled={!name.trim() || !model || createMeter.isPending}
               onClick={() =>
                 createMeter.mutate({
                   gatewayId: gw.id,
