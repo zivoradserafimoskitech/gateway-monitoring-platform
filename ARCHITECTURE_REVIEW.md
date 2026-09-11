@@ -3,10 +3,10 @@
 Scope: full read of `api/`, `src/`, `db/`, `scripts/`, `docs/`, `tests/`, `verifier/`,
 CI and container definitions at commit `455d9b0` (branch `claude/architecture-review-ms3h77`).
 
-**Verification status:** findings below come from source reading, not from a running build.
-Dependency installation could not complete in this environment because of the lockfile issue in
-§7, so `npm run check` (TypeScript) and `npm test` (vitest) were not executed. Every finding is
-cited to a file and line so it can be confirmed directly.
+**Verification status:** the findings below come from source reading. They have since been
+confirmed against a running build: continuous integration now installs, typechecks, lints,
+tests and builds this branch successfully. Before that it could not, for the reason in §7.1 —
+which turned out to be the most consequential finding in this review.
 
 **Remediation status:** a follow-up commit on this branch fixes a large part of what follows.
 See "Appendix: what has been fixed" at the end for the item-by-item status. Findings are left
@@ -314,11 +314,21 @@ DB dedup key. Missing, in rough priority order:
 
 ## 7. Medium — repository reproducibility and hygiene
 
-- **`package-lock.json` pins 479 of its 898 tarballs to a private mirror host**
+- **7.1 — `package-lock.json` pinned 479 of its 898 tarballs to a private mirror host**
   (`https://npm.mirrors.msh.team/...`) rather than to the configured public registry. `npm ci`
-  therefore fails for anyone outside that network, including this review environment. Regenerate
-  the lockfile against `registry.npmjs.org` and add a clean-checkout `npm ci` job to CI so the
-  regression cannot recur.
+  uses each recorded URL verbatim, so it stalled on every one of them from any machine outside
+  that network.
+
+  This was not a cosmetic problem. **Continuous integration had failed on every run since at
+  least 13 August**, always at `npm ci`, roughly 73 seconds in, with npm's
+  `Exit handler never called!`. Typecheck, lint, tests and build never executed on any commit in
+  that period. A green pipeline was not being ignored — there had never been one.
+
+  Fixed by rewriting only the host to `registry.npmjs.org`. Versions and integrity hashes are
+  untouched, so npm still verifies every downloaded tarball against the hash the mirror's copy
+  produced. If the mirror was a deliberate supply-chain control rather than an artefact of the
+  machine the lockfile was generated on, revert that change and give continuous integration a
+  runner that can reach the mirror instead.
 - `db/seed.ts` is an empty TODO template, so there is no supported way to bootstrap a first
   admin outside the demo Docker path.
 - `README.md` is the Vite starter template with operations notes prepended. No setup steps, no
@@ -335,7 +345,10 @@ DB dedup key. Missing, in rough priority order:
   Cloud" (`src/pages/Login.tsx`). The suite is manual-only in CI, so this has gone unnoticed.
 - The `npm audit` allowlist in `.github/workflows/ci.yml` still references `xlsx` advisories
   although `exceljs` replaced it. Stale suppressions hide new findings.
-- `npm run lint` is not part of CI.
+- `npm run lint` was not part of CI, and the ESLint configuration was the unmodified Vite
+  starter: browser globals and both React plugins applied to every TypeScript file, including
+  the Node server, the Drizzle schema and the operator scripts. Enabling lint against that
+  config produced 55 errors, most of them React rules fired at server code.
 - Coverage thresholds are 39/37/28/22 percent. That is a floor, not a standard; raise it
   incrementally with a ratchet.
 
@@ -474,7 +487,9 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 7 | Probe called a missing procedure | `profiles.remove` added as an admin procedure that refuses while any device still uses the model |
 | 7 | Stale end-to-end assertions | The login spec expects "VoltTrade Cloud" |
 | 7 | Stale audit suppressions | The xlsx advisory allowlist is empty; the gate also no longer treats an advisory with no URL as allowed |
-| 7 | Lint not enforced | `npm run lint` runs in continuous integration |
+| 7 | Continuous integration had never passed | The lockfile's private-mirror URLs were rewritten to the public registry. Install now succeeds in about 13 seconds, and typecheck, lint, tests and build run for the first time |
+| 7 | Lint not enforced, on a config that did not fit the codebase | ESLint now describes the three kinds of code here (Node server and tooling, React frontend, Playwright specs) instead of applying browser and React rules to everything. Vendored shadcn primitives are ignored. All 55 errors the first enforced run reported are resolved |
+| 7 | Audit gate suppressed advisories for a package no longer present | The allowlist is empty. The blocking gate runs over runtime dependencies only, and a second non-blocking step reports build-time advisories so they stay visible |
 | 7 | Leftover template files | `info.md` and the unused `src/App.css` removed |
 
 ### Deliberately not changed
@@ -487,7 +502,11 @@ still open, and the phased plan in §10 remains the intended order of work.
   make on its own.
 - **§3 setpoint deadman, §4 alarm duration and offline alarms, §6 pagination and continuous
   aggregates, §8 the missing screens.** All new features rather than repairs.
-- **`package-lock.json` still pins 479 tarballs to a private mirror.** Rewriting those URLs was
-  blocked by this environment's tooling policy. It needs a lockfile regenerated against the
-  public registry, run by someone with that access. Until then `npm ci` only works inside that
-  network.
+- **Three build-time advisories remain open**: two in `browserslist` and one in `js-yaml`, all
+  reached through the bundler and linter rather than anything that ships. They are reported on
+  every run by the informational audit step. Clearing them means bumping the tooling that pulls
+  them in, which is a dependency upgrade rather than a fix to this codebase.
+- **The Playwright job still cannot pass on a GitHub-hosted runner**, as `docs/ci.md` already
+  documents: it needs a database the runner does not have. That is why it is dispatch-only. The
+  stale brand assertion in its login spec is fixed, but the job itself remains unverifiable
+  here.
