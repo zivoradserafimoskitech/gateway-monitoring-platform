@@ -518,10 +518,14 @@ still open, and the phased plan in §10 remains the intended order of work.
   works while failing quietly on restart.
 - **§6 Timescale continuous aggregates, §8 the missing screens.** Substantial new work rather
   than repairs.
-- **Three build-time advisories remain open**: two in `browserslist` and one in `js-yaml`, all
-  reached through the bundler and linter rather than anything that ships. They are reported on
-  every run by the informational audit step. Clearing them means bumping the tooling that pulls
-  them in, which is a dependency upgrade rather than a fix to this codebase.
+- **Sixteen advisories remain open**, now visible on every run through the informational audit
+  step. The two high ones (`browserslist`, `js-yaml`) are build-time only. More relevant: three
+  moderate ones sit in packages that **do** ship — `hono` (including a `parseBody` memory
+  exhaustion), `mysql2` (a decompression-bomb denial of service in the compressed protocol
+  handler), and `uuid` via `exceljs`. They are below the gate's high threshold, so they do not
+  block, but the Hono and mysql2 ones are worth scheduling: both are reachable by input. `npm
+  audit fix` resolves most of them without a breaking change. This needs an install, which the
+  review environment could not perform.
 - **The Playwright job still cannot pass on a GitHub-hosted runner**, as `docs/ci.md` already
   documents: it needs a database the runner does not have. That is why it is dispatch-only. The
   stale brand assertion in its login spec is fixed, but the job itself remains unverifiable
