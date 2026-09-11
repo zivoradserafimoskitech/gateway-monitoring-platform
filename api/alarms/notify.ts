@@ -14,6 +14,8 @@ import type { Meter, NotificationChannel } from "@db/schema";
 import { assertEgressAllowed } from "../lib/egress";
 import { sendMail } from "../lib/mailer";
 
+export type NotificationKind = "initial" | "escalation" | "resolved";
+
 const FETCH_TIMEOUT_MS = 5000;
 export const ESCALATE_AFTER_MS = parseInt(process.env.ALARM_ESCALATE_MIN ?? "15", 10) * 60_000;
 
@@ -68,7 +70,9 @@ async function dispatch(
     const parsed = parseTelegramTarget(channel.target);
     if (!parsed) throw new Error("telegram target must be <botToken>:<chatId>");
     const { token, chatId } = parsed;
-    const text = `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION " : ""}${payload.message}\n` +
+    const prefix =
+      payload.kind === "escalation" ? "ESCALATION " : payload.kind === "resolved" ? "RESOLVED " : "";
+    const text = `[VoltTrade] ${prefix}${payload.message}\n` +
       `meter=${payload.meterName ?? payload.meterId} value=${payload.value} threshold=${payload.threshold} severity=${payload.severity}`;
     await postJson(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: chatId,
@@ -83,7 +87,10 @@ async function dispatch(
   // the optional dependency is normally absent.
   const res = await sendMail({
     to: [channel.target],
-    subject: `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION — " : ""}Alarm: ${payload.message}`,
+    subject:
+      payload.kind === "resolved"
+        ? `[VoltTrade] RESOLVED: ${payload.message}`
+        : `[VoltTrade] ${payload.kind === "escalation" ? "ESCALATION — " : ""}Alarm: ${payload.message}`,
     text: JSON.stringify(payload, null, 2),
   });
   // The log transport is a legitimate dev/test choice, but silently recording
@@ -134,7 +141,7 @@ async function dispatchToChannels(
     gatewayId?: number | null;
   },
   meterName: string | null,
-  kind: "initial" | "escalation",
+  kind: NotificationKind,
 ): Promise<{ sent: number; failed: number }> {
   const db = getDb();
   // Tenancy: an alarm goes to its OWN org's channels plus any global
@@ -146,16 +153,36 @@ async function dispatchToChannels(
     orgId === null
       ? isNull(notificationChannels.orgId)
       : or(eq(notificationChannels.orgId, orgId), isNull(notificationChannels.orgId));
-  const channels = await db
-    .select()
-    .from(notificationChannels)
-    .where(
-      and(
-        eq(notificationChannels.enabled, 1),
-        eq(notificationChannels.escalation, kind === "escalation" ? 1 : 0),
-        orgCond,
-      ),
-    );
+
+  let channels: NotificationChannel[];
+  if (kind === "resolved") {
+    // A resolution goes to exactly the channels that were told this alarm
+    // fired — initial recipients and, if it ran long enough, escalation
+    // recipients. Anyone who was never paged is not told it is over.
+    const rows = await db
+      .selectDistinct({ ch: notificationChannels })
+      .from(notificationChannels)
+      .innerJoin(alarmNotifications, eq(alarmNotifications.channelId, notificationChannels.id))
+      .where(
+        and(
+          eq(alarmNotifications.alarmId, alarm.id),
+          eq(alarmNotifications.status, "sent"),
+          eq(notificationChannels.enabled, 1),
+        ),
+      );
+    channels = rows.map((r) => r.ch);
+  } else {
+    channels = await db
+      .select()
+      .from(notificationChannels)
+      .where(
+        and(
+          eq(notificationChannels.enabled, 1),
+          eq(notificationChannels.escalation, kind === "escalation" ? 1 : 0),
+          orgCond,
+        ),
+      );
+  }
   let sent = 0;
   let failed = 0;
   for (const ch of channels) {
@@ -215,6 +242,37 @@ export async function notifyAlarmBreach(alarmId: number): Promise<void> {
     if (r.sent || r.failed) console.log(`[notify] alarm ${alarmId}: initial sent=${r.sent} failed=${r.failed}`);
   } catch (e) {
     console.warn("[notify] breach dispatch failed:", e instanceof Error ? e.message : e);
+  }
+}
+
+// Called wherever an alarm transitions to resolved by the SYSTEM — the
+// condition went away on its own. Closing the loop matters: an operator who
+// was paged at 02:00 otherwise has no way to learn the site recovered except
+// by opening the dashboard.
+//
+// Manual resolution from the UI deliberately does NOT call this: the person
+// who clicked resolve already knows.
+export async function notifyAlarmResolved(alarmId: number): Promise<void> {
+  try {
+    const db = getDb();
+    const rows = await db.select().from(alarms).where(eq(alarms.id, alarmId)).limit(1);
+    const alarm = rows[0];
+    if (!alarm) return;
+    let meterName: string | null = null;
+    if (alarm.meterId) {
+      const m = await db.select({ name: meters.name }).from(meters).where(eq(meters.id, alarm.meterId)).limit(1);
+      meterName = m[0]?.name ?? null;
+    }
+    const r = await dispatchToChannels(
+      { ...alarm, message: `CLEARED — ${alarm.message}` },
+      meterName,
+      "resolved",
+    );
+    if (r.sent || r.failed) {
+      console.log(`[notify] alarm ${alarmId}: resolved sent=${r.sent} failed=${r.failed}`);
+    }
+  } catch (e) {
+    console.warn("[notify] resolve dispatch failed:", e instanceof Error ? e.message : e);
   }
 }
 

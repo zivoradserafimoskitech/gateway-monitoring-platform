@@ -29,6 +29,7 @@ vi.mock("../telemetry", () => ({
 vi.mock("../alarms/notify", () => ({
   isInMaintenance: async () => false,
   notifyAlarmBreach: async () => undefined,
+  notifyAlarmResolved: async () => undefined,
 }));
 
 import { handleC30Frame, meterCache, invalidateProfileCache } from "./handlers";

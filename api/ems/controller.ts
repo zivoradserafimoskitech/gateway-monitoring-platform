@@ -64,11 +64,18 @@
 // rewrite the same register every tick.
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { emsPeakShaving, emsSchedules, gateways, meters, sites } from "@db/schema";
+import { deviceProfiles, emsPeakShaving, emsSchedules, gateways, meters, sites } from "@db/schema";
 import type { Meter } from "@db/schema";
-import { ControlError, controllableForModel, executeAndLog } from "../control/execute";
+import { ControlError, controllableForModel, executeAndLog, executeControl } from "../control/execute";
 import type { ControllableMap } from "../control/execute";
 import { getTelemetryStore } from "../telemetry";
+import {
+  effectiveIntervalMs,
+  tickTooSlow,
+  validateWatchdog,
+  watchdogDue,
+  type WatchdogConfig,
+} from "./watchdog";
 import { guarded } from "../lib/error-reporting";
 import {
   kwToMode,
@@ -500,6 +507,88 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
 }
 
 /** One controller iteration — exported for tests. Never throws. */
+// Devices this controller is responsible for: anything with an EMS schedule or
+// a peak-shaving configuration. These are the ones whose setpoints would be
+// left stranded if the process died.
+async function managedMeters(): Promise<Meter[]> {
+  const db = getDb();
+  const [sched, peak] = await Promise.all([
+    db.selectDistinct({ meterId: emsSchedules.meterId }).from(emsSchedules).where(eq(emsSchedules.enabled, true)),
+    db.selectDistinct({ meterId: emsPeakShaving.bessMeterId }).from(emsPeakShaving).where(eq(emsPeakShaving.enabled, true)),
+  ]);
+  const ids = [...new Set([...sched.map((r) => r.meterId), ...peak.map((r) => r.meterId)])];
+  if (ids.length === 0) return [];
+  return db.select().from(meters).where(inArray(meters.id, ids));
+}
+
+// ─── Setpoint deadman ────────────────────────────────────────────────────────
+// Refresh the vendor watchdog register of every device under EMS management,
+// so that losing this process makes the device fall back to its own safe state
+// instead of holding the last setpoint forever. No-op for every profile that
+// does not declare a watchdog block, which today is all of them.
+//
+// Like lastCmd above, this is per-process state. That is correct here: each
+// replica must refresh the devices it is driving, and a replica that dies
+// SHOULD stop refreshing — that is the entire mechanism.
+const lastPet = new Map<number, number>();
+const watchdogWarned = new Set<string>();
+
+async function watchdogForModel(model: string): Promise<WatchdogConfig | null> {
+  const rows = await getDb()
+    .select({ watchdog: deviceProfiles.watchdog })
+    .from(deviceProfiles)
+    .where(eq(deviceProfiles.model, model))
+    .limit(1);
+  const raw = rows[0]?.watchdog;
+  if (!raw) return null;
+  const controllable = await controllableForModel(model);
+  const problem = validateWatchdog(raw, controllable);
+  if (problem) {
+    // Warn once per model: a broken watchdog config must be loud, but not
+    // every tick forever.
+    if (!watchdogWarned.has(model)) {
+      watchdogWarned.add(model);
+      console.error(`[ems] watchdog config for ${model} is unusable: ${problem}`);
+    }
+    return null;
+  }
+  return raw as WatchdogConfig;
+}
+
+export async function refreshWatchdogs(meters: Meter[]): Promise<number> {
+  let refreshed = 0;
+  for (const meter of meters) {
+    try {
+      const cfg = await watchdogForModel(meter.model);
+      if (!cfg) continue;
+      const interval = effectiveIntervalMs(cfg);
+      if (tickTooSlow(cfg, TICK_S * 1000) && !watchdogWarned.has(`slow:${meter.model}`)) {
+        watchdogWarned.add(`slow:${meter.model}`);
+        console.error(
+          `[ems] EMS_TICK_S=${TICK_S} is too slow for ${meter.model}'s watchdog ` +
+            `(needs a refresh every ${Math.round(interval / 1000)}s). The device will revert ` +
+            `between ticks. Lower EMS_TICK_S or raise the device timeout.`,
+        );
+      }
+      if (!watchdogDue(lastPet.get(meter.id) ?? null, Date.now(), interval)) continue;
+      // Deliberately executeControl, not executeAndLog: the safety chain
+      // (whitelist, verification gate, range, read-back) still applies, but a
+      // refresh every few seconds must not bury the command audit trail.
+      await executeControl(meter, cfg.key, cfg.value);
+      lastPet.set(meter.id, Date.now());
+      refreshed++;
+    } catch (err) {
+      // A failed refresh is exactly the case the watchdog exists for: say so,
+      // and do NOT record a refresh, so the device times out as designed.
+      console.error(
+        `[ems] watchdog refresh failed for ${meter.name}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return refreshed;
+}
+
 export async function emsTick(): Promise<void> {
   try {
     const now = new Date();
@@ -507,6 +596,12 @@ export async function emsTick(): Promise<void> {
     const peakDrove = await evalPeakShaving();
     const planDrove = await evalPlans(now, peakDrove);
     await evalSchedules(now, new Set([...peakDrove, ...planDrove]));
+    // Refresh the deadman AFTER the setpoints for this tick have been issued,
+    // so a device that was just commanded is confirmed reachable by the same
+    // pass. Devices under EMS management are those with a schedule or a
+    // peak-shaving configuration; no-op unless their profile declares a
+    // watchdog.
+    await refreshWatchdogs(await managedMeters());
   } catch (err) {
     console.error("[ems] tick error:", err instanceof Error ? err.message : err);
   }

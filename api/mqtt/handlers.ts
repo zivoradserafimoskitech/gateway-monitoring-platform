@@ -9,7 +9,7 @@ import type { MetricKey, RegisterDef } from "@contracts/modbus";
 import { DEFAULT_REGISTER_MAPS, DEFAULT_METER_PHASES } from "@contracts/modbus";
 import { parseResponse, decodeRegisters, registerSpan, buildBlocks } from "../modbus";
 import { shiftedAddress } from "@contracts/modbus";
-import { isInMaintenance, notifyAlarmBreach } from "../alarms/notify";
+import { isInMaintenance, notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
 import { telemetryValueRejected, telemetryValueDecoded, c30FrameUndecodable } from "../lib/observability";
 import { matchOutstanding, stampResponded, confirmVerifiedWrite } from "./c30-outstanding";
 import type { Gateway, Meter } from "@db/schema";
@@ -293,6 +293,19 @@ async function evaluateAlarmRules(
     } else if (!breached && was) {
       breachState.set(key, false);
       // Resolve acknowledged alarms too — the breach is over either way (#7).
+      // Collect the ids first: the UPDATE nulls active_dedup_key, so after it
+      // runs there is no way to find which rows were just closed, and whoever
+      // was paged needs a return-to-normal notice.
+      const closing = await db
+        .select({ id: alarms.id })
+        .from(alarms)
+        .where(
+          and(
+            eq(alarms.ruleId, rule.id),
+            eq(alarms.meterId, meter.id),
+            inArray(alarms.status, ["active", "acknowledged"]),
+          ),
+        );
       await db
         .update(alarms)
         .set({ status: "resolved", resolvedAt: new Date() })
@@ -303,6 +316,7 @@ async function evaluateAlarmRules(
             inArray(alarms.status, ["active", "acknowledged"]),
           ),
         );
+      for (const c of closing) void notifyAlarmResolved(c.id);
     }
   }
 }

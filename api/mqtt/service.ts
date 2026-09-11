@@ -21,6 +21,7 @@ import { registerOutstanding, sweepOutstanding } from "./c30-outstanding";
 import { getTelemetryStats } from "../telemetry";
 import { markGatewaySeen } from "./liveness";
 import { offlineThresholdMs } from "./offline";
+import { notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
 
 const OFFLINE_AFTER_MS = 120_000;
 const SWEEP_INTERVAL_MS = 30_000;
@@ -204,14 +205,22 @@ async function offlineSweep(): Promise<void> {
         .limit(1);
       if (!existing[0]) {
         try {
-          await db.insert(alarms).values({
-            gatewayId: gw.id,
-            metric: "gatewayOffline",
-            severity: "critical",
-            message: `Gateway ${gw.name} (${gw.uid}) went offline`,
-            status: "active",
-            triggeredAt: new Date(),
-          });
+          const inserted = await db
+            .insert(alarms)
+            .values({
+              gatewayId: gw.id,
+              metric: "gatewayOffline",
+              severity: "critical",
+              message: `Gateway ${gw.name} (${gw.uid}) went offline`,
+              status: "active",
+              triggeredAt: new Date(),
+            })
+            .$returningId();
+          // The alarm row used to be the end of it: nothing was ever
+          // dispatched, so the single most important event on a monitoring
+          // platform — a device stopped reporting — reached nobody unless
+          // somebody happened to be looking at the dashboard.
+          if (inserted[0]?.id) void notifyAlarmBreach(inserted[0].id);
         } catch (err) {
           // #7: another sweep/evaluator won the race (unique active_dedup_key)
           if (!isDuplicateKey(err)) throw err;
@@ -224,22 +233,69 @@ async function offlineSweep(): Promise<void> {
     const onlineMeters = await db
       .select({
         id: meters.id,
+        name: meters.name,
+        gatewayId: meters.gatewayId,
         lastSeenAt: meters.lastSeenAt,
         pollIntervalSec: meters.pollIntervalSec,
       })
       .from(meters)
       .where(eq(meters.status, "online"));
     const nowMs = Date.now();
-    const staleMeterIds = onlineMeters
-      .filter(
-        (m) =>
-          m.lastSeenAt !== null &&
-          nowMs - new Date(m.lastSeenAt).getTime() > offlineThresholdMs(m.pollIntervalSec),
-      )
-      .map((m) => m.id);
+    const staleMeters = onlineMeters.filter(
+      (m) =>
+        m.lastSeenAt !== null &&
+        nowMs - new Date(m.lastSeenAt).getTime() > offlineThresholdMs(m.pollIntervalSec),
+    );
+    const staleMeterIds = staleMeters.map((m) => m.id);
     for (let i = 0; i < staleMeterIds.length; i += 500) {
       const chunk = staleMeterIds.slice(i, i + 500);
       await db.update(meters).set({ status: "offline" }).where(inArray(meters.id, chunk));
+    }
+
+    // A device that stops reporting used to flip its status and nothing else:
+    // no alarm row, no notification. On a monitoring platform that is the
+    // event operators most need to hear about, so raise and dispatch it the
+    // same way a threshold breach is raised. The unique active_dedup_key
+    // (rule:meter:gateway:metric) keeps it to one open alarm per device.
+    for (const m of staleMeters) {
+      try {
+        const inserted = await db
+          .insert(alarms)
+          .values({
+            meterId: m.id,
+            gatewayId: m.gatewayId,
+            metric: "meterOffline",
+            severity: "warning",
+            message: `Device ${m.name} stopped reporting`,
+            status: "active",
+            triggeredAt: new Date(),
+          })
+          .$returningId();
+        if (inserted[0]?.id) void notifyAlarmBreach(inserted[0].id);
+      } catch (err) {
+        // Already open for this device, or another replica won the race.
+        if (!isDuplicateKey(err)) throw err;
+      }
+    }
+
+    // Clear device-offline alarms once the device reports again.
+    const metersBack = await db
+      .select({ alarmId: alarms.id })
+      .from(alarms)
+      .innerJoin(meters, eq(alarms.meterId, meters.id))
+      .where(
+        and(
+          eq(alarms.metric, "meterOffline"),
+          inArray(alarms.status, ["active", "acknowledged"]),
+          eq(meters.status, "online"),
+        ),
+      );
+    for (const a of metersBack) {
+      await db
+        .update(alarms)
+        .set({ status: "resolved", resolvedAt: new Date() })
+        .where(eq(alarms.id, a.alarmId));
+      void notifyAlarmResolved(a.alarmId);
     }
 
     // Auto-resolve offline alarms for gateways that are back online
@@ -260,6 +316,7 @@ async function offlineSweep(): Promise<void> {
         .update(alarms)
         .set({ status: "resolved", resolvedAt: new Date() })
         .where(eq(alarms.id, a.alarmId));
+      void notifyAlarmResolved(a.alarmId);
     }
 
     // Wave 4 / C30 T1+T4: expire outstanding reads; control writes whose
