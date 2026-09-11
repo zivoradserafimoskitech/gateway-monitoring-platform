@@ -63,12 +63,12 @@
     "drizzle-orm": "^0.45.1",
     "embla-carousel-react": "^8.6.0",
     "exceljs": "^4.4.0",
-    "hono": "^4.8.3",
+    "hono": "^4.13.7",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.562.0",
     "modbus-serial": "^8.0.25",
     "mqtt": "^5.15.2",
-    "mysql2": "^3.14.1",
+    "mysql2": "^3.24.4",
     "next-themes": "^0.4.6",
     "otplib": "^13.4.1",
     "pg": "^8.22.0",
@@ -115,5 +115,9 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vitest": "^4.0.16"
+  },
+  "overrides": {
+    "browserslist": "^4.28.7",
+    "js-yaml": "^4.3.2"
   }
 }

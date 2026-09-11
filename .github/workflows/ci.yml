@@ -38,6 +38,24 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Lockfile resolves to the public registry
+        # Guard against the regression that broke CI on every run from at least
+        # 2026-08-13 until 2026-09-11: 479 of the lockfile's 898 tarball URLs
+        # pointed at a private mirror the runners cannot reach, so `npm ci`
+        # stalled and nothing downstream ever executed. Checked BEFORE the
+        # install so the failure names the cause instead of timing out.
+        run: |
+          bad=$(grep -o '"resolved": "https\?://[^/"]*' package-lock.json \
+                | sed 's/.*:\/\///' | sort -u \
+                | grep -v -e '^registry\.npmjs\.org$' -e '^registry\.yarnpkg\.com$' || true)
+          if [ -n "$bad" ]; then
+            echo "package-lock.json resolves tarballs from non-public host(s):"
+            echo "$bad"
+            echo "Regenerate the lockfile against registry.npmjs.org."
+            exit 1
+          fi
+          echo "lockfile OK — all tarballs resolve from the public registry"
+
       - name: Install dependencies
         run: npm ci
 

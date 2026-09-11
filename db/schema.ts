@@ -271,6 +271,15 @@ export const deviceProfiles = mysqlTable(
     // Commissioning escape hatch (admin-only): allows writes to a DRAFT
     // profile, but every write is logged with a visible WARNING marker.
     allowUnverifiedControl: boolean("allow_unverified_control").notNull().default(false),
+    // Setpoint deadman: { key, value, intervalMs, deviceTimeoutMs }. `key` must
+    // name an entry in `controllable`. When present, the EMS controller
+    // refreshes that register while it manages the device, so losing the
+    // platform makes the device fall back to its own safe state instead of
+    // holding the last setpoint forever. NULL = no watchdog (current
+    // behaviour for every existing profile). The address, value and the
+    // device's timeout are per-model facts established on a bench, which is
+    // why they are configuration rather than code.
+    watchdog: json("watchdog"),
     // Wave 5 / T3: sign convention recorded during bench verification —
     // true = batteryPowerKw reads POSITIVE while discharging, false = negative,
     // NULL = never recorded (blocks bench_verified for profiles that have a
