@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
@@ -76,24 +76,14 @@ export default function GatewayDetail() {
   // dropped frames are the visible signal of the "drop over guess" policy doing
   // its job (or of a misconfigured profile). Read through the API rather than
   // by scraping /metrics from the browser, which the recommended deployment
-  // restricts to the monitoring system. Rate is computed between polls.
+  // restricts to the monitoring system. Counters only: a per-minute rate needs
+  // cross-render memory, and rates belong in the monitoring system that already
+  // scrapes /metrics, not in hand-rolled component state.
   const c30Query = trpc.diagnostics.c30Undecodable.useQuery(undefined, {
     enabled: gw?.transport === "transparent",
     refetchInterval: 15_000,
   });
-  const prevC30 = useRef<{ at: number; total: number } | null>(null);
-  const [c30Stats, setC30Stats] = useState<{ total: number; perMin: number; byReason: Record<string, number> } | null>(null);
-  useEffect(() => {
-    const d = c30Query.data;
-    if (!d) return;
-    const prev = prevC30.current;
-    const perMin =
-      prev && d.total >= prev.total && d.at > prev.at
-        ? ((d.total - prev.total) / (d.at - prev.at)) * 60_000
-        : 0;
-    prevC30.current = { at: d.at, total: d.total };
-    setC30Stats({ total: d.total, perMin, byReason: d.byReason });
-  }, [c30Query.data]);
+  const c30Stats = c30Query.data ?? null;
 
   if (!gw) return <p className="text-sm text-slate-500">{t.common.loading}</p>;
 
@@ -144,7 +134,6 @@ export default function GatewayDetail() {
             <CardContent className="text-sm">
               <div>
                 <span className={c30Stats.total > 0 ? "font-semibold text-amber-600" : ""}>{c30Stats.total}</span>
-                <span className="text-xs text-slate-400"> · {c30Stats.perMin.toFixed(1)}/min</span>
               </div>
               <div className="mt-1 text-xs text-slate-500" title={t.gateways.c30UndecodableHint}>
                 {(["ambiguous", "no_match", "span_too_wide"] as const)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
@@ -39,27 +39,19 @@ export default function MeterDetail() {
   // wrong scale shows up here as a spike instead of silently stored bad data.
   // Read through the API, not by scraping /metrics from the browser: the
   // recommended deployment restricts that endpoint to the monitoring system.
-  // Rate is computed between consecutive polls.
+  // Counters only: a per-minute rate needs cross-render memory, and rates
+  // belong in the monitoring system that already scrapes /metrics.
   const rejections = trpc.diagnostics.telemetryRejections.useQuery(undefined, {
     refetchInterval: 15_000,
   });
-  const prevRejected = useRef<{ at: number; total: number } | null>(null);
-  const [rejected, setRejected] = useState<{ total: number; perMin: number; byKey: Record<string, number> } | null>(null);
-  useEffect(() => {
-    const d = rejections.data;
-    if (!d) return;
-    const prev = prevRejected.current;
-    const perMin =
-      prev && d.rejected >= prev.total && d.at > prev.at
-        ? ((d.rejected - prev.total) / (d.at - prev.at)) * 60_000
-        : 0;
-    prevRejected.current = { at: d.at, total: d.rejected };
-    setRejected({
-      total: d.rejected,
-      perMin,
-      byKey: Object.fromEntries(Object.entries(d.byKey).map(([k, v]) => [k, v.rejected])),
-    });
-  }, [rejections.data]);
+  const rejected = rejections.data
+    ? {
+        total: rejections.data.rejected,
+        byKey: Object.fromEntries(
+          Object.entries(rejections.data.byKey).map(([k, v]) => [k, v.rejected]),
+        ),
+      }
+    : null;
 
   // Stable query window: tick every 15 s, otherwise `new Date()` per render
   // would change the query key on every render and the chart would never settle.
@@ -194,7 +186,6 @@ export default function MeterDetail() {
           </CardHeader>
           <CardContent className="pb-4 text-sm" title={t.meters.rejectedValuesHint}>
             <span className="font-semibold text-amber-600">{rejected.total}</span>
-            <span className="text-xs text-slate-400"> · {rejected.perMin.toFixed(1)}/min</span>
             <span className="ml-2 text-xs text-slate-500">
               {Object.entries(rejected.byKey)
                 .sort(([, a], [, b]) => b - a)

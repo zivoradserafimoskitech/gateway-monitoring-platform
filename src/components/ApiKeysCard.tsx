@@ -26,6 +26,9 @@ export function ApiKeysCard() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.user?.role === "admin";
   const utils = trpc.useUtils();
+  // dataUpdatedAt is used below as "now" when marking a key expired: reading
+  // the clock during render is impure, and the list is only as fresh as its
+  // last fetch regardless.
   const keys = trpc.apiKeys.list.useQuery(undefined, { enabled: isAdmin });
   const [name, setName] = useState("");
   const [role, setRole] = useState<"viewer" | "operator" | "admin">("viewer");
@@ -161,7 +164,7 @@ export function ApiKeysCard() {
                   {k.expiresAt ? (
                     <span className="flex items-center gap-1">
                       {new Date(k.expiresAt).toLocaleDateString()}
-                      {new Date(k.expiresAt).getTime() <= Date.now() && (
+                      {new Date(k.expiresAt).getTime() <= keys.dataUpdatedAt && (
                         <Badge variant="destructive">{t.apiKeys.expiredStatus}</Badge>
                       )}
                     </span>

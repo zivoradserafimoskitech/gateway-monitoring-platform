@@ -19,8 +19,10 @@ export interface MailResult {
 }
 
 async function nodemailerTransport(): Promise<{ sendMail: (msg: Record<string, unknown>) => Promise<unknown> } | null> {
-  // Dynamic import evaluated at runtime — nodemailer is an optional dep (same
-  // pattern as the C2 alarm email channel), so TS must not resolve it.
+  // Dynamic import evaluated at runtime — nodemailer is an OPTIONAL dependency,
+  // so TypeScript must not try to resolve it at compile time and there are no
+  // types to narrow against. `any` is the boundary with an untyped module here.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod: any = await (Function('return import("nodemailer")')() as Promise<any>).catch(() => null);
   if (!mod) return null;
   const nm = mod.default ?? mod;

@@ -82,7 +82,7 @@ async function main() {
     });
   }
   const devRows = await db.select().from(meters).where(and(eq(meters.gatewayId, gwId), eq(meters.host, TEST_HOST)));
-  const byUnit = new Map(devRows.map((r) => [r.unitId!, r]));
+  // byUnit index removed — the assertions below read devRows directly.
 
   console.log("3. starting poller, waiting for poll cycles");
   startPollerService();

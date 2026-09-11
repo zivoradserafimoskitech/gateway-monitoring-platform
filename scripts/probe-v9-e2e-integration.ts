@@ -44,7 +44,7 @@ function probe(name: string, cond: boolean, detail?: unknown) {
   if (cond) { pass++; console.log(`  PASS ${name}${detail !== undefined ? ` (${typeof detail === "string" ? detail : JSON.stringify(detail)})` : ""}`); }
   else { fail++; fails.push(name); console.log(`  FAIL ${name}${detail !== undefined ? ` ${JSON.stringify(detail)}` : ""}`); }
 }
-const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+// (utcStr helper removed — unused since the probe switched to Date params)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 60000, stepMs = 2500): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;

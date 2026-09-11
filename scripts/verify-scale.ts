@@ -4,7 +4,7 @@
 import "dotenv/config";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { and, count, eq, gt, inArray, like, or, sql } from "drizzle-orm";
+import { and, count, eq, gt, inArray, like, or } from "drizzle-orm";
 import { getDb } from "../api/queries/connection";
 import { meters, gateways, alarmRules, alarms } from "../db/schema";
 import { getTelemetryStore } from "../api/telemetry";

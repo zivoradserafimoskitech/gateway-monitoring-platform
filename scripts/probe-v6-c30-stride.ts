@@ -7,7 +7,7 @@
 import "dotenv/config";
 import { getDb } from "../api/queries/connection";
 import { gateways, meters, telemetry, alarms } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { handleC30Frame, clearMeterCache } from "../api/mqtt/handlers";
 import { crc16 } from "../api/modbus";

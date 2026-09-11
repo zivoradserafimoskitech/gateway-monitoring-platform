@@ -37,7 +37,7 @@ export default function Reports() {
   const [scope, setScope] = useState<"meter" | "site">("meter");
   const [meterId, setMeterId] = useState<string>("");
   const [siteId, setSiteId] = useState<string>("");
-  const [from, setFrom] = useState(toInputDate(new Date(Date.now() - 6 * 86400_000)));
+  const [from, setFrom] = useState(() => toInputDate(new Date(Date.now() - 6 * 86400_000)));
   const [to, setTo] = useState(toInputDate(new Date()));
   const [run, setRun] = useState(0);
 

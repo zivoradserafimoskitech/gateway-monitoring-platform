@@ -3,7 +3,7 @@
 // per profile; the register-map editor renders lazily inside a single
 // expandable row (accordion, one open at a time). Save/Export/Verify reuse
 // the exact same tRPC calls as the old ProfileCard.
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
@@ -373,7 +373,14 @@ function RegisterMapEditor({ id, initialMap }: { id: number; initialMap: Registe
   const { t } = useI18n();
   const utils = trpc.useUtils();
   const [map, setMap] = useState<RegisterDef[]>(initialMap);
-  useEffect(() => setMap(initialMap), [initialMap]);
+  // Reset the draft when a different profile's map arrives. React's documented
+  // way to do this is to adjust state during render, not in an effect: an
+  // effect renders the stale map first and then immediately re-renders.
+  const [syncedMap, setSyncedMap] = useState<RegisterDef[]>(initialMap);
+  if (initialMap !== syncedMap) {
+    setSyncedMap(initialMap);
+    setMap(initialMap);
+  }
 
   const save = trpc.profiles.updateMap.useMutation({
     onSuccess: () => {

@@ -11,7 +11,7 @@
 import "dotenv/config";
 import { getDb } from "../api/queries/connection";
 import { gateways, meters, telemetry, telemetryHourly } from "../db/schema";
-import { and, eq, sql as dsql } from "drizzle-orm";
+import { eq, sql as dsql } from "drizzle-orm";
 import { purgeRaw, rollupRange } from "../api/telemetry/rollup";
 
 async function main() {
