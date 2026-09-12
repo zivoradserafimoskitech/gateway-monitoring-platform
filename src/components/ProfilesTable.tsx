@@ -27,6 +27,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ChevronDown, ChevronRight, Download, Save, Search } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { ProfileVerifyWizard } from "@/components/ProfileVerifyWizard";
 import { DEVICE_TYPES } from "@contracts/devices";
 import type { RegisterDef } from "@contracts/modbus";
@@ -273,6 +274,21 @@ function ProfileTableRow({
     onError: (e) => toast.error(e.message),
   });
 
+  // §8: profiles.remove existed (added for the probe) but nothing called it,
+  // so a profile imported by mistake stayed in the model picker forever. The
+  // server refuses while any device still uses the model, so the only failure
+  // mode here is a message, never an orphaned device.
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = !me.data?.authRequired || me.data?.user?.role === "admin";
+  const utils = trpc.useUtils();
+  const removeProfile = trpc.profiles.remove.useMutation({
+    onSuccess: () => {
+      void utils.profiles.list.invalidate();
+      toast.success(t.settings.profileRemoved);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   return (
     <>
       <TableRow className={expanded ? "bg-slate-50" : undefined}>
@@ -344,6 +360,14 @@ function ProfileTableRow({
             >
               <Download className="h-4 w-4" />
             </Button>
+            {isAdmin && (
+              <ConfirmButton
+                title={`${t.settings.removeProfile}: ${p.model}`}
+                description={t.settings.removeProfileHint}
+                disabled={removeProfile.isPending}
+                onConfirm={() => removeProfile.mutate({ id: p.id })}
+              />
+            )}
             <Button
               variant="ghost"
               size="sm"
