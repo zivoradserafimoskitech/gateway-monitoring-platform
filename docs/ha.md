@@ -81,6 +81,33 @@ and new code can coexist against the same DB during the roll.
 | Report artifacts | `data/reports/` local disk per replica | files are per-run artifacts; email is the delivery path |
 | MQTT broker state | EMQX cluster | 2-node static cluster, shared cookie |
 
+## Single-writer leases
+
+Loops that command plant hold a lease in the `leader_leases` table before
+acting (`api/lib/leader.ts`). Exactly one replica wins; the others skip the
+tick. The lease is renewed every tick and expires after 90 s, so a replica that
+dies hands over rather than blocking control indefinitely.
+
+The database is already a hard dependency, so this needs no Redis. It
+generalises the conditional UPDATE the report scheduler was already using.
+
+| Lease | Held by |
+| --- | --- |
+| `ems-controller` | the EMS tick (schedules, plans, peak shaving, watchdog refresh) |
+| `ota-manager` | OTA dispatch and the ack-timeout sweep |
+| `modbus-poller` | the direct-TCP poll loop |
+
+A failure to reach the database means **not** the leader. Failing closed is
+correct: each of these loops reads its instructions from that same database, so
+it has nothing useful to do while the database is unreachable.
+
+`LEADER_LEASES=off` disables the mechanism entirely for single-instance
+deployments, where the round trip per tick buys nothing.
+
+Not leased, deliberately: **MQTT ingestion**, which is balanced across replicas
+by the shared subscription and is supposed to run everywhere; and the **report
+scheduler**, which already claims each period atomically.
+
 ## Duplicate-loop analysis (2 replicas)
 
 All background loops run on **every** replica. Effects and guards:
@@ -88,12 +115,12 @@ All background loops run on **every** replica. Effects and guards:
 | Loop | Duplicate effect | Guard |
 |---|---|---|
 | **MQTT ingestion** | Two clients subscribing `#` would both receive every uplink → double telemetry rows | **Shared subscription**: when `MQTT_URL` is set the app subscribes `$share/enertrek/#` — EMQX delivers each message to exactly one group member. (Embedded dev broker aedes lacks `$share`, so dev keeps plain `#`; set `MQTT_SHARED_SUB=0` for external brokers without `$share` support — then replicas each get every message, i.e. run a single replica.) |
-| **EMS controller** | Both replicas evaluate the same schedules and could write the same setpoint twice | FC6 writes are **value-idempotent**: writing the same setpoint twice is semantically a no-op for the device. The 5-min in-RAM dedup is per replica, so the first tick after boot may produce a duplicate audit row in `commands` — cosmetic only. Peak-shaving same. |
-| **OTA manager** | Both replicas dispatch the same pending job → two publishes of the same jobId | The device acks once per delivery; `handleOtaAck` only transitions jobs still in `sent` status — the second ack is ignored. Timeout sweep (`attempts++`) can double-increment in the worst case → job may fail one attempt early; harmless and logged. |
+| **EMS controller** | Both replicas evaluate the same schedules and could write the same setpoint twice | **Leased** (`api/lib/leader.ts`, lease `ems-controller`): exactly one replica runs the tick. A replica that dies stops renewing and another takes over once the lease lapses, so control moves rather than stopping. Previously this relied on FC6 writes being value-idempotent, which made a duplicate merely cosmetic — but the in-RAM 5-minute dedup was per replica, so the guarantee was weaker than it looked. |
+| **OTA manager** | Both replicas dispatch the same pending job → two publishes of the same jobId | **Leased** (`ota-manager`). The ack path was already tolerant — `handleOtaAck` only transitions jobs still in `sent` — but the timeout sweep could double-increment `attempts` and fail a job an attempt early. |
 | **Report scheduler** | Both replicas pass `isDue` in the same minute → **duplicate email** | **Implemented guard**: before generating, the loop claims the period with an atomic conditional `UPDATE report_schedules SET last_run_at = <now> WHERE id = ? AND (last_run_at IS NULL OR last_run_at < <period_start>)`. TiDB row-locking lets exactly one replica win; the loser sees 0 affected rows and skips. At-most-once per period: if the winner crashes mid-send, that period's email is lost rather than doubled. |
 | **Retention/rollup** | Both replicas run the hourly rollup + raw retention | Rollup upserts hourly aggregates (`INSERT … ON DUPLICATE KEY UPDATE`) and retention deletes by time window — both are naturally idempotent. |
 | **Watchdog / alarm escalation** | Duplicate alert checks / notification attempts | Alarm transitions are status-guarded in DB; escalation mail may duplicate in the worst case (same as a retry). |
-| **Modbus TCP poller** | Two replicas polling the same direct-TCP device → **double telemetry rows** | Honest limit: run the poller on ONE replica (`POLLER_ENABLED=0` on the other via an override file) when direct-TCP devices exist. MQTT-only fleets are unaffected. |
+| **Modbus TCP poller** | Two replicas polling the same direct-TCP device → **double telemetry rows** | **Leased** (`modbus-poller`). A replica that does not hold the lease tears down its per-device timers and stands by. This used to be a manual limit requiring `POLLER_ENABLED=0` on the second replica; that variable still works as a hard override. |
 
 ## Failover drills
 

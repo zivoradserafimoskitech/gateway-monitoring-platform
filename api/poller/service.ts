@@ -10,6 +10,7 @@
 //   ≤ 120 words) so sparse vendor maps cost 1–3 round trips, not one per key.
 // - Decoded values go through the SAME hot path as gateway traffic
 //   (persistTelemetry → batch writer + liveness + alarm rules).
+import { hasLease } from "../lib/leader";
 import ModbusRTU from "modbus-serial";
 import { isNotNull } from "drizzle-orm";
 import { getDb } from "../queries/connection";
@@ -188,7 +189,28 @@ function sameConfig(a: Meter, b: Meter): boolean {
   );
 }
 
+/** Tear down every per-device timer (standing down, or shutting down). */
+function stopAllTasks(): void {
+  for (const [id, task] of tasks) {
+    task.stopped = true;
+    if (task.timer) clearTimeout(task.timer);
+    tasks.delete(id);
+  }
+}
+
 async function refreshDevices(): Promise<void> {
+  // Only one replica may poll. Two replicas polling the same direct-TCP device
+  // write duplicate telemetry rows for the same instant. docs/ha.md used to
+  // call this an honest limit that had to be managed by hand with
+  // POLLER_ENABLED=0 on the second replica; the lease does it automatically,
+  // and hands polling over if the holder dies.
+  if (!(await hasLease("modbus-poller"))) {
+    if (tasks.size) {
+      console.log("[poller] another replica holds the poll lease — standing down");
+      stopAllTasks();
+    }
+    return;
+  }
   const db = getDb();
   let rows: Meter[] = [];
   try {

@@ -13,6 +13,7 @@
 // applied via the C12 whitelisted FC6 path (payload {"controlKey","value",
 // "meterId?"}); firmware OTA has no downlink channel → job fails immediately
 // with a clear error.
+import { withLease } from "../lib/leader";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { gateways, meters, otaJobs } from "@db/schema";
@@ -29,7 +30,11 @@ let timer: NodeJS.Timeout | null = null;
 export function startOtaLoop(): void {
   if (timer) return;
   timer = setInterval(() => {
-    otaSweep().catch((err) => console.error("[ota] sweep failed:", err instanceof Error ? err.message : err));
+    // Leased: two replicas would otherwise publish the same job twice and
+    // double-increment its attempt counter on timeout.
+    withLease("ota-manager", otaSweep).catch((err) =>
+      console.error("[ota] sweep failed:", err instanceof Error ? err.message : err),
+    );
   }, SWEEP_MS);
   timer.unref?.();
   console.log("[ota] manager started");
