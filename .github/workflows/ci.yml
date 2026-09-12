@@ -144,14 +144,39 @@ jobs:
 
   e2e:
     name: Playwright E2E (login, RBAC)
-    # MANUAL ONLY (workflow_dispatch): the E2E suite needs a running app whose
-    # DATABASE_URL points at TiDB — and the demo TiDB is reachable only over
-    # Aliyun PrivateLink, which GitHub-hosted runners cannot route to. To use
-    # this job: run it on a self-hosted runner inside the VPC (or point
-    # DATABASE_URL at a staging DB seeded via scripts/seed-admin.ts + a viewer
-    # user). See docs/ci.md.
+    # Self-contained: the job brings its own MySQL, builds the schema from
+    # db/schema.ts and seeds the two accounts the specs sign in with.
+    #
+    # It used to depend on `secrets.DATABASE_URL` pointing at the demo TiDB,
+    # which sits behind Aliyun PrivateLink and is unroutable from a
+    # GitHub-hosted runner — so the three login tests could never pass here and
+    # the job was red by construction. Nothing about the suite actually needs
+    # THAT database; it needs A database with two users in it.
+    #
+    # Still workflow_dispatch only: a browser suite takes minutes and does not
+    # belong on every push. Run it before a release or when touching auth.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: e2e
+          MYSQL_DATABASE: volttrade_e2e
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pe2e"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      # Disposable database, disposable credentials — see scripts/seed-e2e-users.ts,
+      # which refuses to seed these well-known passwords anywhere non-local.
+      DATABASE_URL: mysql://root:e2e@127.0.0.1:3306/volttrade_e2e
+
     steps:
       - uses: actions/checkout@v4
 
@@ -166,12 +191,28 @@ jobs:
       - name: Install Playwright chromium
         run: npx playwright install --with-deps chromium
 
-      # Required GitHub secret: DATABASE_URL (TiDB DSN reachable from the
-      # runner; the DB must already contain admin@enertrek.local/admin1234 and
-      # viewer@enertrek.local/viewer123).
+      - name: Create the schema
+        # Same path the demo image uses: snapshot db/schema.ts to SQL and apply
+        # it to an empty database. drizzle-kit migrate is not usable here — its
+        # journal stops at index 13 (see scripts/apply-migrations.ts).
+        run: |
+          npx drizzle-kit generate --config drizzle.demo.config.ts
+          for f in db/demo-schema/*.sql; do
+            echo "applying $f"
+            # drizzle separates statements with `--> statement-breakpoint`.
+            # MySQL only treats `--` as a comment when the next character is
+            # whitespace, so `-->` reaches the parser as a syntax error. The
+            # statements are already semicolon-terminated, so the marker lines
+            # can simply be dropped. (scripts/apply-migrations.ts splits on the
+            # same marker, for the same reason.)
+            grep -v -e '--> statement-breakpoint' "$f" \
+              | mysql -h 127.0.0.1 -P 3306 -uroot -pe2e volttrade_e2e
+          done
+
+      - name: Seed the accounts the specs use
+        run: npx tsx scripts/seed-e2e-users.ts
+
       - name: Start app (dev server)
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           npm run dev &
           for i in $(seq 1 60); do

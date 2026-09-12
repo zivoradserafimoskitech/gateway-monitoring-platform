@@ -77,6 +77,7 @@ import {
   type WatchdogConfig,
 } from "./watchdog";
 import { guarded } from "../lib/error-reporting";
+import { withLease } from "../lib/leader";
 import {
   kwToMode,
   peakHoldPower,
@@ -109,7 +110,11 @@ export function startEmsLoop(): void {
   }
   // Audit wave 4: guarded() reports a tick failure (Sentry/log) and never
   // rethrows — same loop-survives behavior as the previous .catch(console).
-  const tick = guarded("ems-tick", emsTick);
+  // Only one replica may command plant at a time. Without the lease both
+  // replicas evaluate the same schedules with separate in-memory idempotency
+  // state, so the 5-minute duplicate-suppression window is per process and a
+  // setpoint can be written twice.
+  const tick = guarded("ems-tick", () => withLease("ems-controller", emsTick));
   timer = setInterval(() => {
     void tick();
   }, TICK_S * 1000);

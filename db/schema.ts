@@ -329,6 +329,15 @@ export type InsertCommand = typeof commands.$inferInsert;
 // ─── Multi-tenancy (v8 D2) ───────────────────────────────────────────────────
 // Every tenant-owned row carries org_id (backfilled to "Default Org"). The
 // superadmin (users.is_superadmin) sees all orgs; everyone else only their own.
+// Single-writer leases (api/lib/leader.ts). Exactly one replica at a time may
+// run a loop that commands plant; a replica that dies stops renewing and
+// another takes over once the lease lapses.
+export const leaderLeases = mysqlTable("leader_leases", {
+  name: varchar("name", { length: 64 }).primaryKey(),
+  holder: varchar("holder", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
 export const orgs = mysqlTable(
   "orgs",
   {

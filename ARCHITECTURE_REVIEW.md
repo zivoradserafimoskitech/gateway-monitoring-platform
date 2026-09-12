@@ -4,9 +4,10 @@ Scope: full read of `api/`, `src/`, `db/`, `scripts/`, `docs/`, `tests/`, `verif
 CI and container definitions at commit `455d9b0` (branch `claude/architecture-review-ms3h77`).
 
 **Verification status:** the findings below come from source reading. They have since been
-confirmed against a running build: continuous integration now installs, typechecks, lints,
-tests and builds this branch successfully. Before that it could not, for the reason in §7.1 —
-which turned out to be the most consequential finding in this review.
+confirmed against a running build. Continuous integration is now **green end to end on this
+branch — both jobs, every gate, including the browser suite**. Before this work it had failed
+on every run since at least 13 August, for the reason in §7.1, which turned out to be the most
+consequential finding in the review.
 
 **Remediation status:** a follow-up commit on this branch fixes a large part of what follows.
 See "Appendix: what has been fixed" at the end for the item-by-item status. Findings are left
@@ -506,6 +507,7 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 6 | No pagination on the public API | `/devices` and `/alarms` accept `limit` and `cursor` and return `nextCursor`. Opt-in, so an existing client's response is unchanged. Keyset rather than offset, and the alarm cursor carries timestamp **and** id because one sweep raises many alarms sharing a timestamp |
 | 3 | No setpoint deadman | `device_profiles.watchdog` (migration 0023) plus a refresh pass at the end of each EMS tick. Off unless a profile declares it. Goes through `executeControl`, so the whitelist, verification gate, range clamp and read-back all still apply, and not through `executeAndLog`, so a refresh every few seconds does not bury the audit trail. A configured interval too close to the device timeout is tightened rather than trusted, and a controller tick too slow to serve it is reported loudly |
 | 7 | Two high and two moderate advisories | `hono` 4.13.7 and `mysql2` 3.24.4 raised past their advisories; `browserslist` and `js-yaml` pinned through npm `overrides`. The musl metadata npm dropped in the process was restored by hand, because both images are Alpine and that field selects the musl binaries |
+| 7 | The Playwright job could never pass | It expected a `DATABASE_URL` secret pointing at a TiDB behind Aliyun PrivateLink, unroutable from a hosted runner, so the three login specs could never sign in. The job now brings its own `mysql:8`, builds the schema from `db/schema.ts` and seeds the two accounts the specs use. No secrets. All four specs pass |
 | 7 | The private mirror could come back silently | A CI step fails, before the install, if any tarball resolves from a non-public host. Verified both ways |
 | 6 | HTTP listener not closed on shutdown | The listener stops accepting connections on `SIGTERM`/`SIGINT` while in-flight requests finish. The write-ahead log already drained |
 
@@ -530,7 +532,5 @@ still open, and the phased plan in §10 remains the intended order of work.
   to 3.4.0, which is not a trade worth making for a missing bounds check in a code path the
   report generator does not use. Revisit when exceljs ships a newer `uuid`. The remaining ten are
   build tooling (vitest, esbuild via drizzle-kit, postcss) and are reported but do not block.
-- **The Playwright job still cannot pass on a GitHub-hosted runner**, as `docs/ci.md` already
-  documents: it needs a database the runner does not have. That is why it is dispatch-only. The
-  stale brand assertion in its login spec is fixed, but the job itself remains unverifiable
-  here.
+- **§8, the missing screens.** Roughly a dozen backend procedures still have no user interface,
+  and there is no responsive layout. Substantial new work rather than repairs.
