@@ -4,23 +4,16 @@ Pipeline: `.github/workflows/ci.yml` (D7). Two jobs:
 
 | Job | Trigger | Gates |
 | --- | --- | --- |
-| `quality` | push / PR to `main` | `npm ci` → typecheck (`npm run check`, i.e. `tsc -b` — the root `tsconfig.json` is a solution file, plain `tsc --noEmit` would no-op) → `npm run test:coverage` (vitest v8 coverage, thresholds enforced) → `npm run build` → npm audit gate (high+) |
-| `e2e` | `workflow_dispatch` only | Playwright chromium specs against a live dev server |
+| `quality` | push / PR to `main`, or `workflow_dispatch` on any branch | lockfile registry guard → `npm ci` → typecheck (`npm run check`, i.e. `tsc -b` — the root `tsconfig.json` is a solution file, plain `tsc --noEmit` would no-op) → `npm run lint` → `npm run test:coverage` (vitest v8 coverage, thresholds enforced) → `npm run build` → npm audit gate (runtime deps, high+) → npm audit report (dev deps, informational) |
+| `e2e` | `workflow_dispatch` only | Playwright chromium specs against a live dev server backed by a `mysql:8` service container the job starts itself |
 
 ## Coverage (D7.3)
 
-Provider: `@vitest/coverage-v8`, configured in `vitest.config.ts`. Measured
-baseline of the current 25-test suite:
-
-| Metric | Measured | Threshold |
-| --- | --- | --- |
-| Lines | 26.23 % | 21 % |
-| Statements | 24.35 % | 19 % |
-| Branches | 16.75 % | 11 % |
-| Functions | 10.46 % | 5 % |
-
-Thresholds sit ~5 points below the measured values so the gate trips on real
-regressions, not on noise. Raise them as coverage improves. Run locally:
+Provider: `@vitest/coverage-v8`, configured in `vitest.config.ts`. Thresholds
+in force: lines 39, statements 37, branches 28, functions 22. They sit a couple
+of points below the measured baseline so the gate trips on real regressions
+rather than on noise — see the comment in `vitest.config.ts` for the current
+measurement. Raise them as coverage improves. Run locally:
 `npm run test:coverage` (exit code 1 when below threshold; `npm test` stays
 the fast no-coverage path).
 
@@ -52,45 +45,66 @@ Specs in `tests/e2e/login.spec.ts`:
 Run locally:
 
 ```bash
-npm run dev          # app + API on :3000 (requires DATABASE_URL in .env)
-npx playwright test  # or: npm run test:e2e
+npm run dev                          # app + API on :3000 (requires DATABASE_URL in .env)
+npx tsx scripts/seed-e2e-users.ts    # once, to create the two accounts
+npx playwright test                  # or: npm run test:e2e
 ```
 
 First-time setup: `npx playwright install chromium`.
 
 ### Why the E2E job is manual-only in CI
 
-The suite needs a **running app + reachable TiDB**. The demo database lives
-behind Aliyun PrivateLink — GitHub-hosted runners cannot route to it — so the
-`e2e` job is gated to `workflow_dispatch`. To enable it:
+It is manual because a browser suite takes minutes and does not belong on every
+push — not because it cannot run here. The job is **self-contained**: it starts
+a `mysql:8` service container, builds the schema from `db/schema.ts` the same
+way the demo image does, seeds the two accounts the specs sign in with
+(`scripts/seed-e2e-users.ts`), then starts the dev server and runs Playwright.
 
-- run it on a **self-hosted runner inside the VPC**, or point `DATABASE_URL`
-  at a staging DB; and
-- seed the users the specs rely on (`scripts/seed-admin.ts` for the admin;
-  a viewer user `viewer@enertrek.local / viewer123`).
+It previously depended on a `DATABASE_URL` secret pointing at the demo TiDB,
+which sits behind Aliyun PrivateLink and is unroutable from a GitHub-hosted
+runner. The three login specs could therefore never pass, and the job was red
+by construction. Nothing in the suite needs *that* database — it needs *a*
+database with two users in it.
 
-Required GitHub secret for the E2E job:
+No secrets are required. The credentials are disposable and the seed script
+refuses to write them anywhere that is not clearly local.
 
-| Secret | Purpose |
-| --- | --- |
-| `DATABASE_URL` | TiDB DSN reachable from the runner, with seeded users |
+Run it before a release, or when touching authentication or the login flow.
 
 ## npm audit policy
 
-The `quality` job runs `npm audit --audit-level=high --json` and **hard-fails
-on any high/critical advisory not on the documented allowlist**. Current
-allowlist (both in `xlsx`, no upstream fix published — SheetJS only ships
-fixes via its paid CDN builds):
+Two steps, deliberately split:
 
-- `GHSA-4r6h-8v6p-xvw6` — prototype pollution
-- `GHSA-5pgg-2g8v-p4x9` — regular expression denial of service
+| Step | Scope | Blocking |
+| --- | --- | --- |
+| `npm audit gate (high+, runtime dependencies)` | `--omit=dev` — what actually ships | yes, on any high or critical |
+| `npm audit report (dev dependencies, informational)` | the whole tree | no |
 
-The 6 remaining moderates are dev-only (`esbuild` <0.25 via
-`drizzle-kit`/`@esbuild-kit`, vite dev chain) and never reach the runtime
-image; `--audit-level=high` does not gate on them. Revisit the allowlist when
-an `xlsx` fix or replacement lands. Note: the sandbox npm mirror does not
-implement the audit endpoint — verify locally with
-`npm audit --audit-level=high --registry=https://registry.npmjs.org`.
+A vulnerability in the bundler or the linter is real and worth tracking, but it
+is not reachable by an attacker against a deployed gateway. Letting it block
+every pull request is how audit gates end up switched off entirely, so it is
+reported loudly and gates nothing.
+
+The allowlist (`AUDIT_ALLOW`) is **empty**. It previously carried two `xlsx`
+advisories; `xlsx` was replaced by `exceljs` and is no longer a dependency, so
+those entries suppressed nothing and would have hidden a genuine finding on any
+package that reused the id. Add an entry only alongside a comment naming the
+package, why no fix exists, and when to revisit.
+
+Known remaining: `uuid` below 11.1.1 via `exceljs`, the one advisory npm cannot
+resolve without downgrading `exceljs` across a major version. It is moderate,
+so it does not gate.
+
+## Lockfile registry guard
+
+A step before the install fails the build if any tarball in
+`package-lock.json` resolves from anywhere but the public registry.
+
+This exists because of a real outage: 479 of the lockfile's 898 tarball URLs
+pointed at a private mirror the runners cannot reach, so `npm ci` stalled and
+**every CI run from at least 2026-08-13 to 2026-09-11 failed before typecheck,
+lint, tests or build ever executed**. The guard runs first so the failure names
+the cause instead of timing out.
 
 ## Scale smoke (placeholder)
 
