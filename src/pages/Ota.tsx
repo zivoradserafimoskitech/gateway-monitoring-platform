@@ -2,6 +2,7 @@
 // OTA job table (create/cancel, operator-gated). SPEC-v10 §2 Ota.tsx.
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { useI18n } from "@/i18n";
 import { fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -251,16 +252,15 @@ export default function Ota() {
                     <TableCell className="text-xs">{fmtTime(j.createdAt)}</TableCell>
                     <TableCell className="text-right">
                       {(j.status === "pending" || j.status === "sent") && canWrite && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={cancel.isPending}
-                          onClick={() => {
-                            if (confirm(t.ota.cancelConfirm)) cancel.mutate({ id: j.id });
-                          }}
+                        <ConfirmButton
+                          title={t.ota.cancelConfirm}
+                          confirmLabel={t.ota.cancel}
+                          onConfirm={() => cancel.mutate({ id: j.id })}
                         >
-                          <XCircle className="h-3 w-3" /> {t.ota.cancel}
-                        </Button>
+                          <Button size="sm" variant="outline" disabled={cancel.isPending}>
+                            <XCircle className="h-3 w-3" /> {t.ota.cancel}
+                          </Button>
+                        </ConfirmButton>
                       )}
                     </TableCell>
                   </TableRow>

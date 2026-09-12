@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { useI18n } from "@/i18n";
 import { StatusBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -199,15 +200,10 @@ export default function GatewayDetail() {
                           <RefreshCw className="h-4 w-4 text-slate-500" />
                         </Button>
                       )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => {
-                          if (confirm(t.meters.deleteConfirm)) removeMeter.mutate({ id: m.id });
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4 text-slate-400" />
-                      </Button>
+                      <ConfirmButton
+                        title={t.meters.deleteConfirm}
+                        onConfirm={() => removeMeter.mutate({ id: m.id })}
+                      />
                     </div>
                   </TableCell>
                 </TableRow>

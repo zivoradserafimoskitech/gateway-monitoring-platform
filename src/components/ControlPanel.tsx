@@ -7,6 +7,16 @@ import { useI18n } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtTime } from "@/components/shared";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { AlertTriangle, Loader2, Send } from "lucide-react";
 
 interface ControllableDef {
@@ -36,6 +46,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   });
   const [values, setValues] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, setPending] = useState<{ key: string; def: ControllableDef; val: number } | null>(null);
 
   const entries = Object.entries(wl.data ?? {}) as [string, ControllableDef][];
   if (wl.isLoading || entries.length === 0) return null;
@@ -66,14 +77,23 @@ export function ControlPanel({ meterId }: { meterId: number }) {
     );
   }
 
-  const run = async (key: string, def: ControllableDef) => {
+  // The confirmation for a setpoint write used window.confirm. After the first
+  // one, browsers offer "prevent this page from creating more dialogs" — tick
+  // it and every later write goes straight to the device with no confirmation
+  // at all. A dialog the page owns cannot be switched off, and it is
+  // translated and styled like the rest of the product.
+  const ask = (key: string, def: ControllableDef) => {
     const raw = values[key];
     const val = Number(raw);
     if (!raw || !Number.isFinite(val)) {
       setFeedback({ ok: false, text: `${t.control.invalidValue}: ${raw ?? ""}` });
       return;
     }
-    if (!window.confirm(`${t.control.confirmExecute}: ${key} = ${val}${def.unit ? ` ${def.unit}` : ""}?`)) return;
+    setPending({ key, def, val });
+  };
+
+  const run = async (key: string, val: number) => {
+    setPending(null);
     setFeedback(null);
     try {
       const res = await execute.mutateAsync({ meterId, key, value: val });
@@ -118,7 +138,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
               <Button
                 size="sm"
                 disabled={!canWrite || execute.isPending}
-                onClick={() => void run(key, def)}
+                onClick={() => ask(key, def)}
                 title={canWrite ? undefined : t.control.readonlyRole}
               >
                 {execute.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
@@ -157,6 +177,23 @@ export function ControlPanel({ meterId }: { meterId: number }) {
           </div>
         )}
       </CardContent>
+
+      <AlertDialog open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.control.confirmExecute}</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-sm">
+              {pending ? `${pending.key} = ${pending.val}${pending.def.unit ? ` ${pending.def.unit}` : ""}` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => pending && void run(pending.key, pending.val)}>
+              {t.control.execute}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

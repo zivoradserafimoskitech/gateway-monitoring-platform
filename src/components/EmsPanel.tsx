@@ -4,6 +4,7 @@
 // ControlPanel already covers the manual side). Follows ControlPanel patterns.
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { useI18n } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -156,16 +157,14 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
                     >
                       {s.enabled ? t.ems.enabled : t.ems.disabled}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={removeSchedule.isPending}
-                      onClick={() => {
-                        if (window.confirm(`${t.common.delete}: ${s.name}?`)) void removeSchedule.mutateAsync({ id: s.id });
-                      }}
+                    <ConfirmButton
+                      title={`${t.common.delete}: ${s.name}`}
+                      onConfirm={() => void removeSchedule.mutateAsync({ id: s.id })}
                     >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                      <Button size="sm" variant="outline" disabled={removeSchedule.isPending}>
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </ConfirmButton>
                   </>
                 )}
               </div>
@@ -237,16 +236,14 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
                     >
                       {c.enabled ? t.ems.enabled : t.ems.disabled}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={removePeak.isPending}
-                      onClick={() => {
-                        if (window.confirm(`${t.common.delete} #${c.id}?`)) void removePeak.mutateAsync({ id: c.id });
-                      }}
+                    <ConfirmButton
+                      title={`${t.common.delete} #${c.id}`}
+                      onConfirm={() => void removePeak.mutateAsync({ id: c.id })}
                     >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                      <Button size="sm" variant="outline" disabled={removePeak.isPending}>
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </ConfirmButton>
                   </>
                 )}
               </div>

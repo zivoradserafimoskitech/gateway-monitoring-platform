@@ -13,6 +13,8 @@ import SiteDiagram from "@/pages/SiteDiagram";
 import Ems from "@/pages/Ems";
 import Ota from "@/pages/Ota";
 import Settings from "@/pages/Settings";
+import Admin from "@/pages/Admin";
+import NotFound from "@/pages/NotFound";
 import Login from "@/pages/Login";
 
 export default function App() {
@@ -49,7 +51,10 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/sites/:id/diagram" element={<SiteDiagram />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Dashboard />} />
+          <Route path="/admin" element={<Admin />} />
+          {/* An unknown path used to render the dashboard, which hid broken
+              links behind a page that looked fine. */}
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
       <Toaster richColors position="bottom-right" />
