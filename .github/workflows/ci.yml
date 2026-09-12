@@ -199,7 +199,14 @@ jobs:
           npx drizzle-kit generate --config drizzle.demo.config.ts
           for f in db/demo-schema/*.sql; do
             echo "applying $f"
-            mysql -h 127.0.0.1 -P 3306 -uroot -pe2e volttrade_e2e < "$f"
+            # drizzle separates statements with `--> statement-breakpoint`.
+            # MySQL only treats `--` as a comment when the next character is
+            # whitespace, so `-->` reaches the parser as a syntax error. The
+            # statements are already semicolon-terminated, so the marker lines
+            # can simply be dropped. (scripts/apply-migrations.ts splits on the
+            # same marker, for the same reason.)
+            grep -v -e '--> statement-breakpoint' "$f" \
+              | mysql -h 127.0.0.1 -P 3306 -uroot -pe2e volttrade_e2e
           done
 
       - name: Seed the accounts the specs use
