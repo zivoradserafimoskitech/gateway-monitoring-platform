@@ -135,7 +135,7 @@ export function UnclaimedDevicesCard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t.common.name}</TableHead>
-                      <TableHead>{t.meters.type}</TableHead>
+                      <TableHead>{t.common.type}</TableHead>
                       <TableHead>{t.common.model}</TableHead>
                       <TableHead>{t.common.lastSeen}</TableHead>
                       <TableHead className="text-right">{t.admin.claimTo}</TableHead>

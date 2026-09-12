@@ -5,9 +5,9 @@ CI and container definitions at commit `455d9b0` (branch `claude/architecture-re
 
 **Verification status:** the findings below come from source reading. They have since been
 confirmed against a running build. Continuous integration is now **green end to end on this
-branch — both jobs, every gate, including the browser suite**. Before this work it had failed
-on every run since at least 13 August, for the reason in §7.1, which turned out to be the most
-consequential finding in the review.
+branch — all three jobs, every gate, including the browser suite and a real TimescaleDB**.
+Before this work it had failed on every run since at least 13 August, for the reason in §7.1,
+which turned out to be the most consequential finding in the review.
 
 **Remediation status:** a follow-up commit on this branch fixes a large part of what follows.
 See "Appendix: what has been fixed" at the end for the item-by-item status. Findings are left
@@ -511,6 +511,19 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 7 | The private mirror could come back silently | A CI step fails, before the install, if any tarball resolves from a non-public host. Verified both ways |
 | 6 | HTTP listener not closed on shutdown | The listener stops accepting connections on `SIGTERM`/`SIGINT` while in-flight requests finish. The write-ahead log already drained |
 
+| 1.2 | Login lockout counted per replica | `login_attempts` in the database. Five attempts was five **per replica**, so the brute-force budget scaled with the fleet — the opposite of what a limit is for |
+| 1.2 | Pending MFA challenge was process-local | `mfa_pending` in the database. A challenge issued by one replica did not exist on the other, so a correct second factor was rejected whenever the load balancer moved the request. The store interface became async and single use now rests on the DELETE affecting exactly one row |
+| 1.2 | Alarm hysteresis was process-local | `alarm_breach_state` in the database. MQTT ingestion is deliberately not leased, so both replicas evaluate the same rules; with separate hysteresis a breach could be raised twice or a clear missed entirely, and every restart forgot how long a condition had been running. Each keeps a per-replica cache in front and writes only transitions, so the ingest hot path still does not touch the database per sample |
+| 1.4 | Null-org devices were invisible to everyone | `orgs.unclaimedDevices` / `claimGateway` / `claimDevice` plus a superadmin screen. The full fix still needs a broker-authenticated client identity; this makes the limbo visible and gives one action that ends it, instead of hardware ingesting into a database nobody can see |
+| 4 | No alarm duration or debounce | `alarm_rules.duration_sec`, default 0 so every existing rule behaves exactly as before. The decision is a pure function (`api/alarms/hysteresis.ts`): a spike shorter than the duration wakes nobody and leaves no state behind, the clock restarts after a gap so flapping never accumulates, and state recovered from an open alarm row after a restart does not raise twice. Only possible now because the first-breach instant is durable |
+| 6 | Timescale reports stopped at the raw cutoff | 001 drops raw telemetry after 90 days, so a Timescale deployment returned an **empty** report past that while MySQL returned rolled-up data — one API, two answers. Migration 002 recreates the hourly continuous aggregate with the first/last/min/max counters the report math needs, and `dailyReport`/`energyIntervals` split at the cutoff and merge, exactly as the MySQL store does |
+| 6 | `telemetry_daily`'s refresh policy had never installed | Found by the new CI job the first time the SQL met a real database: with 1-day buckets, a 2-day start offset minus a 1-hour end offset is 1.96 buckets, and TimescaleDB rejects the policy. The aggregate was never refreshed on any deployment that ran the file. Nothing had noticed because nothing read it and no test applied the SQL |
+| 6 | Nothing verified the Timescale SQL | A CI job brings up a TimescaleDB service container, applies both files and asserts the aggregate and the raw window function produce the same report — over a fixture with a counter reset inside one hour and another across an hour boundary |
+| 8 | Nine procedures with no screen | Users, audit log, unclaimed devices, Modbus poller status, maintenance windows, notification delivery history, change password, site edit/delete and gateway edit. A new `/admin` page holds the first four; the rest join the Settings tabs and the gateways page |
+| 8 | No responsive layout | The 240 px sidebar was fixed, so below roughly 1000 px content was squeezed behind it. It now collapses into a drawer and the header carries the section name. `use-mobile.ts` stays unused on purpose — the breakpoint is CSS, so nothing needs to re-render on resize |
+| 8 | `window.confirm` for destructive actions | Replaced with `AlertDialog`. It matters most for a setpoint write: after the first `window.confirm`, browsers offer "prevent this page from creating more dialogs", and ticking it sends every later write to the plant with no confirmation at all |
+| 8 | No 404 route | An unknown path rendered the dashboard, so a broken link looked like a working page |
+
 ### Deliberately not changed
 
 - **§1.2, high-availability state — mostly closed, without Redis.** The loops that command plant
@@ -520,21 +533,17 @@ still open, and the phased plan in §10 remains the intended order of work.
   registry are only consulted by the replica that owns control, and the poller can no longer
   double-write telemetry.
 
-  Still per-process, and still worth fixing: the **alarm hysteresis `breachState`**, because
-  MQTT ingestion is deliberately NOT leased — the shared subscription balances it across
-  replicas on purpose — so two replicas evaluate rules with separate state; and the **login
-  lockout** and **pending MFA challenge** maps, which multiply the brute-force budget by the
-  replica count and can fail a multi-factor step that lands on the other replica. All three
-  belong in the database for the same reason the leases do.
-- **§1.4, null-org auto-provisioning.** The correct fix derives the tenant from a
-  broker-authenticated client identity, which requires broker configuration this change cannot
-  make on its own.
-- **§4 alarm duration and debounce** remains the one deferred item — see below.
-  A "breached for N minutes" condition needs breach state that survives a restart and is shared
-  between replicas, which is the §1.2 problem. Building it on the current per-process `Map`
-  would make it look like it works while failing quietly on restart.
-- **§6 Timescale continuous aggregates, §8 the missing screens.** Substantial new work rather
-  than repairs.
+  The other three — alarm hysteresis, the login lockout and the pending MFA challenge — have
+  since moved into the database as well (see the table above), so no correctness-critical state
+  remains in per-process memory.
+- **§1.4, null-org auto-provisioning — half closed.** The queue and the claim action exist. The
+  remaining half derives the tenant from a broker-authenticated client identity at provisioning
+  time, so no device ever lands in limbo; that requires broker configuration this repository
+  cannot make on its own.
+- **Charts past the retention cutoff.** `history` and `powerTrend` still read raw rows only, so
+  a chart older than 90 days is empty — on **both** stores, unchanged by this work. Closing it
+  means aggregating the open `values_json` key space (a BESS chart follows `batteryPowerKw`,
+  which is not a column), which is a larger change than the report path needed.
 - **Advisories: 16 down to 11, and no high ones left.** Measured on the runner before and after:
   16 (1 low, 13 moderate, 2 high) became 11 (1 low, 10 moderate, 0 high). Of the eleven, exactly
   one is in a package that ships — `uuid` below 11.1.1, reached through `exceljs`. It is the one
@@ -542,5 +551,6 @@ still open, and the phased plan in §10 remains the intended order of work.
   to 3.4.0, which is not a trade worth making for a missing bounds check in a code path the
   report generator does not use. Revisit when exceljs ships a newer `uuid`. The remaining ten are
   build tooling (vitest, esbuild via drizzle-kit, postcss) and are reported but do not block.
-- **§8, the missing screens.** Roughly a dozen backend procedures still have no user interface,
-  and there is no responsive layout. Substantial new work rather than repairs.
+- **§9, the recommended new functions.** Still open by design: those are the roadmap, not
+  repairs. Two of them landed on the way — the setpoint deadman (§9.1) and device-offline
+  alarming (§9.6) — because both were closing a safety gap rather than adding a feature.
