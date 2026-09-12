@@ -17,41 +17,10 @@ import type {
 } from "./types";
 import { env } from "../lib/env";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
-import { retentionCutoff } from "./rollup";
-
-// v7/C5: merge raw-range and hourly-range report rows per day (ranges that
-// straddle the retention cutoff). pf is samples-weighted; energies sum.
-function mergeDayRows(parts: DailyReportRow[][]): DailyReportRow[] {
-  const map = new Map<string, DailyReportRow>();
-  const sumN = (a: number | null, b: number | null) =>
-    a === null ? b : b === null ? a : Math.round((a + b) * 100) / 100;
-  for (const rows of parts) {
-    for (const r of rows) {
-      const ex = map.get(r.day);
-      if (!ex) {
-        map.set(r.day, { ...r });
-        continue;
-      }
-      const totSamples = ex.samples + r.samples;
-      ex.avgPowerFactor =
-        ex.avgPowerFactor === null
-          ? r.avgPowerFactor
-          : r.avgPowerFactor === null
-            ? ex.avgPowerFactor
-            : Math.round(((ex.avgPowerFactor * ex.samples + r.avgPowerFactor * r.samples) / totSamples) * 1000) / 1000;
-      ex.importKwh = sumN(ex.importKwh, r.importKwh);
-      ex.exportKwh = sumN(ex.exportKwh, r.exportKwh);
-      ex.maxDemandKw =
-        ex.maxDemandKw === null ? r.maxDemandKw
-          : r.maxDemandKw === null ? ex.maxDemandKw
-            : Math.max(ex.maxDemandKw, r.maxDemandKw);
-      ex.demandDerived = ex.demandDerived && r.demandDerived;
-      ex.counterReset = ex.counterReset || r.counterReset;
-      ex.samples = totSamples;
-    }
-  }
-  return [...map.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
-}
+import { retentionCutoff } from "./retention";
+// v7/C5 merge semantics for ranges that straddle the retention cutoff; shared
+// with the Timescale store so the two cannot drift (see merge.ts).
+import { mergeDayRows, mergeEnergyBuckets } from "./merge";
 
 type WriteDb = ReturnType<typeof createWriteDb>;
 let writeDb: WriteDb | null = null;
@@ -454,26 +423,7 @@ export class MySqlTelemetryStore implements TelemetryStore {
       parts.push(await this.energyIntervalsRaw(meterId, from > cutoff ? from : cutoff, to, bucketMin));
     }
     // A bucket can straddle the cutoff (partial hourly + partial raw) — merge.
-    const byBucket = new Map<number, EnergyIntervalBucket>();
-    for (const b of parts.flat()) {
-      const ex = byBucket.get(b.bucketStartSec);
-      if (!ex) {
-        byBucket.set(b.bucketStartSec, { ...b });
-        continue;
-      }
-      const totSamples = ex.samples + b.samples;
-      ex.avgPowerKw =
-        ex.avgPowerKw === null
-          ? b.avgPowerKw
-          : b.avgPowerKw === null
-            ? ex.avgPowerKw
-            : Math.round(((ex.avgPowerKw * ex.samples + b.avgPowerKw * b.samples) / totSamples) * 1000) / 1000;
-      ex.importKwh = ex.importKwh === null ? b.importKwh : b.importKwh === null ? ex.importKwh : Math.round((ex.importKwh + b.importKwh) * 1000) / 1000;
-      ex.exportKwh = ex.exportKwh === null ? b.exportKwh : b.exportKwh === null ? ex.exportKwh : Math.round((ex.exportKwh + b.exportKwh) * 1000) / 1000;
-      ex.samples = totSamples;
-      ex.estimated = ex.estimated || b.estimated;
-    }
-    return [...byBucket.values()].sort((a, b) => a.bucketStartSec - b.bucketStartSec);
+    return mergeEnergyBuckets(parts);
   }
 
   private async energyIntervalsRaw(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {

@@ -12,6 +12,10 @@
 #      (--omit=dev): hard fails on any high/critical that actually ships. A
 #      second, non-blocking step reports dev-only advisories.
 #
+# Timescale job: brings up a real TimescaleDB service container, applies
+# db/timescale/*.sql to it and checks that reports answered from the continuous
+# aggregate match the ones answered from raw rows.
+#
 # E2E (Playwright) job: manual (workflow_dispatch) only — see the e2e job
 # comment and docs/ci.md for why it cannot run on GitHub-hosted runners.
 name: CI
@@ -141,6 +145,52 @@ jobs:
       #     npx tsx scripts/verify-scale.ts      # S1-S7 checks, see verifier/v2
       #     npx tsx scripts/cleanup-scale.ts     # always clean up afterwards
       # ---------------------------------------------------------------------
+
+  timescale:
+    name: TimescaleDB aggregates (integration)
+    # The Timescale store answers reports older than the 90-day raw retention
+    # out of a continuous aggregate. Nothing else in the repository can tell
+    # whether db/timescale/*.sql is even valid SQL, let alone whether the
+    # aggregate's delta/reset reconstruction agrees with the window-function
+    # math over raw rows — so this job brings up a real TimescaleDB, applies
+    # the files to it and compares the two answers.
+    #
+    # Cheap enough to run on every push: one container, one small fixture.
+    runs-on: ubuntu-latest
+
+    services:
+      timescale:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_PASSWORD: timescale
+          POSTGRES_DB: telemetry_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d telemetry_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      # Disposable container, disposable credentials.
+      TIMESCALE_TEST_URL: postgres://postgres:timescale@127.0.0.1:5432/telemetry_test
+      # Turns the suite's self-skip into a hard failure (see the test file).
+      TIMESCALE_REQUIRED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Timescale aggregate tests
+        run: npx vitest run tests/timescale-aggregates.test.ts --reporter=verbose
 
   e2e:
     name: Playwright E2E (login, RBAC)

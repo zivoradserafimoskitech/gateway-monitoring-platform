@@ -10,16 +10,11 @@
 // instead — this module is only wired up for the MySQL store (boot.ts).
 import { sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
+import { retentionCutoff } from "./retention";
 
-const RAW_DAYS = parseInt(process.env.TELEMETRY_RAW_DAYS || "90", 10);
 const ROLLUP_INTERVAL_MIN = parseInt(process.env.ROLLUP_INTERVAL_MIN || "10", 10);
 
 const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
-
-/** Raw rows older than this are rolled up + purged. */
-export function retentionCutoff(now = new Date()): Date {
-  return new Date(now.getTime() - RAW_DAYS * 86_400_000);
-}
 
 /**
  * Aggregate one UTC hour [hourStart, +1h) for all meters; idempotent upsert.
