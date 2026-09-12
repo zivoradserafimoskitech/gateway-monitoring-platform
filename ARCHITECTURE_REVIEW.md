@@ -513,9 +513,19 @@ still open, and the phased plan in §10 remains the intended order of work.
 
 ### Deliberately not changed
 
-- **§1.2, high-availability state.** Externalizing six in-memory structures and adding leader
-  election is a design change, not a defect fix, and it needs a decision about whether to take
-  a Redis dependency. Until that decision is made, run a single instance.
+- **§1.2, high-availability state — mostly closed, without Redis.** The loops that command plant
+  (EMS tick, OTA dispatch, Modbus poller) now hold a single-writer lease in the database, so
+  exactly one replica acts and a dead holder hands over after ~90 s. That removes the risk from
+  four of the six structures: EMS `lastCmd` and `peakState` and the C30 outstanding-read
+  registry are only consulted by the replica that owns control, and the poller can no longer
+  double-write telemetry.
+
+  Still per-process, and still worth fixing: the **alarm hysteresis `breachState`**, because
+  MQTT ingestion is deliberately NOT leased — the shared subscription balances it across
+  replicas on purpose — so two replicas evaluate rules with separate state; and the **login
+  lockout** and **pending MFA challenge** maps, which multiply the brute-force budget by the
+  replica count and can fail a multi-factor step that lands on the other replica. All three
+  belong in the database for the same reason the leases do.
 - **§1.4, null-org auto-provisioning.** The correct fix derives the tenant from a
   broker-authenticated client identity, which requires broker configuration this change cannot
   make on its own.
