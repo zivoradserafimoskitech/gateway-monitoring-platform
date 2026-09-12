@@ -2,12 +2,14 @@
 // audit #23: opt-in TOTP MFA — 2-step login challenge + setup/disable procedures.
 import { z } from "zod";
 import crypto from "node:crypto";
-import { and, eq, desc, ne, isNull } from "drizzle-orm";
+import { and, eq, desc, ne, isNull, inArray, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import QRCode from "qrcode";
 import { createRouter, publicQuery, authed, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { sessions, users, auditLog, mfaBackupCodes } from "@db/schema";
+import { sessions, users, auditLog, mfaBackupCodes,
+  loginAttempts as loginAttemptsTable,
+} from "@db/schema";
 import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
@@ -89,6 +91,81 @@ function recentFailures(rec: LoginAttempts | undefined, now: number): number {
   return rec.failures.length;
 }
 
+// ─── Shared counters ─────────────────────────────────────────────────────────
+// The map above stays as a per-replica fast path; the table is what makes the
+// budget global. Without it each replica counted independently, so five
+// attempts per replica rather than five in total — the limit scaled with the
+// fleet, which is the opposite of what a limit is for.
+//
+// Database writes are best effort. If the database is unreachable the limiter
+// degrades to the previous per-replica behaviour rather than locking everyone
+// out, and the map alone still stops a single-replica attack.
+
+/** Worst lockout and failure count recorded by ANY replica for these keys. */
+async function dbLoginState(keys: string[], now: number): Promise<{ lockedUntil: number; failures: number }> {
+  try {
+    const rows = await getDb()
+      .select()
+      .from(loginAttemptsTable)
+      .where(inArray(loginAttemptsTable.attemptKey, keys));
+    let lockedUntil = 0;
+    let failures = 0;
+    for (const row of rows) {
+      if (row.lockedUntil) lockedUntil = Math.max(lockedUntil, row.lockedUntil.getTime());
+      const times = Array.isArray(row.failures) ? (row.failures as number[]) : [];
+      failures = Math.max(failures, times.filter((t) => now - t < LOGIN_WINDOW_MS).length);
+    }
+    return { lockedUntil, failures };
+  } catch {
+    return { lockedUntil: 0, failures: 0 };
+  }
+}
+
+async function dbRecordFailure(keys: string[], now: number): Promise<void> {
+  try {
+    const db = getDb();
+    for (const key of keys) {
+      const rows = await db
+        .select()
+        .from(loginAttemptsTable)
+        .where(eq(loginAttemptsTable.attemptKey, key))
+        .limit(1);
+      const prior = rows[0];
+      const times = (Array.isArray(prior?.failures) ? (prior!.failures as number[]) : []).filter(
+        (t) => now - t < LOGIN_WINDOW_MS,
+      );
+      times.push(now);
+      const stillLocked = prior?.lockedUntil && prior.lockedUntil.getTime() > now;
+      const lockedUntil =
+        times.length > LOGIN_MAX_FAILURES && !stillLocked
+          ? new Date(now + LOGIN_LOCKOUT_MS)
+          : (prior?.lockedUntil ?? null);
+      if (prior) {
+        await db
+          .update(loginAttemptsTable)
+          .set({ failures: times, lockedUntil })
+          .where(eq(loginAttemptsTable.attemptKey, key));
+      } else {
+        await db.insert(loginAttemptsTable).values({ attemptKey: key, failures: times, lockedUntil });
+      }
+    }
+    // Rows whose window has long passed are dead weight; drop them cheaply.
+    await db
+      .delete(loginAttemptsTable)
+      .where(lt(loginAttemptsTable.updatedAt, new Date(now - LOGIN_WINDOW_MS - LOGIN_LOCKOUT_MS)));
+  } catch {
+    // Best effort: the in-memory counter still applies on this replica.
+  }
+}
+
+async function dbClearFailures(keys: string[]): Promise<void> {
+  try {
+    await getDb().delete(loginAttemptsTable).where(inArray(loginAttemptsTable.attemptKey, keys));
+  } catch {
+    // Best effort.
+  }
+}
+
 /** Throws 429 when EITHER key is locked out; otherwise applies progressive delay. */
 async function loginThrottle(email: string, req: Request): Promise<void> {
   const keys = keysFor(email, loginClientIp(req));
@@ -102,6 +179,12 @@ async function loginThrottle(email: string, req: Request): Promise<void> {
     }
     maxFailures = Math.max(maxFailures, recentFailures(rec, now));
   }
+  // A lockout earned against another replica counts here too.
+  const shared = await dbLoginState(keys, now);
+  if (shared.lockedUntil > now) {
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many login attempts. Try again later." });
+  }
+  maxFailures = Math.max(maxFailures, shared.failures);
   if (maxFailures > 0) {
     await new Promise((resolve) => setTimeout(resolve, LOGIN_DELAY_STEP_MS * maxFailures));
   }
@@ -110,6 +193,10 @@ async function loginThrottle(email: string, req: Request): Promise<void> {
 function recordLoginFailure(email: string, req: Request): void {
   const keys = keysFor(email, loginClientIp(req));
   const now = Date.now();
+  // Share the failure with the other replicas. Fire-and-forget: the caller is
+  // an authentication path and must not wait on a write, and the map below
+  // already covers a repeat attempt against THIS replica within the window.
+  void dbRecordFailure(keys, now);
   for (const key of keys) {
     const rec = loginAttempts.get(key) ?? { failures: [], lockedUntil: 0 };
     recentFailures(rec, now);
@@ -146,7 +233,9 @@ function recordLoginFailure(email: string, req: Request): void {
 }
 
 function clearLoginFailures(email: string, req: Request): void {
-  for (const key of keysFor(email, loginClientIp(req))) loginAttempts.delete(key);
+  const keys = keysFor(email, loginClientIp(req));
+  for (const key of keys) loginAttempts.delete(key);
+  void dbClearFailures(keys);
 }
 
 // Test-only handle (api/routers/auth-lockout.test.ts) — the limiter state is
@@ -214,7 +303,7 @@ export const authRouter = createRouter({
       // client must complete auth.loginMfa with the pendingToken (5 min TTL,
       // single-use, max 5 attempts — see api/lib/totp.ts).
       if (user.totpEnabled === 1 && user.totpSecretEnc) {
-        const pendingToken = mfaPending.create(user.id);
+        const pendingToken = await mfaPending.create(user.id);
         return { mfaRequired: true as const, pendingToken };
       }
       const { token, expiresAt } = await createSession(user.id);
@@ -231,7 +320,7 @@ export const authRouter = createRouter({
   loginMfa: publicQuery
     .input(z.object({ pendingToken: z.string().min(32).max(128), code: z.string().min(6).max(16) }))
     .mutation(async ({ input, ctx }) => {
-      const pending = mfaPending.peek(input.pendingToken);
+      const pending = await mfaPending.peek(input.pendingToken);
       if (!pending) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "MFA challenge expired — sign in again" });
       }
@@ -266,7 +355,7 @@ export const authRouter = createRouter({
         }
       }
       if (!ok) {
-        const f = mfaPending.fail(input.pendingToken);
+        const f = await mfaPending.fail(input.pendingToken);
         auditMfaLogin(user?.id ?? pending.userId, user?.email ?? null, `FAILED: invalid MFA code (attempt ${Math.max(f.attempts, 1)})`);
         throw new TRPCError({
           code: "UNAUTHORIZED",
@@ -276,7 +365,13 @@ export const authRouter = createRouter({
       if (acceptedStep !== null) {
         await db.update(users).set({ totpLastStep: acceptedStep }).where(eq(users.id, user!.id));
       }
-      const done = mfaPending.consume(input.pendingToken)!;
+      const done = await mfaPending.consume(input.pendingToken);
+      if (!done) {
+        // Someone else consumed the token between the code check and here, or
+        // it expired. Single use means the DELETE authorises the login, so a
+        // miss must fail rather than proceed.
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "MFA challenge expired — sign in again" });
+      }
       const { token, expiresAt } = await createSession(done.userId);
       ctx.resHeaders.set("set-cookie", cookieHeader(token, expiresAt, isSecureReq(ctx.req)));
       void pruneExpiredSessions().catch(() => {});

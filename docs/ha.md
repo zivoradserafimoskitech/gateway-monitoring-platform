@@ -72,6 +72,9 @@ and new code can coexist against the same DB during the roll.
 |---|---|---|
 | Sessions (cookies) | `sessions` table in **DB** | yes — any replica serves any session |
 | Session/user cache | DB + 60 s **RAM** cache per replica | yes — writes call `evictUserCache()`; worst case 60 s staleness on the other replica |
+| Login lockout | `login_attempts` table + per-replica cache | yes — a lockout earned on one replica is enforced on the other |
+| Pending MFA challenge | `mfa_pending` table | yes — any replica can complete a challenge another issued |
+| Alarm hysteresis | `alarm_breach_state` table + per-replica cache | yes — transitions are written; only the cache is per replica |
 | API keys | DB + RAM cache | yes — `evictApiKeyCache()` on revoke/create |
 | Telemetry WAL | **local disk per replica** (`TELEMETRY_WAL_DIR`) | per-replica by design — **never share the volume** (append/offset log; two writers corrupt offsets and double-replay). Replicas write disjoint batches because ingestion is shared-subscription balanced |
 | Telemetry data | TimescaleDB | yes |
@@ -80,6 +83,26 @@ and new code can coexist against the same DB during the roll.
 | Report schedules | DB | yes (see below) |
 | Report artifacts | `data/reports/` local disk per replica | files are per-run artifacts; email is the delivery path |
 | MQTT broker state | EMQX cluster | 2-node static cluster, shared cookie |
+
+## Shared state (was per-process)
+
+Three structures used to live in module-level Maps and behaved incorrectly with
+more than one replica. All three now live in the database:
+
+| Was | Table | Why it mattered |
+| --- | --- | --- |
+| Login lockout counters | `login_attempts` | Each replica counted independently, so the brute-force budget was five attempts **per replica** rather than five in total — the limit scaled with the fleet |
+| Pending MFA challenges | `mfa_pending` | A challenge issued by one replica did not exist on the other, so a correct second factor was rejected whenever the load balancer moved the request |
+| Alarm hysteresis | `alarm_breach_state` | MQTT ingestion is deliberately not leased, so both replicas evaluate the same rules. Separate state meant a breach could be raised twice or a clear missed |
+
+The map stays in front of each as a per-replica cache; the table is the
+authority, and only transitions are written, so the ingest hot path does not
+touch the database on every sample. A database failure degrades each to the
+previous per-replica behaviour rather than failing the request.
+
+`alarm_breach_state.since` also records when a condition STARTED, which is what
+alarm duration ("breached for N minutes") needs and what a restart used to
+throw away.
 
 ## Single-writer leases
 

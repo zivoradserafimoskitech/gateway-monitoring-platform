@@ -14,6 +14,7 @@ import {
   text,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/mysql-core";
 
 // ─── Sites ───────────────────────────────────────────────────────────────────
@@ -185,6 +186,10 @@ export const alarmRules = mysqlTable(
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     // null meterId => applies to all meters
     meterId: bigint("meter_id", { mode: "number", unsigned: true }),
+    // "breached for N seconds" before raising. 0 = raise on the first sample.
+    // A single noisy sample over the threshold is almost never worth waking
+    // somebody for; this is what makes a jittery signal usable.
+    durationSec: int("duration_sec").notNull().default(0),
     enabled: boolean("enabled").notNull().default(true),
     // v8/D2: owning org.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
@@ -329,6 +334,59 @@ export type InsertCommand = typeof commands.$inferInsert;
 // ─── Multi-tenancy (v8 D2) ───────────────────────────────────────────────────
 // Every tenant-owned row carries org_id (backfilled to "Default Org"). The
 // superadmin (users.is_superadmin) sees all orgs; everyone else only their own.
+// Login throttling, shared across replicas. Per-process counters multiplied
+// the brute-force budget by the replica count: five attempts each, not five in
+// total. Keyed by identity ("id:<email>") AND source ("ip:<addr>"); a login is
+// rejected when either key is locked.
+export const loginAttempts = mysqlTable(
+  "login_attempts",
+  {
+    // "id:<email>" or "ip:<addr>".
+    attemptKey: varchar("attempt_key", { length: 160 }).primaryKey(),
+    // Epoch-millisecond timestamps of failures inside the rolling window.
+    failures: json("failures").notNull(),
+    lockedUntil: timestamp("locked_until"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("login_attempts_updated_idx").on(t.updatedAt)],
+);
+
+// Pending multi-factor challenges, shared across replicas. Per-process state
+// failed the second factor outright whenever the code was submitted to a
+// different replica than the one that issued the challenge.
+export const mfaPendingChallenges = mysqlTable(
+  "mfa_pending",
+  {
+    token: varchar("token", { length: 64 }).primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    attempts: int("attempts").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("mfa_pending_created_idx").on(t.createdAt)],
+);
+
+// Alarm hysteresis, shared across replicas. MQTT ingestion is deliberately NOT
+// leased — the shared subscription balances it on purpose — so two replicas
+// evaluate the same rules. With per-process state each kept its own view, so a
+// breach could be raised twice or a clear missed entirely.
+//
+// `since` is the instant the condition STARTED, which is also what a
+// "breached for N minutes" rule needs, and it has to survive a restart.
+export const alarmBreachState = mysqlTable(
+  "alarm_breach_state",
+  {
+    ruleId: bigint("rule_id", { mode: "number", unsigned: true }).notNull(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    breached: boolean("breached").notNull().default(false),
+    since: timestamp("since"),
+    // Set once the rule has actually fired, so a duration rule does not raise
+    // repeatedly while the condition persists.
+    raisedAt: timestamp("raised_at"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [primaryKey({ columns: [t.ruleId, t.meterId] })],
+);
+
 // Single-writer leases (api/lib/leader.ts). Exactly one replica at a time may
 // run a loop that commands plant; a replica that dies stops renewing and
 // another takes over once the lease lapses.
