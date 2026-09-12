@@ -8,6 +8,10 @@ import {
 import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
+// §8: next-themes is imported here but no ThemeProvider is mounted anywhere,
+// so useTheme falls back to "system" — on a machine set to dark, toasts
+// rendered dark over an application that has no dark palette at all. App.tsx
+// passes theme="light" explicitly until the product actually has one.
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
 

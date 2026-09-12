@@ -523,6 +523,9 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 8 | No responsive layout | The 240 px sidebar was fixed, so below roughly 1000 px content was squeezed behind it. It now collapses into a drawer and the header carries the section name. `use-mobile.ts` stays unused on purpose — the breakpoint is CSS, so nothing needs to re-render on resize |
 | 8 | `window.confirm` for destructive actions | Replaced with `AlertDialog`. It matters most for a setpoint write: after the first `window.confirm`, browsers offer "prevent this page from creating more dialogs", and ticking it sends every later write to the plant with no confirmation at all |
 | 8 | No 404 route | An unknown path rendered the dashboard, so a broken link looked like a working page |
+| 8 | Profile delete had no caller | `profiles.remove` existed only because the probe expected it, so a profile imported by mistake stayed in the model picker forever. The server still refuses while any device uses the model |
+| 8 | A render error blanked the whole app | An error boundary around the routes keeps the shell, shows the message and resets on navigation. On a monitoring product a white page is indistinguishable from the server being down |
+| 8 | Toasts followed the OS theme, the app did not | `next-themes` is imported by the toaster with no provider mounted, so `useTheme` fell back to "system" and a dark desktop got dark toasts over a light-only application. Pinned to light until the product has a dark palette |
 
 ### Deliberately not changed
 
@@ -551,6 +554,12 @@ still open, and the phased plan in §10 remains the intended order of work.
   to 3.4.0, which is not a trade worth making for a missing bounds check in a code path the
   report generator does not use. Revisit when exceljs ships a newer `uuid`. The remaining ten are
   build tooling (vitest, esbuild via drizzle-kit, postcss) and are reported but do not block.
+- **Dark mode.** Not shipped rather than half-shipped: every page hardcodes light
+  slate/white classes, so mounting a theme provider without a dark palette would produce
+  unreadable screens. The visible symptom — dark toasts over a light app — is fixed above.
+- **Global search, table sorting and offset pagination in the UI.** The lists that grow
+  without bound (alarms, devices) already have filters, and the REST API is keyset-paginated;
+  these are UX work rather than defects.
 - **§9, the recommended new functions.** Still open by design: those are the roadmap, not
   repairs. Two of them landed on the way — the setpoint deadman (§9.1) and device-offline
   alarming (§9.6) — because both were closing a safety gap rather than adding a feature.
