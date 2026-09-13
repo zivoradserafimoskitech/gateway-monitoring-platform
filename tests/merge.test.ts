@@ -3,8 +3,8 @@
 // an aggregated part, so these rules decide what a report says about the day
 // the cutoff falls on — worth pinning without a database in the loop.
 import { describe, it, expect } from "vitest";
-import { mergeDayRows, mergeEnergyBuckets } from "../api/telemetry/merge";
-import type { DailyReportRow, EnergyIntervalBucket } from "../api/telemetry/types";
+import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "../api/telemetry/merge";
+import type { DailyReportRow, EnergyIntervalBucket, HistoryPoint } from "../api/telemetry/types";
 
 const day = (over: Partial<DailyReportRow>): DailyReportRow => ({
   day: "2025-01-15",
@@ -118,5 +118,52 @@ describe("mergeEnergyBuckets", () => {
       [bucket({ avgPowerKw: 2, samples: 1 })],
     ]);
     expect(out[0].avgPowerKw).toBe(8);
+  });
+});
+
+describe("mergeHistoryPoints", () => {
+  const pt = (over: Partial<HistoryPoint>): HistoryPoint => ({
+    ts: new Date("2025-01-15T00:00:00Z"),
+    powerKw: null,
+    activePowerKw: null,
+    voltageL1: null,
+    currentL1: null,
+    powerFactor: null,
+    frequencyHz: null,
+    energyImportKwh: null,
+    samples: 0,
+    ...over,
+  });
+
+  it("weights a bucket that straddles the cutoff by sample count", () => {
+    const out = mergeHistoryPoints([
+      [pt({ activePowerKw: 10, samples: 9 })],
+      [pt({ activePowerKw: 20, samples: 1 })],
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].activePowerKw).toBe(11);
+    expect(out[0].samples).toBe(10);
+  });
+
+  it("takes the later energy counter rather than summing it", () => {
+    // Counters are cumulative: adding the two halves of a bucket would report
+    // roughly twice the meter's lifetime reading.
+    const out = mergeHistoryPoints([
+      [pt({ energyImportKwh: 100, samples: 1 })],
+      [pt({ energyImportKwh: 140, samples: 1 })],
+    ]);
+    expect(out[0].energyImportKwh).toBe(140);
+  });
+
+  it("keeps separate buckets apart and orders them by time", () => {
+    const later = new Date("2025-01-15T01:00:00Z");
+    const out = mergeHistoryPoints([
+      [pt({ ts: later, samples: 1 })],
+      [pt({ samples: 1 })],
+    ]);
+    expect(out.map((p) => p.ts.toISOString())).toEqual([
+      "2025-01-15T00:00:00.000Z",
+      "2025-01-15T01:00:00.000Z",
+    ]);
   });
 });

@@ -25,7 +25,7 @@ import type {
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 import { env } from "../lib/env";
 import { retentionCutoff } from "./retention";
-import { mergeDayRows, mergeEnergyBuckets } from "./merge";
+import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "./merge";
 
 const COLS = [
   "ts",
@@ -156,7 +156,78 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     return map;
   }
 
+  // Raw rows for the recent range, the hourly continuous aggregate for the
+  // range past the retention cutoff — the same split the reports use. Without
+  // it a chart older than 90 days came back empty, on both stores.
   async history(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const cutoff = retentionCutoff();
+    const parts: HistoryPoint[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : cutoff, bucketSec, powerKey));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.historyRaw(meterId, from > cutoff ? from : cutoff, to, bucketSec, powerKey));
+    }
+    return mergeHistoryPoints(parts);
+  }
+
+  // Chart points from the aggregate (db/timescale/003). The rollup's
+  // resolution is one hour, so a narrower bucket is widened rather than faked;
+  // any range reaching past the cutoff is months long and asks for far wider
+  // buckets anyway.
+  private async historyFromHourly(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const bucket = Math.max(3600, bucketSec);
+    const key = powerKey && /^[A-Za-z0-9_]+$/.test(powerKey) ? powerKey : "activePowerKw";
+    // #20: one rollup column per PRIMARY_POWER_KEY, so a BESS or weather chart
+    // survives the cutoff instead of going flat.
+    const powerCol =
+      key === "batteryPowerKw"
+        ? "avg_battery_power_kw"
+        : key === "irradianceWm2"
+          ? "avg_irradiance_wm2"
+          : "avg_power_kw";
+    const { rows } = await this.pool.query(
+      `select floor(extract(epoch from hour_start) / $4) * $4 as bucket,
+              sum(${powerCol} * samples) / nullif(sum(samples), 0) as "powerKw",
+              sum(avg_power_kw * samples) / nullif(sum(samples), 0) as "activePowerKw",
+              sum(avg_voltage_l1 * samples) / nullif(sum(samples), 0) as "voltageL1",
+              sum(avg_current_l1 * samples) / nullif(sum(samples), 0) as "currentL1",
+              sum(avg_power_factor * samples) / nullif(sum(samples), 0) as "powerFactor",
+              sum(avg_frequency_hz * samples) / nullif(sum(samples), 0) as "frequencyHz",
+              max(energy_import_last) as "energyImportKwh",
+              sum(samples)::int as samples
+       from telemetry_hourly_energy
+       where meter_id = $1 and hour_start >= $2::timestamptz and hour_start <= $3::timestamptz
+       group by bucket order by bucket`,
+      [meterId, from, to, bucket],
+    );
+    const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    return rows.map((r) => ({
+      ts: new Date(Number(r.bucket) * 1000),
+      powerKw: num(r.powerKw),
+      activePowerKw: num(r.activePowerKw),
+      voltageL1: num(r.voltageL1),
+      currentL1: num(r.currentL1),
+      powerFactor: num(r.powerFactor),
+      frequencyHz: num(r.frequencyHz),
+      energyImportKwh: num(r.energyImportKwh),
+      samples: Number(r.samples),
+    }));
+  }
+
+  private async historyRaw(
     meterId: number,
     from: Date,
     to: Date,

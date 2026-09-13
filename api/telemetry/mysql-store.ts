@@ -20,7 +20,7 @@ import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 import { retentionCutoff } from "./retention";
 // v7/C5 merge semantics for ranges that straddle the retention cutoff; shared
 // with the Timescale store so the two cannot drift (see merge.ts).
-import { mergeDayRows, mergeEnergyBuckets } from "./merge";
+import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "./merge";
 
 type WriteDb = ReturnType<typeof createWriteDb>;
 let writeDb: WriteDb | null = null;
@@ -139,7 +139,87 @@ export class MySqlTelemetryStore implements TelemetryStore {
     return map;
   }
 
+  // v7/C5 + charts: raw rows for the recent range, telemetry_hourly for the
+  // range past the retention cutoff. Before this, a chart older than 90 days
+  // came back EMPTY — the report path had been split at the cutoff but the
+  // chart path had not, so the same device answered "here is your energy" and
+  // "there is no data" about the same week.
   async history(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const cutoff = retentionCutoff();
+    const parts: HistoryPoint[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : cutoff, bucketSec, powerKey));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.historyRaw(meterId, from > cutoff ? from : cutoff, to, bucketSec, powerKey));
+    }
+    return mergeHistoryPoints(parts);
+  }
+
+  // Chart points rebuilt from the hourly rollup. The rollup's resolution is one
+  // hour, so a bucket smaller than that cannot be honoured — the points come
+  // back hourly instead of being faked at a finer grain. In practice any range
+  // that reaches past the cutoff is months long and asks for buckets far wider
+  // than an hour anyway.
+  private async historyFromHourly(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const db = getDb();
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const bucket = Math.max(3600, bucketSec);
+    // #20: the primary series follows the device type. The rollup keeps one
+    // column per primary key (contracts/devices.ts PRIMARY_POWER_KEY), so the
+    // BESS and weather charts survive the cutoff too rather than going flat.
+    const key = powerKey && /^[A-Za-z0-9_]+$/.test(powerKey) ? powerKey : "activePowerKw";
+    const powerCol =
+      key === "batteryPowerKw"
+        ? sql`avg_battery_power_kw`
+        : key === "irradianceWm2"
+          ? sql`avg_irradiance_wm2`
+          : sql`avg_power_kw`;
+    const res = await db.execute(sql`
+      select
+        floor(unix_timestamp(hour_start) / ${bucket}) * ${bucket} as bucket,
+        sum(${powerCol} * samples) / nullif(sum(samples), 0) as powerKw,
+        sum(avg_power_kw * samples) / nullif(sum(samples), 0) as activePowerKw,
+        sum(avg_voltage_l1 * samples) / nullif(sum(samples), 0) as voltageL1,
+        sum(avg_current_l1 * samples) / nullif(sum(samples), 0) as currentL1,
+        sum(avg_power_factor * samples) / nullif(sum(samples), 0) as powerFactor,
+        sum(avg_frequency_hz * samples) / nullif(sum(samples), 0) as frequencyHz,
+        max(energy_import_last) as energyImportKwh,
+        sum(samples) as samples
+      from telemetry_hourly
+      where meter_id = ${meterId}
+        and hour_start >= ${utcStr(from)}
+        and hour_start <= ${utcStr(to)}
+      group by bucket
+      order by bucket`);
+    const rows = (res as unknown as [Record<string, unknown>[]])[0];
+    const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    return rows.map((r) => ({
+      ts: new Date(Number(r.bucket) * 1000),
+      powerKw: num(r.powerKw),
+      activePowerKw: num(r.activePowerKw),
+      voltageL1: num(r.voltageL1),
+      currentL1: num(r.currentL1),
+      powerFactor: num(r.powerFactor),
+      frequencyHz: num(r.frequencyHz),
+      energyImportKwh: num(r.energyImportKwh),
+      samples: Number(r.samples),
+    }));
+  }
+
+  private async historyRaw(
     meterId: number,
     from: Date,
     to: Date,

@@ -19,7 +19,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { TimescaleTelemetryStore } from "../api/telemetry/timescale-store";
-import type { DailyReportRow, EnergyIntervalBucket } from "../api/telemetry/types";
+import type { DailyReportRow, EnergyIntervalBucket, HistoryPoint } from "../api/telemetry/types";
 
 const URL = process.env.TIMESCALE_TEST_URL;
 // The CI job sets TIMESCALE_REQUIRED so a missing/unreachable service
@@ -88,12 +88,15 @@ d("TimescaleDB continuous aggregates", () => {
     await pool.query("create extension if not exists timescaledb");
     await applyFile(pool, "db/timescale/001_init.sql");
     await applyFile(pool, "db/timescale/002_hourly_energy_rollup.sql");
+    await applyFile(pool, "db/timescale/003_hourly_chart_columns.sql");
 
     for (const s of fixture()) {
       await pool.query(
-        `insert into telemetry (ts, meter_id, active_power_kw, power_factor, energy_import_kwh, energy_export_kwh)
-         values ($1, $2, $3, $4, $5, 0)`,
-        [s.ts, METER, s.p, s.pf, s.e],
+        `insert into telemetry
+           (ts, meter_id, active_power_kw, power_factor, voltage_l1, current_l1, frequency_hz,
+            energy_import_kwh, energy_export_kwh, values_json)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9)`,
+        [s.ts, METER, s.p, s.pf, 230 + s.p, s.p * 2, 50, s.e, JSON.stringify({ batteryPowerKw: -s.p })],
       );
     }
     await pool.query("call refresh_continuous_aggregate('telemetry_hourly', null, null)");
@@ -176,6 +179,57 @@ d("TimescaleDB continuous aggregates", () => {
     }
   });
 
+
+  it("draws the same chart from raw rows and from the aggregate", async () => {
+    // The whole point of the split: a chart must not change its answer at the
+    // cutoff. Hourly buckets so both paths are directly comparable.
+    type Privates = {
+      historyRaw(m: number, f: Date, t: Date, b: number, k?: string): Promise<HistoryPoint[]>;
+      historyFromHourly(m: number, f: Date, t: Date, b: number, k?: string): Promise<HistoryPoint[]>;
+    };
+    const inner = store as unknown as Privates;
+    const from = new Date(DAY0);
+    const to = new Date(DAY0 + 24 * H);
+    const raw = await inner.historyRaw(METER, from, to, 3600);
+    const agg = await inner.historyFromHourly(METER, from, to, 3600);
+    expect(agg).toHaveLength(raw.length);
+    const rawByTs = new Map(raw.map((p) => [p.ts.getTime(), p]));
+    for (const p of agg) {
+      const r = rawByTs.get(p.ts.getTime());
+      expect(r, `no raw point at ${p.ts.toISOString()}`).toBeDefined();
+      expect(p.samples).toBe(r!.samples);
+      expect(p.activePowerKw!).toBeCloseTo(r!.activePowerKw!, 6);
+      expect(p.voltageL1!).toBeCloseTo(r!.voltageL1!, 6);
+      expect(p.currentL1!).toBeCloseTo(r!.currentL1!, 6);
+      expect(p.powerFactor!).toBeCloseTo(r!.powerFactor!, 6);
+      expect(p.frequencyHz!).toBeCloseTo(r!.frequencyHz!, 6);
+    }
+  });
+
+  it("keeps a BESS chart alive past the cutoff", async () => {
+    // batteryPowerKw lives in values_json, not in a column. Before 003 the
+    // aggregate had no place for it, so a battery's primary series went flat
+    // past the cutoff while a meter's did not.
+    type Privates = {
+      historyRaw(m: number, f: Date, t: Date, b: number, k?: string): Promise<HistoryPoint[]>;
+      historyFromHourly(m: number, f: Date, t: Date, b: number, k?: string): Promise<HistoryPoint[]>;
+    };
+    const inner = store as unknown as Privates;
+    const from = new Date(DAY0);
+    const to = new Date(DAY0 + 6 * H);
+    const raw = await inner.historyRaw(METER, from, to, 3600, "batteryPowerKw");
+    const agg = await inner.historyFromHourly(METER, from, to, 3600, "batteryPowerKw");
+    expect(agg.length).toBeGreaterThan(0);
+    const rawByTs = new Map(raw.map((p) => [p.ts.getTime(), p]));
+    for (const p of agg) {
+      const r = rawByTs.get(p.ts.getTime())!;
+      expect(p.powerKw, "battery series must not be null past the cutoff").not.toBeNull();
+      expect(p.powerKw!).toBeCloseTo(r.powerKw!, 6);
+      // The fixture charges at negative power, so this is not accidentally
+      // reading the active-power column instead.
+      expect(p.powerKw!).toBeLessThan(0);
+    }
+  });
   it("expands sub-hour buckets over the aggregated range and marks them estimated", async () => {
     type Privates = {
       energyIntervalsHourly(m: number, f: Date, t: Date, b: number): Promise<EnergyIntervalBucket[]>;

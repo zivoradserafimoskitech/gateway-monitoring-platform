@@ -11,7 +11,7 @@
 // would weight a 1-sample part like a 3600-sample one), and the
 // counterReset / estimated flags are sticky. demandDerived is the opposite:
 // it only survives if BOTH parts derived their demand from active power.
-import type { DailyReportRow, EnergyIntervalBucket } from "./types";
+import type { DailyReportRow, EnergyIntervalBucket, HistoryPoint } from "./types";
 
 const round = (v: number, dp: number) => {
   const f = 10 ** dp;
@@ -82,4 +82,41 @@ export function mergeEnergyBuckets(parts: EnergyIntervalBucket[][]): EnergyInter
     ex.estimated = ex.estimated || b.estimated;
   }
   return [...map.values()].sort((a, b) => a.bucketStartSec - b.bucketStartSec);
+}
+
+/**
+ * Merge chart points from the raw and the aggregated part of a range.
+ *
+ * Same shape of problem as the report merge, one bucket at a time: a bucket
+ * that straddles the retention cutoff is half raw samples and half rollup
+ * rows. Averages are sample-weighted; the energy counter takes the later
+ * (larger) reading, matching `max(energy_import_kwh)` in both raw queries.
+ */
+export function mergeHistoryPoints(parts: HistoryPoint[][]): HistoryPoint[] {
+  const map = new Map<number, HistoryPoint>();
+  const keys = [
+    "powerKw",
+    "activePowerKw",
+    "voltageL1",
+    "currentL1",
+    "powerFactor",
+    "frequencyHz",
+  ] as const;
+  for (const p of parts.flat()) {
+    const at = p.ts.getTime();
+    const ex = map.get(at);
+    if (!ex) {
+      map.set(at, { ...p });
+      continue;
+    }
+    for (const k of keys) ex[k] = weighted(ex[k], ex.samples, p[k], p.samples, 4);
+    ex.energyImportKwh =
+      ex.energyImportKwh === null
+        ? p.energyImportKwh
+        : p.energyImportKwh === null
+          ? ex.energyImportKwh
+          : Math.max(ex.energyImportKwh, p.energyImportKwh);
+    ex.samples += p.samples;
+  }
+  return [...map.values()].sort((a, b) => a.ts.getTime() - b.ts.getTime());
 }

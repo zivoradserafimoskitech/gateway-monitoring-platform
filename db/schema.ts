@@ -168,6 +168,15 @@ export const telemetryHourly = mysqlTable(
     energyExportFirst: double("energy_export_first"),
     energyExportLast: double("energy_export_last"),
     counterReset: int("counter_reset").notNull().default(0),
+    // Chart series that survive the raw-retention cutoff. batteryPowerKw and
+    // irradianceWm2 live in values_json rather than in a telemetry column, but
+    // they are the PRIMARY_POWER_KEY for BESS and weather devices, so without
+    // them those charts go empty past the cutoff while a meter's does not.
+    avgVoltageL1: double("avg_voltage_l1"),
+    avgCurrentL1: double("avg_current_l1"),
+    avgFrequencyHz: double("avg_frequency_hz"),
+    avgBatteryPowerKw: double("avg_battery_power_kw"),
+    avgIrradianceWm2: double("avg_irradiance_wm2"),
   },
   (t) => [uniqueIndex("telemetry_hourly_meter_hour_idx").on(t.meterId, t.hourStart)],
 );
