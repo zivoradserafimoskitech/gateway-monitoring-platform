@@ -17,41 +17,10 @@ import type {
 } from "./types";
 import { env } from "../lib/env";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
-import { retentionCutoff } from "./rollup";
-
-// v7/C5: merge raw-range and hourly-range report rows per day (ranges that
-// straddle the retention cutoff). pf is samples-weighted; energies sum.
-function mergeDayRows(parts: DailyReportRow[][]): DailyReportRow[] {
-  const map = new Map<string, DailyReportRow>();
-  const sumN = (a: number | null, b: number | null) =>
-    a === null ? b : b === null ? a : Math.round((a + b) * 100) / 100;
-  for (const rows of parts) {
-    for (const r of rows) {
-      const ex = map.get(r.day);
-      if (!ex) {
-        map.set(r.day, { ...r });
-        continue;
-      }
-      const totSamples = ex.samples + r.samples;
-      ex.avgPowerFactor =
-        ex.avgPowerFactor === null
-          ? r.avgPowerFactor
-          : r.avgPowerFactor === null
-            ? ex.avgPowerFactor
-            : Math.round(((ex.avgPowerFactor * ex.samples + r.avgPowerFactor * r.samples) / totSamples) * 1000) / 1000;
-      ex.importKwh = sumN(ex.importKwh, r.importKwh);
-      ex.exportKwh = sumN(ex.exportKwh, r.exportKwh);
-      ex.maxDemandKw =
-        ex.maxDemandKw === null ? r.maxDemandKw
-          : r.maxDemandKw === null ? ex.maxDemandKw
-            : Math.max(ex.maxDemandKw, r.maxDemandKw);
-      ex.demandDerived = ex.demandDerived && r.demandDerived;
-      ex.counterReset = ex.counterReset || r.counterReset;
-      ex.samples = totSamples;
-    }
-  }
-  return [...map.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
-}
+import { aggregateUpperBound, retentionCutoff } from "./retention";
+// v7/C5 merge semantics for ranges that straddle the retention cutoff; shared
+// with the Timescale store so the two cannot drift (see merge.ts).
+import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "./merge";
 
 type WriteDb = ReturnType<typeof createWriteDb>;
 let writeDb: WriteDb | null = null;
@@ -170,7 +139,87 @@ export class MySqlTelemetryStore implements TelemetryStore {
     return map;
   }
 
+  // v7/C5 + charts: raw rows for the recent range, telemetry_hourly for the
+  // range past the retention cutoff. Before this, a chart older than 90 days
+  // came back EMPTY — the report path had been split at the cutoff but the
+  // chart path had not, so the same device answered "here is your energy" and
+  // "there is no data" about the same week.
   async history(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const cutoff = retentionCutoff();
+    const parts: HistoryPoint[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketSec, powerKey));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.historyRaw(meterId, from > cutoff ? from : cutoff, to, bucketSec, powerKey));
+    }
+    return mergeHistoryPoints(parts);
+  }
+
+  // Chart points rebuilt from the hourly rollup. The rollup's resolution is one
+  // hour, so a bucket smaller than that cannot be honoured — the points come
+  // back hourly instead of being faked at a finer grain. In practice any range
+  // that reaches past the cutoff is months long and asks for buckets far wider
+  // than an hour anyway.
+  private async historyFromHourly(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const db = getDb();
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const bucket = Math.max(3600, bucketSec);
+    // #20: the primary series follows the device type. The rollup keeps one
+    // column per primary key (contracts/devices.ts PRIMARY_POWER_KEY), so the
+    // BESS and weather charts survive the cutoff too rather than going flat.
+    const key = powerKey && /^[A-Za-z0-9_]+$/.test(powerKey) ? powerKey : "activePowerKw";
+    const powerCol =
+      key === "batteryPowerKw"
+        ? sql`avg_battery_power_kw`
+        : key === "irradianceWm2"
+          ? sql`avg_irradiance_wm2`
+          : sql`avg_power_kw`;
+    const res = await db.execute(sql`
+      select
+        floor(unix_timestamp(hour_start) / ${bucket}) * ${bucket} as bucket,
+        sum(${powerCol} * samples) / nullif(sum(samples), 0) as powerKw,
+        sum(avg_power_kw * samples) / nullif(sum(samples), 0) as activePowerKw,
+        sum(avg_voltage_l1 * samples) / nullif(sum(samples), 0) as voltageL1,
+        sum(avg_current_l1 * samples) / nullif(sum(samples), 0) as currentL1,
+        sum(avg_power_factor * samples) / nullif(sum(samples), 0) as powerFactor,
+        sum(avg_frequency_hz * samples) / nullif(sum(samples), 0) as frequencyHz,
+        max(energy_import_last) as energyImportKwh,
+        sum(samples) as samples
+      from telemetry_hourly
+      where meter_id = ${meterId}
+        and hour_start >= ${utcStr(from)}
+        and hour_start <= ${utcStr(to)}
+      group by bucket
+      order by bucket`);
+    const rows = (res as unknown as [Record<string, unknown>[]])[0];
+    const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    return rows.map((r) => ({
+      ts: new Date(Number(r.bucket) * 1000),
+      powerKw: num(r.powerKw),
+      activePowerKw: num(r.activePowerKw),
+      voltageL1: num(r.voltageL1),
+      currentL1: num(r.currentL1),
+      powerFactor: num(r.powerFactor),
+      frequencyHz: num(r.frequencyHz),
+      energyImportKwh: num(r.energyImportKwh),
+      samples: Number(r.samples),
+    }));
+  }
+
+  private async historyRaw(
     meterId: number,
     from: Date,
     to: Date,
@@ -233,6 +282,31 @@ export class MySqlTelemetryStore implements TelemetryStore {
     }));
   }
 
+  // §9.7: see TelemetryStore.lastChangeSince. A row where the key is absent is
+  // NOT a change — the register simply was not reported in that frame — so the
+  // null case is excluded rather than counted as different.
+  async lastChangeSince(meterId: number, key: string, value: number, since: Date): Promise<Date | null> {
+    assertValidMetricKeys([key]); // the whitelist IS the injection defence
+    const db = getDb();
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const col = COLUMN_BACKED_METRICS[key];
+    const expr = col
+      ? sql`${sql.raw(col)}`
+      : sql`cast(json_unquote(json_extract(values_json, ${`$."${key}"`})) as double)`;
+    const res = await db.execute(sql`
+      select ${telemetry.ts} as ts
+      from ${telemetry}
+      where ${telemetry.meterId} = ${meterId}
+        and ${telemetry.ts} >= ${utcStr(since)}
+        and ${expr} is not null
+        and ${expr} <> ${value}
+      order by ${telemetry.ts} desc
+      limit 1`);
+    const rows = (res as unknown as [Record<string, unknown>[]])[0];
+    const ts = rows[0]?.ts;
+    return ts ? new Date(ts as string | number | Date) : null;
+  }
+
   async firstEnergySince(meterId: number, from: Date): Promise<number | null> {
     const db = getDb();
     const rows = await db
@@ -275,7 +349,7 @@ export class MySqlTelemetryStore implements TelemetryStore {
     const cutoff = retentionCutoff();
     const parts: DailyReportRow[][] = [];
     if (from < cutoff) {
-      parts.push(await this.dailyReportFromHourly(meterId, from, to < cutoff ? to : cutoff, opts));
+      parts.push(await this.dailyReportFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), opts));
     }
     if (to >= cutoff) {
       parts.push(await this.dailyReportRaw(meterId, from > cutoff ? from : cutoff, to, opts));
@@ -448,32 +522,13 @@ export class MySqlTelemetryStore implements TelemetryStore {
     const cutoff = retentionCutoff();
     const parts: EnergyIntervalBucket[][] = [];
     if (from < cutoff) {
-      parts.push(await this.energyIntervalsHourly(meterId, from, to < cutoff ? to : cutoff, bucketMin));
+      parts.push(await this.energyIntervalsHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketMin));
     }
     if (to >= cutoff) {
       parts.push(await this.energyIntervalsRaw(meterId, from > cutoff ? from : cutoff, to, bucketMin));
     }
     // A bucket can straddle the cutoff (partial hourly + partial raw) — merge.
-    const byBucket = new Map<number, EnergyIntervalBucket>();
-    for (const b of parts.flat()) {
-      const ex = byBucket.get(b.bucketStartSec);
-      if (!ex) {
-        byBucket.set(b.bucketStartSec, { ...b });
-        continue;
-      }
-      const totSamples = ex.samples + b.samples;
-      ex.avgPowerKw =
-        ex.avgPowerKw === null
-          ? b.avgPowerKw
-          : b.avgPowerKw === null
-            ? ex.avgPowerKw
-            : Math.round(((ex.avgPowerKw * ex.samples + b.avgPowerKw * b.samples) / totSamples) * 1000) / 1000;
-      ex.importKwh = ex.importKwh === null ? b.importKwh : b.importKwh === null ? ex.importKwh : Math.round((ex.importKwh + b.importKwh) * 1000) / 1000;
-      ex.exportKwh = ex.exportKwh === null ? b.exportKwh : b.exportKwh === null ? ex.exportKwh : Math.round((ex.exportKwh + b.exportKwh) * 1000) / 1000;
-      ex.samples = totSamples;
-      ex.estimated = ex.estimated || b.estimated;
-    }
-    return [...byBucket.values()].sort((a, b) => a.bucketStartSec - b.bucketStartSec);
+    return mergeEnergyBuckets(parts);
   }
 
   private async energyIntervalsRaw(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {

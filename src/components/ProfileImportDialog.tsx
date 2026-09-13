@@ -163,7 +163,7 @@ export function ProfileImportDialog() {
 
         {step === "source" && (
           <div className="space-y-3">
-            <p className="text-xs font-medium text-slate-500">{s.importStepSource}</p>
+            <p className="text-xs font-medium text-muted-foreground">{s.importStepSource}</p>
             <div className="space-y-2">
               <Label>{s.importPasteLabel}</Label>
               <Textarea
@@ -183,8 +183,8 @@ export function ProfileImportDialog() {
 
         {step === "mapping" && (
           <div className="space-y-4">
-            <p className="text-xs font-medium text-slate-500">{s.importStepMapping}</p>
-            <p className="text-xs text-slate-500">{s.importRequiredHint}</p>
+            <p className="text-xs font-medium text-muted-foreground">{s.importStepMapping}</p>
+            <p className="text-xs text-muted-foreground">{s.importRequiredHint}</p>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -260,7 +260,7 @@ export function ProfileImportDialog() {
                   onChange={(e) => setSourceDocument(e.target.value)}
                   placeholder="Vendor X Modbus Interface Definition, Rev 2.1"
                 />
-                <p className="text-xs text-slate-500">{s.importSourceDocumentHint}</p>
+                <p className="text-xs text-muted-foreground">{s.importSourceDocumentHint}</p>
               </div>
               <div className="col-span-2 space-y-2">
                 <Label>{s.importDevice}</Label>
@@ -284,8 +284,8 @@ export function ProfileImportDialog() {
 
         {step === "preview" && preview && (
           <div className="space-y-3">
-            <p className="text-xs font-medium text-slate-500">{s.importStepPreview}</p>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs font-medium text-muted-foreground">{s.importStepPreview}</p>
+            <p className="text-xs text-muted-foreground">
               {rowsValid} / {preview.rows.length} {s.importRowsValid}
             </p>
             {preview.errors.map((e, i) => (

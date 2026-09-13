@@ -7,6 +7,9 @@ import { OrganizationsCard } from "@/components/OrganizationsCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
 import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
+import { MaintenanceWindowsCard } from "@/components/MaintenanceWindowsCard";
+import { DeliveryHistoryCard } from "@/components/DeliveryHistoryCard";
+import { ChangePasswordCard } from "@/components/ChangePasswordCard";
 
 // Wave 8: Settings is split into tabs — Device profiles (default, the
 // operational content) gets a compact searchable/filterable table; General and
@@ -19,12 +22,13 @@ export default function Settings() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.settings.title}</h1>
-        <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
+        <p className="max-w-3xl text-sm text-muted-foreground">{t.settings.profilesHint}</p>
       </div>
       <Tabs defaultValue="profiles">
-        <TabsList>
+        <TabsList className="flex-wrap">
           <TabsTrigger value="profiles">{t.settings.tabProfiles}</TabsTrigger>
           <TabsTrigger value="general">{t.settings.tabGeneral}</TabsTrigger>
+          <TabsTrigger value="notifications">{t.settings.tabNotifications}</TabsTrigger>
           <TabsTrigger value="security">{t.settings.tabSecurity}</TabsTrigger>
         </TabsList>
         <TabsContent value="profiles" className="space-y-4 pt-4">
@@ -37,9 +41,18 @@ export default function Settings() {
         <TabsContent value="general" className="space-y-6 pt-4">
           {/* v8/D2: organizations — superadmin only */}
           <OrganizationsCard />
+        </TabsContent>
+        <TabsContent value="notifications" className="space-y-6 pt-4">
           <NotificationChannelsCard />
+          {/* §8: suppression windows and the delivery trail belong next to the
+              channels they act on — all three answer "who gets told, when, and
+              did it actually arrive". */}
+          <MaintenanceWindowsCard />
+          <DeliveryHistoryCard />
         </TabsContent>
         <TabsContent value="security" className="space-y-6 pt-4">
+          {/* §8: the backend could change a password; nothing called it. */}
+          <ChangePasswordCard />
           {/* audit #23: per-user TOTP MFA */}
           <MfaCard />
           {/* v9.1: API keys (admin only) */}

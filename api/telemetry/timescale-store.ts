@@ -4,7 +4,10 @@
 //   - automatic time partitioning + (meter_id, ts) index
 //   - native compression after 7 days (~10x)
 //   - retention policy: raw data dropped after 90 days
-//   - continuous aggregate `telemetry_daily` powers reports and rollups
+//   - continuous aggregates: `telemetry_hourly` (+ the telemetry_hourly_energy
+//     view over it, db/timescale/002) carries the first/last/min/max counters
+//     that daily reports past the 90-day raw cutoff are rebuilt from;
+//     `telemetry_daily` stays available for ad-hoc/BI queries
 //
 // Activated by setting: TELEMETRY_STORE=timescale + TIMESCALE_URL=postgres://...
 import { Pool } from "pg";
@@ -21,6 +24,8 @@ import type {
 } from "./types";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
 import { env } from "../lib/env";
+import { aggregateUpperBound, retentionCutoff } from "./retention";
+import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "./merge";
 
 const COLS = [
   "ts",
@@ -151,7 +156,78 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     return map;
   }
 
+  // Raw rows for the recent range, the hourly continuous aggregate for the
+  // range past the retention cutoff — the same split the reports use. Without
+  // it a chart older than 90 days came back empty, on both stores.
   async history(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const cutoff = retentionCutoff();
+    const parts: HistoryPoint[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketSec, powerKey));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.historyRaw(meterId, from > cutoff ? from : cutoff, to, bucketSec, powerKey));
+    }
+    return mergeHistoryPoints(parts);
+  }
+
+  // Chart points from the aggregate (db/timescale/003). The rollup's
+  // resolution is one hour, so a narrower bucket is widened rather than faked;
+  // any range reaching past the cutoff is months long and asks for far wider
+  // buckets anyway.
+  private async historyFromHourly(
+    meterId: number,
+    from: Date,
+    to: Date,
+    bucketSec: number,
+    powerKey?: string,
+  ): Promise<HistoryPoint[]> {
+    const bucket = Math.max(3600, bucketSec);
+    const key = powerKey && /^[A-Za-z0-9_]+$/.test(powerKey) ? powerKey : "activePowerKw";
+    // #20: one rollup column per PRIMARY_POWER_KEY, so a BESS or weather chart
+    // survives the cutoff instead of going flat.
+    const powerCol =
+      key === "batteryPowerKw"
+        ? "avg_battery_power_kw"
+        : key === "irradianceWm2"
+          ? "avg_irradiance_wm2"
+          : "avg_power_kw";
+    const { rows } = await this.pool.query(
+      `select floor(extract(epoch from hour_start) / $4) * $4 as bucket,
+              sum(${powerCol} * samples) / nullif(sum(samples), 0) as "powerKw",
+              sum(avg_power_kw * samples) / nullif(sum(samples), 0) as "activePowerKw",
+              sum(avg_voltage_l1 * samples) / nullif(sum(samples), 0) as "voltageL1",
+              sum(avg_current_l1 * samples) / nullif(sum(samples), 0) as "currentL1",
+              sum(avg_power_factor * samples) / nullif(sum(samples), 0) as "powerFactor",
+              sum(avg_frequency_hz * samples) / nullif(sum(samples), 0) as "frequencyHz",
+              max(energy_import_last) as "energyImportKwh",
+              sum(samples)::int as samples
+       from telemetry_hourly_energy
+       where meter_id = $1 and hour_start >= $2::timestamptz and hour_start <= $3::timestamptz
+       group by bucket order by bucket`,
+      [meterId, from, to, bucket],
+    );
+    const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    return rows.map((r) => ({
+      ts: new Date(Number(r.bucket) * 1000),
+      powerKw: num(r.powerKw),
+      activePowerKw: num(r.activePowerKw),
+      voltageL1: num(r.voltageL1),
+      currentL1: num(r.currentL1),
+      powerFactor: num(r.powerFactor),
+      frequencyHz: num(r.frequencyHz),
+      energyImportKwh: num(r.energyImportKwh),
+      samples: Number(r.samples),
+    }));
+  }
+
+  private async historyRaw(
     meterId: number,
     from: Date,
     to: Date,
@@ -208,6 +284,21 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     }));
   }
 
+  // §9.7: see TelemetryStore.lastChangeSince.
+  async lastChangeSince(meterId: number, key: string, value: number, since: Date): Promise<Date | null> {
+    assertValidMetricKeys([key]); // the whitelist IS the injection defence
+    const col = COLUMN_BACKED_METRICS[key];
+    const expr = col ?? `(values_json->>'${key}')::double precision`; // key is whitelisted above
+    const { rows } = await this.pool.query(
+      `select ts from telemetry
+       where meter_id = $1 and ts >= $2::timestamptz
+         and ${expr} is not null and ${expr} <> $3
+       order by ts desc limit 1`,
+      [meterId, since, value],
+    );
+    return rows[0]?.ts ? new Date(rows[0].ts) : null;
+  }
+
   async firstEnergySince(meterId: number, from: Date): Promise<number | null> {
     const { rows } = await this.pool.query(
       `select energy_import_kwh as v from telemetry
@@ -235,17 +326,66 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     return map;
   }
 
+  // Days newer than the raw-retention cutoff are computed from raw rows; older
+  // days are rebuilt from the telemetry_hourly continuous aggregate, because
+  // 001_init.sql's retention policy has already dropped the raw chunks. Before
+  // this split the Timescale store returned an EMPTY report for anything past
+  // 90 days while the MySQL store returned data — same API, different answer.
+  // Ranges straddling the cutoff are split and merged per day (merge.ts).
   async dailyReport(meterId: number, from: Date, to: Date, opts?: DailyReportOpts): Promise<DailyReportRow[]> {
+    const cutoff = retentionCutoff();
+    const parts: DailyReportRow[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.dailyReportFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), opts));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.dailyReportRaw(meterId, from > cutoff ? from : cutoff, to, opts));
+    }
+    return mergeDayRows(parts);
+  }
+
+  // Day bucket expression, shared by the raw and the hourly query. `col` is the
+  // timestamp column of the source relation. Boundaries are inlined as literal
+  // timestamps rather than bound: the CASE arm count varies per request, and
+  // the values are ISO strings produced by the server from its own Date
+  // objects (v7/C8) — never caller text.
+  private dayBucketExpr(col: string, opts?: DailyReportOpts): string {
+    if (!opts?.dayBuckets?.length) return `floor(extract(epoch from ${col}) / 86400)`;
+    return (
+      "case " +
+      opts.dayBuckets
+        .map(
+          (b) =>
+            `when ${col} >= '${b.startUtc.toISOString()}'::timestamptz and ${col} < '${b.endUtc.toISOString()}'::timestamptz then '${b.label}'`,
+        )
+        .join(" ") +
+      " else null end"
+    );
+  }
+
+  private mapDayRows(rows: Record<string, unknown>[], localMode: boolean): DailyReportRow[] {
+    return rows
+      .filter((r) => r.dayBucket !== null)
+      .map((r) => ({
+        day: localMode
+          ? String(r.dayBucket)
+          : new Date(Number(r.dayBucket) * 86_400_000).toISOString().slice(0, 10),
+        importKwh: r.importKwh === null ? null : Math.round(Number(r.importKwh) * 100) / 100,
+        exportKwh: r.exportKwh === null ? null : Math.round(Number(r.exportKwh) * 100) / 100,
+        maxDemandKw: r.maxDemand === null ? null : Math.round(Number(r.maxDemand) * 100) / 100,
+        // #21: derived-from-active-power marker (no demand register samples)
+        demandDerived: Number(r.demandSamples ?? 0) === 0 && r.maxDemand !== null,
+        counterReset: r.counterReset === true,
+        avgPowerFactor: r.avgPf === null ? null : Math.round(Number(r.avgPf) * 1000) / 1000,
+        samples: Number(r.samples),
+      }));
+  }
+
+  private async dailyReportRaw(meterId: number, from: Date, to: Date, opts?: DailyReportOpts): Promise<DailyReportRow[]> {
     // v7/C7: same non-negative-delta logic as the MySQL store (window function
     // over raw rows — the continuous aggregate's min/max can't express resets).
     // Days are UTC epoch buckets (#8 parity with the MySQL store).
-    const bucket = opts?.dayBuckets?.length
-      ? "case " +
-        opts.dayBuckets
-          .map((b) => `when ts >= '${b.startUtc.toISOString()}'::timestamptz and ts < '${b.endUtc.toISOString()}'::timestamptz then '${b.label}'`)
-          .join(" ") +
-        " else null end"
-      : "floor(extract(epoch from ts) / 86400)";
+    const bucket = this.dayBucketExpr("ts", opts);
     const { rows } = await this.pool.query(
       `with ordered as (
          select ts, energy_import_kwh as e, energy_export_kwh as x,
@@ -269,24 +409,71 @@ export class TimescaleTelemetryStore implements TelemetryStore {
        order by "dayBucket"`,
       [meterId, from, to],
     );
-    const localMode = !!opts?.dayBuckets?.length;
-    return rows.filter((r) => r.dayBucket !== null).map((r) => ({
-      day: localMode ? String(r.dayBucket) : new Date(Number(r.dayBucket) * 86_400_000).toISOString().slice(0, 10),
-      importKwh: r.importKwh === null ? null : Math.round(Number(r.importKwh) * 100) / 100,
-      exportKwh: r.exportKwh === null ? null : Math.round(Number(r.exportKwh) * 100) / 100,
-      maxDemandKw: r.maxDemand === null ? null : Math.round(Number(r.maxDemand) * 100) / 100,
-      // #21: derived-from-active-power marker (no demand samples that day)
-      demandDerived: Number(r.demandSamples ?? 0) === 0 && r.maxDemand !== null,
-      counterReset: r.counterReset === true,
-      avgPowerFactor: r.avgPf === null ? null : Math.round(Number(r.avgPf) * 1000) / 1000,
-      samples: Number(r.samples),
-    }));
+    return this.mapDayRows(rows, !!opts?.dayBuckets?.length);
+  }
+
+  // Same report shape, rebuilt from telemetry_hourly_energy (db/timescale/002).
+  // Energy per day = the stored intra-hour delta PLUS the inter-hour delta
+  // between each hour's first counter and the previous hour's last, so counter
+  // resets stay safe exactly like the raw query — identical math to the MySQL
+  // store's dailyReportFromHourly, over the continuous aggregate instead of a
+  // rollup table.
+  private async dailyReportFromHourly(
+    meterId: number,
+    from: Date,
+    to: Date,
+    opts?: DailyReportOpts,
+  ): Promise<DailyReportRow[]> {
+    const bucket = this.dayBucketExpr("ts", opts);
+    const { rows } = await this.pool.query(
+      `with ordered as (
+         select hour_start as ts,
+                energy_import_delta_kwh as e_intra,
+                energy_export_delta_kwh as x_intra,
+                energy_import_first as e_first,
+                energy_export_first as x_first,
+                lag(energy_import_last) over (order by hour_start) as e_prev_last,
+                lag(energy_export_last) over (order by hour_start) as x_prev_last,
+                max_demand_kw as demand,
+                demand_samples as demand_n,
+                avg_power_factor as pf,
+                samples,
+                counter_reset as cr
+         from telemetry_hourly_energy
+         where meter_id = $1 and hour_start >= $2::timestamptz and hour_start <= $3::timestamptz
+       )
+       select ${bucket} as "dayBucket",
+              sum(coalesce(e_intra, 0) + greatest(coalesce(e_first - e_prev_last, 0), 0)) as "importKwh",
+              sum(coalesce(x_intra, 0) + greatest(coalesce(x_first - x_prev_last, 0), 0)) as "exportKwh",
+              coalesce(bool_or(cr or e_first - e_prev_last < -0.001 or x_first - x_prev_last < -0.001), false) as "counterReset",
+              max(demand) as "maxDemand",
+              sum(demand_n) as "demandSamples",
+              sum(pf * samples) / nullif(sum(samples), 0) as "avgPf",
+              sum(samples) as samples
+       from ordered
+       group by "dayBucket"
+       order by "dayBucket"`,
+      [meterId, from, to],
+    );
+    return this.mapDayRows(rows, !!opts?.dayBuckets?.length);
   }
 
   // v8/D2: settlement energy intervals (same shape/semantics as the MySQL
-  // store). Timescale keeps raw rows for the whole API window (31 d max vs the
-  // 90 d retention policy), so a single raw query covers every range.
+  // store): raw rows for the recent range, hourly aggregates past the raw
+  // retention cutoff, merged where a bucket straddles the two.
   async energyIntervals(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {
+    const cutoff = retentionCutoff();
+    const parts: EnergyIntervalBucket[][] = [];
+    if (from < cutoff) {
+      parts.push(await this.energyIntervalsHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketMin));
+    }
+    if (to >= cutoff) {
+      parts.push(await this.energyIntervalsRaw(meterId, from > cutoff ? from : cutoff, to, bucketMin));
+    }
+    return mergeEnergyBuckets(parts);
+  }
+
+  private async energyIntervalsRaw(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {
     const bucketSec = bucketMin * 60;
     const { rows } = await this.pool.query(
       `with ordered as (
@@ -318,6 +505,66 @@ export class TimescaleTelemetryStore implements TelemetryStore {
       samples: Number(r.samples),
       estimated: r.counterReset === true,
     }));
+  }
+
+  private async energyIntervalsHourly(meterId: number, from: Date, to: Date, bucketMin: number): Promise<EnergyIntervalBucket[]> {
+    const hourFloor = new Date(Math.floor(from.getTime() / 3_600_000) * 3_600_000);
+    if (bucketMin >= 60) {
+      const bucketSec = bucketMin * 60;
+      const { rows } = await this.pool.query(
+        `with ordered as (
+           select hour_start as ts,
+                  energy_import_delta_kwh as e_intra,
+                  energy_export_delta_kwh as x_intra,
+                  energy_import_first as e_first,
+                  energy_export_first as x_first,
+                  lag(energy_import_last) over (order by hour_start) as e_prev_last,
+                  lag(energy_export_last) over (order by hour_start) as x_prev_last,
+                  avg_power_kw as p,
+                  samples,
+                  counter_reset as cr
+           from telemetry_hourly_energy
+           where meter_id = $1 and hour_start >= $2::timestamptz and hour_start < $3::timestamptz
+         )
+         select floor(extract(epoch from ts) / ${bucketSec}) as b,
+                sum(coalesce(e_intra, 0) + greatest(coalesce(e_first - e_prev_last, 0), 0)) as "importKwh",
+                sum(coalesce(x_intra, 0) + greatest(coalesce(x_first - x_prev_last, 0), 0)) as "exportKwh",
+                coalesce(bool_or(cr or e_first - e_prev_last < -0.001 or x_first - x_prev_last < -0.001), false) as "counterReset",
+                sum(p * samples) / nullif(sum(samples), 0) as "avgPower",
+                sum(samples) as samples
+           from ordered
+           group by b
+           order by b`,
+        [meterId, hourFloor, to],
+      );
+      return rows.map((r) => ({
+        bucketStartSec: Number(r.b) * bucketSec,
+        importKwh: r.importKwh === null ? null : Math.round(Number(r.importKwh) * 1000) / 1000,
+        exportKwh: r.exportKwh === null ? null : Math.round(Number(r.exportKwh) * 1000) / 1000,
+        avgPowerKw: r.avgPower === null ? null : Math.round(Number(r.avgPower) * 1000) / 1000,
+        samples: Number(r.samples),
+        estimated: r.counterReset === true,
+      }));
+    }
+    // Sub-hour buckets over the aggregated range: the rollup destroyed that
+    // resolution, so spread each hour evenly and mark every bucket estimated
+    // (same contract as the MySQL store).
+    const perHour = await this.energyIntervalsHourly(meterId, hourFloor, to, 60);
+    const sub = 60 / bucketMin;
+    const out: EnergyIntervalBucket[] = [];
+    for (const h of perHour) {
+      for (let i = 0; i < sub; i++) {
+        out.push({
+          bucketStartSec: h.bucketStartSec + i * bucketMin * 60,
+          importKwh: h.importKwh === null ? null : Math.round((h.importKwh / sub) * 1000) / 1000,
+          exportKwh: h.exportKwh === null ? null : Math.round((h.exportKwh / sub) * 1000) / 1000,
+          avgPowerKw: h.avgPowerKw,
+          samples: Math.round(h.samples / sub),
+          estimated: true,
+        });
+      }
+    }
+    return out;
   }
 
   // audit wave 4 (Task 4): multi-metric bucketed series (same shape/semantics

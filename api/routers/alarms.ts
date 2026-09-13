@@ -118,10 +118,14 @@ export const alarmsRouter = createRouter({
         // (e.g. ESMU socPercent/bmsStatusCode). Evaluation simply skips metrics
         // a device doesn't report, so any non-empty key is valid here.
         metric: z.string().min(1).max(100),
-        operator: z.enum(["gt", "lt"]),
+        operator: z.enum(["gt", "lt", "stuck"]),
         threshold: z.number(),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
         meterId: z.number().nullable().optional(),
+        // How long the condition must hold before raising. 0 raises on the
+        // first breaching sample, which is the previous behaviour. Capped at
+        // 24 hours: longer than that is a report, not an alarm.
+        durationSec: z.number().int().min(0).max(86_400).default(0),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -137,6 +141,7 @@ export const alarmsRouter = createRouter({
           threshold: input.threshold,
           severity: input.severity,
           meterId: input.meterId ?? null,
+          durationSec: input.durationSec,
           orgId: stampOrg(ctx.user),
         })
         .$returningId();

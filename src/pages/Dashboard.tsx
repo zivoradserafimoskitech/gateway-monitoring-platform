@@ -79,16 +79,18 @@ export default function Dashboard() {
                     <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" />
                 <XAxis
                   dataKey="ts"
                   tickFormatter={(v: Date) =>
                     new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                   }
                   fontSize={12}
-                  stroke="#94a3b8"
+                  stroke="currentColor"
+                  className="text-muted-foreground"
                 />
-                <YAxis fontSize={12} stroke="#94a3b8" unit=" kW" width={80} />
+                <YAxis fontSize={12} stroke="currentColor"
+                  className="text-muted-foreground" unit=" kW" width={80} />
                 <Tooltip
                   labelFormatter={(v) => fmtTime(v as Date)}
                   formatter={(value) => [`${value} kW`, t.meters.activePower]}
@@ -135,14 +137,14 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           {(recent.data ?? []).length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-500">{t.dashboard.noAlarms}</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">{t.dashboard.noAlarms}</p>
           ) : (
             <ul className="divide-y">
               {(recent.data ?? []).map((a) => (
                 <li key={a.id} className="flex items-center justify-between py-3">
                   <div>
                     <p className="text-sm font-medium">{a.message}</p>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-muted-foreground">
                       {a.meterName ?? a.gatewayName ?? "—"} · {fmtTime(a.triggeredAt)}
                     </p>
                   </div>

@@ -171,7 +171,7 @@ export function ProfileVerifyWizard({
           : s.verifyFlagBeyondNameplate;
 
   const stepClass = (available: boolean, done: boolean) =>
-    "rounded-md border p-3 space-y-2 " + (done ? "border-emerald-300 bg-emerald-50/50" : available ? "border-slate-200" : "border-slate-100 opacity-60 pointer-events-none");
+    "rounded-md border p-3 space-y-2 " + (done ? "border-emerald-300 bg-emerald-50/50" : available ? "border-border" : "border-border opacity-60 pointer-events-none");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -183,7 +183,7 @@ export function ProfileVerifyWizard({
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>
-            {s.verifyTitle} — {model} <span className="text-sm font-normal text-slate-500">({label})</span>
+            {s.verifyTitle} — {model} <span className="text-sm font-normal text-muted-foreground">({label})</span>
           </DialogTitle>
         </DialogHeader>
 
@@ -211,7 +211,7 @@ export function ProfileVerifyWizard({
         {/* Step 1 — read verification */}
         <div className={stepClass(true, readDone)}>
           <p className="text-sm font-semibold">{s.verifyStepRead}</p>
-          <p className="text-xs text-slate-500">{s.verifyReadHint}</p>
+          <p className="text-xs text-muted-foreground">{s.verifyReadHint}</p>
           <Button
             variant="outline"
             size="sm"
@@ -238,13 +238,13 @@ export function ProfileVerifyWizard({
                   {readRows.map((r) => (
                     <TableRow key={r.key}>
                       <TableCell className="text-sm">
-                        {r.label} <span className="ml-1 font-mono text-xs text-slate-400">({r.key})</span>
+                        {r.label} <span className="ml-1 font-mono text-xs text-muted-foreground">({r.key})</span>
                       </TableCell>
                       <TableCell className="font-mono text-xs">{r.error ? "—" : (r.raw ?? "—")}</TableCell>
                       <TableCell className="font-mono text-xs">
                         {r.error ? <span className="text-red-600">{r.error}</span> : `${r.value ?? "—"} ${r.unit}`}
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-slate-500">
+                      <TableCell className="font-mono text-xs text-muted-foreground">
                         {r.min !== undefined || r.max !== undefined ? `[${r.min ?? "−∞"}..${r.max ?? "+∞"}]` : "—"}
                       </TableCell>
                       <TableCell>
@@ -271,7 +271,7 @@ export function ProfileVerifyWizard({
           <p className="text-sm font-semibold">{s.verifyStepSign}</p>
           {needsSign ? (
             <>
-              <p className="text-xs text-slate-500">{s.verifySignHint}</p>
+              <p className="text-xs text-muted-foreground">{s.verifySignHint}</p>
               <div className="flex flex-wrap items-center gap-2">
                 {isAdmin &&
                   (allowUnverifiedControl ? (
@@ -295,7 +295,7 @@ export function ProfileVerifyWizard({
                 >
                   {s.verifyCommandDischarge} ({powerSetpointKey} = {Math.round(nameplateMax * 0.05 * 100) / 100} {controllable?.[powerSetpointKey!]?.unit ?? ""})
                 </Button>
-                {discharge.data && <span className="text-xs text-slate-500">{discharge.data.detail}</span>}
+                {discharge.data && <span className="text-xs text-muted-foreground">{discharge.data.detail}</span>}
               </div>
               <p className="text-sm font-medium">{s.verifySignQuestion}</p>
               <div className="flex items-center gap-2">
@@ -319,23 +319,23 @@ export function ProfileVerifyWizard({
               </div>
             </>
           ) : (
-            <p className="text-xs text-slate-500">{s.verifySignNotNeeded}</p>
+            <p className="text-xs text-muted-foreground">{s.verifySignNotNeeded}</p>
           )}
         </div>
 
         {/* Step 3 — control round-trip */}
         <div className={stepClass(readDone && signDone, controlDone)}>
           <p className="text-sm font-semibold">{s.verifyStepControl}</p>
-          <p className="text-xs text-slate-500">{s.verifyControlHint}</p>
+          <p className="text-xs text-muted-foreground">{s.verifyControlHint}</p>
           {writableKeys.map((k) => {
             const def = controllable![k];
             const res = roundTripResults[k];
             const done = roundTripsOk.includes(k);
             return (
-              <div key={k} className="rounded border border-slate-100 p-2">
+              <div key={k} className="rounded border border-border p-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs font-semibold">{k}</span>
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-muted-foreground">
                     [{def.min}..{def.max}] {def.unit ?? ""} {def.description ? `— ${def.description}` : ""}
                   </span>
                   <Input
@@ -359,7 +359,7 @@ export function ProfileVerifyWizard({
                   {done && <span className="text-xs text-emerald-700">✓</span>}
                 </div>
                 {res && (
-                  <p className={"mt-1 text-xs " + (res.status === "failed" ? "text-red-600" : "text-slate-600")}>
+                  <p className={"mt-1 text-xs " + (res.status === "failed" ? "text-red-600" : "text-muted-foreground")}>
                     {res.detail}
                     <span className="ml-2 font-mono">
                       {s.verifyRaw}={res.raw ?? res.expectedRaw} · {s.verifyScaled}={res.scaled ?? "—"}
@@ -374,7 +374,7 @@ export function ProfileVerifyWizard({
         {/* Step 4 — range confirmation */}
         <div className={stepClass(readDone && signDone && controlDone, rangeDone)}>
           <p className="text-sm font-semibold">{s.verifyStepRange}</p>
-          <p className="text-xs text-slate-500">{s.verifyRangeHint}</p>
+          <p className="text-xs text-muted-foreground">{s.verifyRangeHint}</p>
           {writableKeys.map((k) => {
             const def = controllable![k];
             return (
@@ -384,7 +384,7 @@ export function ProfileVerifyWizard({
                   onCheckedChange={(v) => setRangeConfirmed((r) => ({ ...r, [k]: v === true }))}
                 />
                 <span className="font-mono text-xs">{k}</span>
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-muted-foreground">
                   [{def.min}..{def.max}] {def.unit ?? ""} {s.verifyRangeConfirm}
                 </span>
               </label>
@@ -394,7 +394,7 @@ export function ProfileVerifyWizard({
 
         {/* Completion — admin only */}
         {verificationStatus !== "bench_verified" && (
-          <div className={"rounded-md border p-3 space-y-2 " + (completable ? "border-sky-300" : "border-slate-100 opacity-60")}>
+          <div className={"rounded-md border p-3 space-y-2 " + (completable ? "border-sky-300" : "border-border opacity-60")}>
             <p className="text-sm font-semibold">{s.verifyComplete}</p>
             {!isAdmin && <p className="text-xs text-amber-600">{s.verifyCompleteAdminHint}</p>}
             <div className="grid gap-2 sm:grid-cols-2">

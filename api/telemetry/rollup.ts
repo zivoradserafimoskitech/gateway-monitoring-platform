@@ -10,16 +10,11 @@
 // instead — this module is only wired up for the MySQL store (boot.ts).
 import { sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
+import { retentionCutoff } from "./retention";
 
-const RAW_DAYS = parseInt(process.env.TELEMETRY_RAW_DAYS || "90", 10);
 const ROLLUP_INTERVAL_MIN = parseInt(process.env.ROLLUP_INTERVAL_MIN || "10", 10);
 
 const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
-
-/** Raw rows older than this are rolled up + purged. */
-export function retentionCutoff(now = new Date()): Date {
-  return new Date(now.getTime() - RAW_DAYS * 86_400_000);
-}
 
 /**
  * Aggregate one UTC hour [hourStart, +1h) for all meters; idempotent upsert.
@@ -37,7 +32,9 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
        demand_samples, avg_power_factor,
        energy_import_delta_kwh, energy_export_delta_kwh,
        energy_import_first, energy_import_last,
-       energy_export_first, energy_export_last, counter_reset)
+       energy_export_first, energy_export_last, counter_reset,
+       avg_voltage_l1, avg_current_l1, avg_frequency_hz,
+       avg_battery_power_kw, avg_irradiance_wm2)
     with ordered as (
       select
         meter_id,
@@ -48,6 +45,13 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
         active_power_kw as p,
         demand_kw as d,
         power_factor as pf,
+        voltage_l1 as v1,
+        current_l1 as c1,
+        frequency_hz as hz,
+        -- Fixed key set: one primary series per device type. Bounded and known,
+        -- so the rollup stays a plain aggregate with no join to meters.
+        cast(json_unquote(json_extract(values_json, '$.batteryPowerKw')) as double) as bkw,
+        cast(json_unquote(json_extract(values_json, '$.irradianceWm2')) as double) as irr,
         first_value(energy_import_kwh) over (partition by meter_id order by ts) as e_first,
         last_value(energy_import_kwh) over (
           partition by meter_id order by ts
@@ -74,7 +78,12 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
       max(e_last) as energy_import_last,
       max(x_first) as energy_export_first,
       max(x_last) as energy_export_last,
-      coalesce(max(e - e_prev < -0.001 or x - x_prev < -0.001), 0) as counter_reset
+      coalesce(max(e - e_prev < -0.001 or x - x_prev < -0.001), 0) as counter_reset,
+      avg(v1) as avg_voltage_l1,
+      avg(c1) as avg_current_l1,
+      avg(hz) as avg_frequency_hz,
+      avg(bkw) as avg_battery_power_kw,
+      avg(irr) as avg_irradiance_wm2
     from ordered
     group by meter_id
     on duplicate key update
@@ -90,7 +99,12 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
       energy_import_last = values(energy_import_last),
       energy_export_first = values(energy_export_first),
       energy_export_last = values(energy_export_last),
-      counter_reset = values(counter_reset)`);
+      counter_reset = values(counter_reset),
+      avg_voltage_l1 = values(avg_voltage_l1),
+      avg_current_l1 = values(avg_current_l1),
+      avg_frequency_hz = values(avg_frequency_hz),
+      avg_battery_power_kw = values(avg_battery_power_kw),
+      avg_irradiance_wm2 = values(avg_irradiance_wm2)`);
   const affected = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
   // upsert counts an update as 2 — good enough for logging
   return affected;

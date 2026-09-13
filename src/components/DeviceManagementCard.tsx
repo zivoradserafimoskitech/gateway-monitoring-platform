@@ -71,48 +71,48 @@ export function DeviceManagementCard({ gatewayId }: { gatewayId: number }) {
       <CardContent className="space-y-4">
         {/* versions + heartbeat diagnostics */}
         <div className="grid gap-3 md:grid-cols-4">
-          <div className="rounded-md border border-slate-200 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-500">{t.gateways.firmwareVersion}</p>
+          <div className="rounded-md border border-border p-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.gateways.firmwareVersion}</p>
             <p className="font-mono text-sm">{d?.firmwareVersion ?? "—"}</p>
           </div>
-          <div className="rounded-md border border-slate-200 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-500">{t.gateways.configVersion}</p>
+          <div className="rounded-md border border-border p-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.gateways.configVersion}</p>
             <p className="font-mono text-sm">{d?.configVersion ?? "—"}</p>
           </div>
-          <div className="rounded-md border border-slate-200 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-500">{t.common.lastSeen}</p>
+          <div className="rounded-md border border-border p-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.common.lastSeen}</p>
             <p className="text-sm">{d?.lastSeenAt ? fmtTime(d.lastSeenAt) : t.common.never}</p>
           </div>
-          <div className="rounded-md border border-slate-200 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-500">{t.gateways.msgPerMin}</p>
+          <div className="rounded-md border border-border p-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.gateways.msgPerMin}</p>
             <p className="font-mono text-sm">
-              {d ? d.msgPerMin : "—"} <span className="text-xs text-slate-400">({t.gateways.samples5min}: {d?.samples5min ?? 0})</span>
+              {d ? d.msgPerMin : "—"} <span className="text-xs text-muted-foreground">({t.gateways.samples5min}: {d?.samples5min ?? 0})</span>
             </p>
           </div>
         </div>
         {d?.poller && d.poller.length > 0 && (
-          <div className="rounded-md border border-slate-200 p-3 text-sm">
-            <p className="mb-1 text-xs uppercase tracking-wide text-slate-500">{t.gateways.pollerStats}</p>
+          <div className="rounded-md border border-border p-3 text-sm">
+            <p className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">{t.gateways.pollerStats}</p>
             <div className="space-y-1">
               {d.poller.map((p) => (
                 <div key={p.id} className="flex flex-wrap gap-2 text-xs">
                   <span className="font-medium">{p.name}</span>
                   <span>polls {p.polls}</span>
-                  <span className={p.failures > 0 ? "text-red-600" : "text-slate-500"}>fail {p.failures}</span>
-                  <span className="text-slate-400">{p.lastOkAt ? fmtTime(p.lastOkAt) : t.common.never}</span>
+                  <span className={p.failures > 0 ? "text-red-600" : "text-muted-foreground"}>fail {p.failures}</span>
+                  <span className="text-muted-foreground">{p.lastOkAt ? fmtTime(p.lastOkAt) : t.common.never}</span>
                   {p.lastError && <span className="text-red-600">{p.lastError}</span>}
                 </div>
               ))}
             </div>
           </div>
         )}
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-muted-foreground">
           {t.gateways.activeOtaJobs}: {d?.activeOtaJobs ?? 0}
         </p>
 
         {/* job form */}
         {showForm && canWrite && (
-          <div className="grid items-end gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 md:grid-cols-[160px_1fr_auto]">
+          <div className="grid items-end gap-3 rounded-md border border-border bg-muted/40 p-3 md:grid-cols-[160px_1fr_auto]">
             <div className="space-y-1">
               <Label>{t.gateways.jobType}</Label>
               <Select
@@ -145,7 +145,7 @@ export function DeviceManagementCard({ gatewayId }: { gatewayId: number }) {
 
         {/* jobs */}
         {(jobs.data ?? []).length === 0 ? (
-          <p className="text-sm text-slate-500">{t.gateways.noJobs}</p>
+          <p className="text-sm text-muted-foreground">{t.gateways.noJobs}</p>
         ) : (
           <Table>
             <TableHeader>
@@ -187,7 +187,7 @@ export function DeviceManagementCard({ gatewayId }: { gatewayId: number }) {
             </TableBody>
           </Table>
         )}
-        {!canWrite && <p className="text-xs text-slate-500">{t.gateways.readonlyRole}</p>}
+        {!canWrite && <p className="text-xs text-muted-foreground">{t.gateways.readonlyRole}</p>}
       </CardContent>
     </Card>
   );

@@ -27,6 +27,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ChevronDown, ChevronRight, Download, Save, Search } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceTypeBadge } from "@/components/shared";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { ProfileVerifyWizard } from "@/components/ProfileVerifyWizard";
 import { DEVICE_TYPES } from "@contracts/devices";
 import type { RegisterDef } from "@contracts/modbus";
@@ -129,7 +130,7 @@ export function ProfilesTable({ profiles }: { profiles: ProfileRowData[] }) {
     .replace("{x}", String(filtered.length))
     .replace("{y}", String(profiles.length));
 
-  const chip = "rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600";
+  const chip = "rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground";
 
   return (
     <div className="space-y-3">
@@ -158,7 +159,7 @@ export function ProfilesTable({ profiles }: { profiles: ProfileRowData[] }) {
       {/* Search + filters (client-side) */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -202,7 +203,7 @@ export function ProfilesTable({ profiles }: { profiles: ProfileRowData[] }) {
             <SelectItem value="template">template</SelectItem>
           </SelectContent>
         </Select>
-        <span className="text-xs text-slate-500">{showingOf}</span>
+        <span className="text-xs text-muted-foreground">{showingOf}</span>
       </div>
 
       <Card>
@@ -231,7 +232,7 @@ export function ProfilesTable({ profiles }: { profiles: ProfileRowData[] }) {
               ))}
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-sm text-slate-500">
+                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                     {t.settings.noProfilesMatch}
                   </TableCell>
                 </TableRow>
@@ -273,21 +274,36 @@ function ProfileTableRow({
     onError: (e) => toast.error(e.message),
   });
 
+  // §8: profiles.remove existed (added for the probe) but nothing called it,
+  // so a profile imported by mistake stayed in the model picker forever. The
+  // server refuses while any device still uses the model, so the only failure
+  // mode here is a message, never an orphaned device.
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = !me.data?.authRequired || me.data?.user?.role === "admin";
+  const utils = trpc.useUtils();
+  const removeProfile = trpc.profiles.remove.useMutation({
+    onSuccess: () => {
+      void utils.profiles.list.invalidate();
+      toast.success(t.settings.profileRemoved);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   return (
     <>
-      <TableRow className={expanded ? "bg-slate-50" : undefined}>
+      <TableRow className={expanded ? "bg-muted/40" : undefined}>
         <TableCell>
           <div className="text-sm font-medium">
             {p.brand ? `${p.brand} ` : ""}
             {p.model}
           </div>
-          <div className="text-xs text-slate-500">{p.label}</div>
+          <div className="text-xs text-muted-foreground">{p.label}</div>
         </TableCell>
         <TableCell>
           <DeviceTypeBadge type={p.deviceType} />
         </TableCell>
         <TableCell>
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-500">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
             {p.protocol}
           </span>
         </TableCell>
@@ -299,7 +315,7 @@ function ProfileTableRow({
                 ? "bg-emerald-100 text-emerald-700"
                 : p.source === "community"
                   ? "bg-sky-100 text-sky-700"
-                  : "bg-slate-200 text-slate-500")
+                  : "bg-muted text-muted-foreground")
             }
           >
             {p.source}
@@ -344,6 +360,14 @@ function ProfileTableRow({
             >
               <Download className="h-4 w-4" />
             </Button>
+            {isAdmin && (
+              <ConfirmButton
+                title={`${t.settings.removeProfile}: ${p.model}`}
+                description={t.settings.removeProfileHint}
+                disabled={removeProfile.isPending}
+                onConfirm={() => removeProfile.mutate({ id: p.id })}
+              />
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -358,7 +382,7 @@ function ProfileTableRow({
       </TableRow>
       {expanded && (
         <TableRow>
-          <TableCell colSpan={8} className="bg-slate-50 p-4">
+          <TableCell colSpan={8} className="bg-muted/40 p-4">
             <RegisterMapEditor id={p.id} initialMap={registerMap} />
           </TableCell>
         </TableRow>
@@ -421,7 +445,7 @@ function RegisterMapEditor({ id, initialMap }: { id: number; initialMap: Registe
           {map.map((r, i) => (
             <TableRow key={r.key}>
               <TableCell className="text-sm">
-                {r.label} <span className="ml-1 font-mono text-xs text-slate-400">({r.key})</span>
+                {r.label} <span className="ml-1 font-mono text-xs text-muted-foreground">({r.key})</span>
               </TableCell>
               <TableCell>
                 <Input
@@ -471,7 +495,7 @@ function RegisterMapEditor({ id, initialMap }: { id: number; initialMap: Registe
                   onChange={(e) => patch(i, { scale: Number(e.target.value) })}
                 />
               </TableCell>
-              <TableCell className="text-sm text-slate-500">{r.unit}</TableCell>
+              <TableCell className="text-sm text-muted-foreground">{r.unit}</TableCell>
             </TableRow>
           ))}
         </TableBody>

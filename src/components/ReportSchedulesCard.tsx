@@ -145,7 +145,7 @@ export function ReportSchedulesCard() {
                 <TableCell>{s.format}</TableCell>
                 <TableCell>{String(s.hourLocal).padStart(2, "0")}:00</TableCell>
                 <TableCell className="text-xs">{Array.isArray(s.recipients) ? (s.recipients as string[]).join(", ") : "—"}</TableCell>
-                <TableCell className="text-xs text-slate-500">{s.lastRunAt ? new Date(s.lastRunAt).toLocaleString() : "—"}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{s.lastRunAt ? new Date(s.lastRunAt).toLocaleString() : "—"}</TableCell>
                 <TableCell>
                   {canWrite ? (
                     <Button size="sm" variant="ghost" disabled={update.isPending} onClick={() => update.mutate({ id: s.id, patch: { enabled: !s.enabled } })}>
@@ -167,7 +167,7 @@ export function ReportSchedulesCard() {
             ))}
             {(schedules.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="text-center text-sm text-slate-400">
+                <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
                   {t.reportSched.empty}
                 </TableCell>
               </TableRow>

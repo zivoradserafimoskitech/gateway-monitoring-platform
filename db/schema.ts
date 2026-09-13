@@ -14,6 +14,7 @@ import {
   text,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/mysql-core";
 
 // ─── Sites ───────────────────────────────────────────────────────────────────
@@ -167,6 +168,15 @@ export const telemetryHourly = mysqlTable(
     energyExportFirst: double("energy_export_first"),
     energyExportLast: double("energy_export_last"),
     counterReset: int("counter_reset").notNull().default(0),
+    // Chart series that survive the raw-retention cutoff. batteryPowerKw and
+    // irradianceWm2 live in values_json rather than in a telemetry column, but
+    // they are the PRIMARY_POWER_KEY for BESS and weather devices, so without
+    // them those charts go empty past the cutoff while a meter's does not.
+    avgVoltageL1: double("avg_voltage_l1"),
+    avgCurrentL1: double("avg_current_l1"),
+    avgFrequencyHz: double("avg_frequency_hz"),
+    avgBatteryPowerKw: double("avg_battery_power_kw"),
+    avgIrradianceWm2: double("avg_irradiance_wm2"),
   },
   (t) => [uniqueIndex("telemetry_hourly_meter_hour_idx").on(t.meterId, t.hourStart)],
 );
@@ -180,11 +190,20 @@ export const alarmRules = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     // metric key, e.g. voltageL1, activePowerKw, frequencyHz, powerFactor, gatewayOffline
     metric: varchar("metric", { length: 64 }).notNull(),
-    operator: mysqlEnum("operator", ["gt", "lt"]).notNull(),
+    // gt/lt compare the value against `threshold`. "stuck" is §9.7 data
+    // quality: the value has not CHANGED for `threshold` seconds, which is the
+    // failure the other two are blind to — a frozen register stays inside its
+    // limits forever while the device reports as perfectly healthy.
+    operator: mysqlEnum("operator", ["gt", "lt", "stuck"]).notNull(),
+    // For gt/lt a value in the metric's own unit; for "stuck", seconds.
     threshold: double("threshold").notNull(),
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     // null meterId => applies to all meters
     meterId: bigint("meter_id", { mode: "number", unsigned: true }),
+    // "breached for N seconds" before raising. 0 = raise on the first sample.
+    // A single noisy sample over the threshold is almost never worth waking
+    // somebody for; this is what makes a jittery signal usable.
+    durationSec: int("duration_sec").notNull().default(0),
     enabled: boolean("enabled").notNull().default(true),
     // v8/D2: owning org.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
@@ -329,6 +348,59 @@ export type InsertCommand = typeof commands.$inferInsert;
 // ─── Multi-tenancy (v8 D2) ───────────────────────────────────────────────────
 // Every tenant-owned row carries org_id (backfilled to "Default Org"). The
 // superadmin (users.is_superadmin) sees all orgs; everyone else only their own.
+// Login throttling, shared across replicas. Per-process counters multiplied
+// the brute-force budget by the replica count: five attempts each, not five in
+// total. Keyed by identity ("id:<email>") AND source ("ip:<addr>"); a login is
+// rejected when either key is locked.
+export const loginAttempts = mysqlTable(
+  "login_attempts",
+  {
+    // "id:<email>" or "ip:<addr>".
+    attemptKey: varchar("attempt_key", { length: 160 }).primaryKey(),
+    // Epoch-millisecond timestamps of failures inside the rolling window.
+    failures: json("failures").notNull(),
+    lockedUntil: timestamp("locked_until"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("login_attempts_updated_idx").on(t.updatedAt)],
+);
+
+// Pending multi-factor challenges, shared across replicas. Per-process state
+// failed the second factor outright whenever the code was submitted to a
+// different replica than the one that issued the challenge.
+export const mfaPendingChallenges = mysqlTable(
+  "mfa_pending",
+  {
+    token: varchar("token", { length: 64 }).primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    attempts: int("attempts").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("mfa_pending_created_idx").on(t.createdAt)],
+);
+
+// Alarm hysteresis, shared across replicas. MQTT ingestion is deliberately NOT
+// leased — the shared subscription balances it on purpose — so two replicas
+// evaluate the same rules. With per-process state each kept its own view, so a
+// breach could be raised twice or a clear missed entirely.
+//
+// `since` is the instant the condition STARTED, which is also what a
+// "breached for N minutes" rule needs, and it has to survive a restart.
+export const alarmBreachState = mysqlTable(
+  "alarm_breach_state",
+  {
+    ruleId: bigint("rule_id", { mode: "number", unsigned: true }).notNull(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    breached: boolean("breached").notNull().default(false),
+    since: timestamp("since"),
+    // Set once the rule has actually fired, so a duration rule does not raise
+    // repeatedly while the condition persists.
+    raisedAt: timestamp("raised_at"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [primaryKey({ columns: [t.ruleId, t.meterId] })],
+);
+
 // Single-writer leases (api/lib/leader.ts). Exactly one replica at a time may
 // run a loop that commands plant; a replica that dies stops renewing and
 // another takes over once the lease lapses.
@@ -337,6 +409,38 @@ export const leaderLeases = mysqlTable("leader_leases", {
   holder: varchar("holder", { length: 128 }).notNull(),
   expiresAt: timestamp("expires_at").notNull(),
 });
+
+// §1.4: which tenant a self-announcing device belongs to.
+//
+// MQTT ingestion is a shared subscription, so the broker's authenticated
+// publisher identity never reaches us — a device that speaks for the first
+// time is just a UID on a topic. Serial numbers are known before hardware
+// ships, so an admin registers the UID in advance and the gateway is stamped
+// with that org the moment it appears. Without a registration the device still
+// lands unclaimed (orgs.unclaimedDevices), which is the honest outcome:
+// guessing a tenant is worse than showing the device in a queue.
+export const deviceRegistrations = mysqlTable(
+  "device_registrations",
+  {
+    id: serial("id").primaryKey(),
+    // Gateway UID (IMEI for C30, Gateway ID for G30) — same width as gateways.uid.
+    uid: varchar("uid", { length: 64 }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    // Optional: also place the gateway at a site on arrival.
+    siteId: bigint("site_id", { mode: "number", unsigned: true }),
+    note: varchar("note", { length: 255 }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Stamped when the hardware actually turned up, so the list shows which
+    // registrations are still outstanding.
+    claimedAt: timestamp("claimed_at"),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }),
+  },
+  // One registration per UID: two rows claiming the same device for different
+  // tenants is the one state this table must not be able to reach.
+  (t) => [uniqueIndex("device_reg_uid_unique").on(t.uid), index("device_reg_org_idx").on(t.orgId)],
+);
+export type DeviceRegistration = typeof deviceRegistrations.$inferSelect;
 
 export const orgs = mysqlTable(
   "orgs",

@@ -1,0 +1,15 @@
+-- §9.7 data quality: alarm rules that detect a frozen register.
+--
+-- A Modbus register whose sensor has died, or whose gateway is replaying a
+-- cached frame, keeps returning the SAME plausible number. The device stays
+-- online, every gt/lt rule sees a value inside its limits, and nothing fires —
+-- while that number goes on feeding EMS charge/discharge decisions and monthly
+-- billing reports. "Offline" is loud; "stuck" is silent, which makes it the
+-- more dangerous of the two.
+--
+-- A "stuck" rule reads `threshold` as SECONDS the value must remain unchanged,
+-- rather than as a limit in the metric's own unit. Detection is exact equality:
+-- a live sensor jitters in its last digits even when the measured quantity is
+-- steady, so a tolerance band would call a genuinely steady 50.00 Hz supply
+-- stuck, while bit-identical doubles are exactly what a frozen register emits.
+ALTER TABLE alarm_rules MODIFY COLUMN operator enum('gt','lt','stuck') NOT NULL;
