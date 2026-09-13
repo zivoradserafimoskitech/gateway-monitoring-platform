@@ -131,6 +131,12 @@ export async function ensureMeter(
         modbusAddress: slaveAddress,
         status: "online",
         lastSeenAt: new Date(),
+        // §1.4: inherit the gateway's tenant. A meter on a gateway that HAS an
+        // owner used to be created with org_id NULL anyway, so it was invisible
+        // to the very tenant that owns the gateway it hangs off — the device
+        // arrived on that tenant's own uplink, so there is nothing to guess.
+        orgId: gateway.orgId ?? null,
+        siteId: gateway.siteId ?? null,
       })
       .$returningId();
     const row = await db.select().from(meters).where(eq(meters.id, created[0].id)).limit(1);

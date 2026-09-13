@@ -11,7 +11,7 @@
 import mqtt, { type MqttClient } from "mqtt";
 import { eq, and, lt, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { gateways, meters, alarms, alarmRules, commands } from "@db/schema";
+import { gateways, meters, alarms, alarmRules, commands, deviceRegistrations } from "@db/schema";
 import type { Gateway } from "@db/schema";
 import { defaultTopicPrefix, defaultTransport, downlinkTopic } from "@contracts/topics";
 import { handleG30Message, handleC30Frame, getRegisterMaps, meterCache, isDuplicateKey } from "./handlers";
@@ -22,6 +22,7 @@ import { getTelemetryStats } from "../telemetry";
 import { markGatewaySeen } from "./liveness";
 import { offlineThresholdMs } from "./offline";
 import { notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
+import { parseDefaultOrgId, resolveProvisionTarget } from "./provision-org";
 
 const OFFLINE_AFTER_MS = 120_000;
 const SWEEP_INTERVAL_MS = 30_000;
@@ -86,6 +87,18 @@ async function ensureGateway(uid: string, topic: string): Promise<Gateway | null
   const firstSeg = topic.split("/")[0];
   const model = firstSeg === "d2g" ? ("C30" as const) : ("G30" as const);
   const db = getDb();
+  // §1.4: decide the tenant BEFORE the insert. Without this every
+  // auto-provisioned gateway landed with org_id NULL, which under org scoping
+  // means invisible to every tenant — the device ingests into a database
+  // nobody can see. A pre-registered UID wins; otherwise a single-tenant
+  // installation can name its one org; otherwise the device stays unclaimed
+  // and shows up in the superadmin queue.
+  const registration = await db
+    .select({ id: deviceRegistrations.id, orgId: deviceRegistrations.orgId, siteId: deviceRegistrations.siteId })
+    .from(deviceRegistrations)
+    .where(eq(deviceRegistrations.uid, uid))
+    .limit(1);
+  const target = resolveProvisionTarget(registration[0] ?? null, parseDefaultOrgId(process.env.MQTT_DEFAULT_ORG_ID));
   try {
     const inserted = await db
       .insert(gateways)
@@ -97,10 +110,27 @@ async function ensureGateway(uid: string, topic: string): Promise<Gateway | null
         topicPrefix: defaultTopicPrefix(model),
         status: "online",
         lastSeenAt: new Date(),
+        orgId: target.orgId,
+        siteId: target.siteId,
       })
       .$returningId();
     const rows = await db.select().from(gateways).where(eq(gateways.id, inserted[0].id)).limit(1);
-    console.log(`[mqtt] auto-provisioned gateway ${model} uid=${uid}`);
+    console.log(
+      `[mqtt] auto-provisioned gateway ${model} uid=${uid} org=${target.orgId ?? "none"} (${target.source})`,
+    );
+    // Close the registration so the list distinguishes "waiting for hardware"
+    // from "arrived". Best effort: failing to tick the row must never cost the
+    // device its provisioning.
+    if (registration[0]) {
+      try {
+        await db
+          .update(deviceRegistrations)
+          .set({ claimedAt: new Date(), gatewayId: inserted[0].id })
+          .where(eq(deviceRegistrations.id, registration[0].id));
+      } catch (e) {
+        console.warn(`[mqtt] could not mark registration ${uid} claimed:`, e);
+      }
+    }
     gwCache.set(uid, { at: Date.now(), gw: rows[0] });
     return rows[0];
   } catch {

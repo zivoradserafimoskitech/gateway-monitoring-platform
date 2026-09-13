@@ -396,6 +396,38 @@ export const leaderLeases = mysqlTable("leader_leases", {
   expiresAt: timestamp("expires_at").notNull(),
 });
 
+// §1.4: which tenant a self-announcing device belongs to.
+//
+// MQTT ingestion is a shared subscription, so the broker's authenticated
+// publisher identity never reaches us — a device that speaks for the first
+// time is just a UID on a topic. Serial numbers are known before hardware
+// ships, so an admin registers the UID in advance and the gateway is stamped
+// with that org the moment it appears. Without a registration the device still
+// lands unclaimed (orgs.unclaimedDevices), which is the honest outcome:
+// guessing a tenant is worse than showing the device in a queue.
+export const deviceRegistrations = mysqlTable(
+  "device_registrations",
+  {
+    id: serial("id").primaryKey(),
+    // Gateway UID (IMEI for C30, Gateway ID for G30) — same width as gateways.uid.
+    uid: varchar("uid", { length: 64 }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    // Optional: also place the gateway at a site on arrival.
+    siteId: bigint("site_id", { mode: "number", unsigned: true }),
+    note: varchar("note", { length: 255 }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Stamped when the hardware actually turned up, so the list shows which
+    // registrations are still outstanding.
+    claimedAt: timestamp("claimed_at"),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }),
+  },
+  // One registration per UID: two rows claiming the same device for different
+  // tenants is the one state this table must not be able to reach.
+  (t) => [uniqueIndex("device_reg_uid_unique").on(t.uid), index("device_reg_org_idx").on(t.orgId)],
+);
+export type DeviceRegistration = typeof deviceRegistrations.$inferSelect;
+
 export const orgs = mysqlTable(
   "orgs",
   {

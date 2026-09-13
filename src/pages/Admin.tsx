@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UsersCard } from "@/components/admin/UsersCard";
 import { AuditLogCard } from "@/components/admin/AuditLogCard";
 import { UnclaimedDevicesCard } from "@/components/admin/UnclaimedDevicesCard";
+import { DeviceRegistrationsCard } from "@/components/admin/DeviceRegistrationsCard";
 import { PollerStatusCard } from "@/components/admin/PollerStatusCard";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
 
@@ -52,6 +53,7 @@ export default function Admin() {
               ) : null}
             </TabsTrigger>
           )}
+          <TabsTrigger value="devices">{t.admin.regTitle}</TabsTrigger>
           <TabsTrigger value="poller">{t.admin.pollerTitle}</TabsTrigger>
         </TabsList>
         <TabsContent value="users" className="space-y-6 pt-4">
@@ -66,6 +68,9 @@ export default function Admin() {
             <UnclaimedDevicesCard />
           </TabsContent>
         )}
+        <TabsContent value="devices" className="pt-4">
+          <DeviceRegistrationsCard />
+        </TabsContent>
         <TabsContent value="poller" className="pt-4">
           <PollerStatusCard />
         </TabsContent>
