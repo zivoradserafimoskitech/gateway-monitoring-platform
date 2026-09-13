@@ -105,7 +105,7 @@ export function ApiKeysCard() {
               {t.apiKeysScopes[scopeLabelKey(s)]}
             </label>
           ))}
-          <span className="self-center text-xs text-slate-400">{t.apiKeysScopes.hint}</span>
+          <span className="self-center text-xs text-muted-foreground">{t.apiKeysScopes.hint}</span>
           <Button
             size="sm"
             disabled={create.isPending || !name.trim()}
@@ -127,7 +127,7 @@ export function ApiKeysCard() {
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
             <p className="mb-1 text-xs font-medium text-amber-800">{t.apiKeys.showOnce}</p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 break-all rounded bg-white px-2 py-1 font-mono text-xs">{freshKey}</code>
+              <code className="flex-1 break-all rounded bg-card px-2 py-1 font-mono text-xs">{freshKey}</code>
               <Button size="sm" variant="outline" onClick={() => void copy()}>
                 {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
               </Button>
@@ -157,7 +157,7 @@ export function ApiKeysCard() {
                 <TableCell>{k.name}</TableCell>
                 <TableCell className="font-mono text-xs">{k.prefix}…</TableCell>
                 <TableCell>{k.role}</TableCell>
-                <TableCell className="text-xs text-slate-500">
+                <TableCell className="text-xs text-muted-foreground">
                   {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "—"}
                 </TableCell>
                 <TableCell className="text-xs">
@@ -169,7 +169,7 @@ export function ApiKeysCard() {
                       )}
                     </span>
                   ) : (
-                    <span className="text-slate-400">{t.apiKeys.noExpiry}</span>
+                    <span className="text-muted-foreground">{t.apiKeys.noExpiry}</span>
                   )}
                 </TableCell>
                 <TableCell className="text-xs">
@@ -182,7 +182,7 @@ export function ApiKeysCard() {
                       ))}
                     </span>
                   ) : (
-                    <span className="text-slate-400">{t.apiKeysScopes.legacyReadOnly}</span>
+                    <span className="text-muted-foreground">{t.apiKeysScopes.legacyReadOnly}</span>
                   )}
                 </TableCell>
                 <TableCell>{k.revokedAt ? t.apiKeys.revokedStatus : t.apiKeys.activeStatus}</TableCell>

@@ -42,7 +42,7 @@ function BackupCodesView({ codes, onDone }: { codes: string[]; onDone: () => voi
       <p className="text-xs font-medium text-amber-800">{t.mfa.backupHint}</p>
       <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
         {codes.map((c) => (
-          <code key={c} className="rounded bg-white px-2 py-1 text-center font-mono text-xs">
+          <code key={c} className="rounded bg-card px-2 py-1 text-center font-mono text-xs">
             {c}
           </code>
         ))}
@@ -141,7 +141,7 @@ export function MfaCard() {
             </Badge>
           )}
           {enabled && status.data && (
-            <span className="text-xs font-normal text-slate-500">
+            <span className="text-xs font-normal text-muted-foreground">
               {t.mfa.backupLeft}: {status.data.backupCodesLeft}
             </span>
           )}
@@ -200,15 +200,15 @@ export function MfaCard() {
         {wizard === "setup" && (
           <div className="space-y-3 rounded-md border p-3">
             {!setup ? (
-              <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : (
               <>
-                <p className="text-sm text-slate-600">{t.mfa.setupScan}</p>
-                <img src={setup.qrDataUrl} alt="MFA QR" className="h-40 w-40 rounded border bg-white" />
+                <p className="text-sm text-muted-foreground">{t.mfa.setupScan}</p>
+                <img src={setup.qrDataUrl} alt="MFA QR" className="h-40 w-40 rounded border bg-card" />
                 <div className="space-y-1">
                   <Label className="text-xs">{t.mfa.manualSecret}</Label>
                   <div className="flex items-center gap-2">
-                    <code className="break-all rounded bg-slate-100 px-2 py-1 font-mono text-xs">{setup.secret}</code>
+                    <code className="break-all rounded bg-muted px-2 py-1 font-mono text-xs">{setup.secret}</code>
                     <Button size="sm" variant="ghost" onClick={() => void copySecret()}>
                       {copiedSecret ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
                     </Button>
@@ -239,7 +239,7 @@ export function MfaCard() {
         {/* regenerate backup codes: needs a current TOTP code */}
         {wizard === "regen" && (
           <div className="space-y-3 rounded-md border p-3">
-            <p className="text-sm text-slate-600">{t.mfa.regenHint}</p>
+            <p className="text-sm text-muted-foreground">{t.mfa.regenHint}</p>
             <CodeInput value={code} onChange={setCode} />
             <div className="flex gap-2">
               <Button size="sm" disabled={code.length !== 6 || regen.isPending} onClick={() => regen.mutate({ code })}>
@@ -256,7 +256,7 @@ export function MfaCard() {
         {/* disable: password + TOTP code */}
         {wizard === "disable" && (
           <div className="space-y-3 rounded-md border p-3">
-            <p className="text-sm text-slate-600">{t.mfa.disableHint}</p>
+            <p className="text-sm text-muted-foreground">{t.mfa.disableHint}</p>
             <div className="space-y-1">
               <Label className="text-xs">{t.mfa.passwordLabel}</Label>
               <Input

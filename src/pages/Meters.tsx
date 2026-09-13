@@ -55,7 +55,7 @@ export default function Meters() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t.meters.title}</h1>
-          <p className="text-sm text-slate-500">{t.meters.subtitle}</p>
+          <p className="text-sm text-muted-foreground">{t.meters.subtitle}</p>
         </div>
         <AddDeviceDialog />
       </div>
@@ -111,7 +111,7 @@ export default function Meters() {
                         <Link to={`/gateways/${m.gatewayId}`} className="text-emerald-700 hover:underline">
                           {m.gatewayName}
                         </Link>
-                        <span className="ml-1 font-mono text-slate-400">#{m.modbusAddress}</span>
+                        <span className="ml-1 font-mono text-muted-foreground">#{m.modbusAddress}</span>
                       </>
                     )}
                   </TableCell>
@@ -121,7 +121,7 @@ export default function Meters() {
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-slate-500">
+                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                     {t.common.noData}
                   </TableCell>
                 </TableRow>
@@ -231,7 +231,7 @@ function AddDeviceDialog() {
                 {(profiles.data ?? []).map((p) => (
                   <SelectItem key={p.model} value={p.model}>
                     <span className="font-medium">{p.brand ?? ""}</span> {p.label}
-                    <span className="ml-2 text-xs text-slate-400">
+                    <span className="ml-2 text-xs text-muted-foreground">
                       {p.deviceType} · {p.protocol}
                     </span>
                   </SelectItem>
@@ -270,7 +270,7 @@ function AddDeviceDialog() {
                 <TabsTrigger value="tcp" className="flex-1">{t.devices.directTcp}</TabsTrigger>
               </TabsList>
             </Tabs>
-            <p className="text-xs text-slate-500">{conn === "tcp" ? t.devices.tcpNote : t.devices.busNote}</p>
+            <p className="text-xs text-muted-foreground">{conn === "tcp" ? t.devices.tcpNote : t.devices.busNote}</p>
           </div>
 
           {conn === "bus" ? (

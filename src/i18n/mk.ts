@@ -694,6 +694,12 @@ export const mk: Dictionary = {
     lastError: "Последна грешка",
     backoff: "пауза",
   },
+  theme: {
+    label: "Тема",
+    light: "Светла",
+    dark: "Темна",
+    system: "Системска",
+  },
   lang: {
     en: "English",
     mk: "Македонски",

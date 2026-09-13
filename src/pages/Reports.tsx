@@ -84,7 +84,7 @@ export default function Reports() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.reports.title}</h1>
-        <p className="text-sm text-slate-500">{t.reports.subtitle}</p>
+        <p className="text-sm text-muted-foreground">{t.reports.subtitle}</p>
       </div>
 
       <Card>
@@ -148,7 +148,7 @@ export default function Reports() {
         </CardContent>
       </Card>
 
-      {!report.data && <p className="text-sm text-slate-500">{t.reports.selectScope}</p>}
+      {!report.data && <p className="text-sm text-muted-foreground">{t.reports.selectScope}</p>}
 
       {/* v8/D3: scheduled reports (generate + email on a schedule) */}
       <ReportSchedulesCard />
@@ -158,24 +158,24 @@ export default function Reports() {
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-600">{t.reports.reportFor}</CardTitle>
+                <CardTitle className="text-sm text-muted-foreground">{t.reports.reportFor}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-xl font-bold">{report.data.scopeLabel}</div>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-muted-foreground">
                   {t.reports.period}: {from} → {to}
                 </p>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-600">{t.reports.importKwh}</CardTitle>
+                <CardTitle className="text-sm text-muted-foreground">{t.reports.importKwh}</CardTitle>
               </CardHeader>
               <CardContent className="text-xl font-bold">{fmt(report.data.totalImportKwh, 1)} kWh</CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-600">{t.reports.exportKwh}</CardTitle>
+                <CardTitle className="text-sm text-muted-foreground">{t.reports.exportKwh}</CardTitle>
               </CardHeader>
               <CardContent className="text-xl font-bold">{fmt(report.data.totalExportKwh, 1)} kWh</CardContent>
             </Card>
@@ -186,7 +186,7 @@ export default function Reports() {
               <CardHeader>
                 <CardTitle className="text-base">
                   {m.meter.name}{" "}
-                  <span className="ml-2 text-sm font-normal text-slate-500">
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
                     {t.common.total}: {fmt(m.totalImportKwh, 1)} kWh · {t.reports.maxDemand}:{" "}
                     {fmt(m.maxDemandKw, 1)}
                   </span>
@@ -235,7 +235,7 @@ export default function Reports() {
                     ))}
                     {m.days.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="py-8 text-center text-sm text-slate-500">
+                        <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
                           {t.common.noData}
                         </TableCell>
                       </TableRow>

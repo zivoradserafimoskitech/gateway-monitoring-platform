@@ -97,26 +97,26 @@ export default function SiteDiagram() {
       <div>
         <Link
           to="/gateways"
-          className="mb-1 inline-flex items-center gap-1 text-xs text-slate-500 hover:underline"
+          className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
         >
           <ArrowLeft className="h-3 w-3" /> {t.gateways.title}
         </Link>
         <h1 className="text-2xl font-bold tracking-tight">
           {site ? `${site.name} — ${t.diagram.title}` : t.diagram.title}
         </h1>
-        <p className="text-sm text-slate-500">{t.diagram.subtitle}</p>
+        <p className="text-sm text-muted-foreground">{t.diagram.subtitle}</p>
       </div>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-base">{t.diagram.title}</CardTitle>
-          <div className="flex items-center gap-4 text-xs text-slate-500">
-            <span className="font-medium text-slate-600">{t.diagram.legend}:</span>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="font-medium text-muted-foreground">{t.diagram.legend}:</span>
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-full bg-emerald-600" /> {t.common.online}
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-gray-400" /> {t.common.offline}
+              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground" /> {t.common.offline}
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-full bg-red-600" /> {t.diagram.alarmActive}
@@ -125,11 +125,11 @@ export default function SiteDiagram() {
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="py-10 text-center text-sm text-slate-500">{t.common.loading}</p>
+            <p className="py-10 text-center text-sm text-muted-foreground">{t.common.loading}</p>
           ) : !site ? (
-            <p className="py-10 text-center text-sm text-slate-500">{t.diagram.siteNotFound}</p>
+            <p className="py-10 text-center text-sm text-muted-foreground">{t.diagram.siteNotFound}</p>
           ) : devices.length === 0 ? (
-            <p className="py-10 text-center text-sm text-slate-500">{t.diagram.noDevices}</p>
+            <p className="py-10 text-center text-sm text-muted-foreground">{t.diagram.noDevices}</p>
           ) : (
             <SingleLineDiagram
               mainMeter={mainMeterRow ? toNode(mainMeterRow) : null}

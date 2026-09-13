@@ -59,7 +59,7 @@ export function ChangePasswordCard() {
             value={next}
             onChange={(e) => setNext(e.target.value)}
           />
-          <p className="text-xs text-slate-500">{t.admin.passwordRule}</p>
+          <p className="text-xs text-muted-foreground">{t.admin.passwordRule}</p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="confirm-password">{t.admin.confirmPassword}</Label>

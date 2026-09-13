@@ -159,13 +159,13 @@ export function MaintenanceWindowsCard() {
                   <TableCell>{w.siteName ?? t.notif.maintAllSites}</TableCell>
                   <TableCell className="whitespace-nowrap text-sm">{fmtTime(w.startsAt)}</TableCell>
                   <TableCell className="whitespace-nowrap text-sm">{fmtTime(w.endsAt)}</TableCell>
-                  <TableCell className="text-sm text-slate-600">{w.note ?? "—"}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{w.note ?? "—"}</TableCell>
                   <TableCell>
                     <span
                       className={
                         now >= s && now <= e
                           ? "rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700"
-                          : "rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
+                          : "rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
                       }
                     >
                       {state}
@@ -185,7 +185,7 @@ export function MaintenanceWindowsCard() {
             })}
             {(windows.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={canWrite ? 6 : 5} className="text-sm text-slate-500">
+                <TableCell colSpan={canWrite ? 6 : 5} className="text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>

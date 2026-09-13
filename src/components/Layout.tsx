@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -135,7 +136,7 @@ export function Layout() {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex min-h-screen bg-muted/40">
       {/* Desktop rail: fixed, and hidden below lg where the drawer takes over. */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col border-r bg-slate-900 text-slate-100 lg:flex">
         <Brand />
@@ -144,7 +145,7 @@ export function Layout() {
       </aside>
 
       <div className="flex min-h-screen flex-1 flex-col lg:ml-60">
-        <header className="sticky top-0 z-10 flex h-14 items-center justify-between gap-2 border-b bg-white/80 px-4 backdrop-blur sm:px-6">
+        <header className="sticky top-0 z-10 flex h-14 items-center justify-between gap-2 border-b bg-background/80 px-4 backdrop-blur sm:px-6">
           <div className="flex items-center gap-2">
             <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
               <SheetTrigger asChild>
@@ -165,17 +166,17 @@ export function Layout() {
             </Sheet>
             {/* The drawer hides the brand on small screens, so the header
                 carries the current section instead of an empty gutter. */}
-            <span className="text-sm font-semibold text-slate-700 lg:hidden">
+            <span className="text-sm font-semibold text-foreground lg:hidden">
               {nav.find((n) => (n.end ? location.pathname === n.to : location.pathname.startsWith(n.to)))?.label ??
                 t.appName}
             </span>
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
             {me.data?.user && (
-              <span className="hidden items-center gap-2 text-sm text-slate-600 sm:flex">
+              <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
                 <UserCircle className="h-4 w-4" />
                 {me.data.user.name}
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                   {me.data.user.role}
                 </span>
               </span>
@@ -186,6 +187,7 @@ export function Layout() {
                 <span className="hidden sm:inline">{t.auth.signOut}</span>
               </Button>
             )}
+            <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="gap-2">

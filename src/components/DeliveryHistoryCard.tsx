@@ -57,7 +57,7 @@ export function DeliveryHistoryCard() {
           <TableBody>
             {(deliveries.data ?? []).map((d) => (
               <TableRow key={d.id}>
-                <TableCell className="whitespace-nowrap text-sm text-slate-500">{fmtTime(d.createdAt)}</TableCell>
+                <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{fmtTime(d.createdAt)}</TableCell>
                 <TableCell className="text-sm">{channelName(d.channelId)}</TableCell>
                 <TableCell className="text-sm">{kindLabel[d.kind] ?? d.kind}</TableCell>
                 <TableCell>
@@ -83,7 +83,7 @@ export function DeliveryHistoryCard() {
             ))}
             {(deliveries.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-sm text-slate-500">
+                <TableCell colSpan={6} className="text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>

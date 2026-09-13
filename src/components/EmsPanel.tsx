@@ -63,7 +63,7 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
 
   if (deviceType !== "bess") return null;
 
-  const inputCls = "h-8 rounded-md border border-slate-300 px-2 text-sm disabled:bg-slate-50";
+  const inputCls = "h-8 rounded-md border border-border px-2 text-sm disabled:bg-muted/40";
 
   const submitSchedule = async () => {
     setSError(null);
@@ -128,24 +128,24 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
         {/* ── Schedules ── */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">{t.ems.schedules}</h3>
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.ems.schedules}</h3>
             {canWrite && (
               <Button size="sm" variant="outline" onClick={() => setShowScheduleForm((v) => !v)}>
                 <Plus className="h-3 w-3" /> {t.ems.addSchedule}
               </Button>
             )}
           </div>
-          {(schedules.data ?? []).length === 0 && <p className="text-xs text-slate-500">{t.ems.noSchedules}</p>}
+          {(schedules.data ?? []).length === 0 && <p className="text-xs text-muted-foreground">{t.ems.noSchedules}</p>}
           <div className="space-y-1">
             {(schedules.data ?? []).map((s) => (
-              <div key={s.id} className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 p-2 text-sm">
+              <div key={s.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2 text-sm">
                 <span className="min-w-28 font-medium">{s.name}</span>
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-muted-foreground">
                   {t.ems.dayLabels.filter((_, d) => (s.dayOfWeekMask >> d) & 1).join(" ")} · {minToHhmm(s.startMin)}–{minToHhmm(s.endMin)}
                 </span>
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">{t.ems.modes[s.mode]}</span>
-                {s.targetKw != null && <span className="text-xs text-slate-500">{s.targetKw} kW</span>}
-                {s.targetSoc != null && <span className="text-xs text-slate-500">SOC {s.targetSoc}%</span>}
+                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{t.ems.modes[s.mode]}</span>
+                {s.targetKw != null && <span className="text-xs text-muted-foreground">{s.targetKw} kW</span>}
+                {s.targetSoc != null && <span className="text-xs text-muted-foreground">SOC {s.targetSoc}%</span>}
                 <span className="flex-1" />
                 {canWrite && (
                   <>
@@ -171,7 +171,7 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
             ))}
           </div>
           {showScheduleForm && canWrite && (
-            <div className="mt-2 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <input className={`${inputCls} w-40`} placeholder={t.ems.name} value={sName} onChange={(e) => setSName(e.target.value)} />
                 <select className={inputCls} value={sMode} onChange={(e) => setSMode(e.target.value as Mode)}>
@@ -180,19 +180,19 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
                   ))}
                 </select>
                 <input type="time" className={inputCls} value={sStart} onChange={(e) => setSStart(e.target.value)} />
-                <span className="text-xs text-slate-400">–</span>
+                <span className="text-xs text-muted-foreground">–</span>
                 <input type="time" className={inputCls} value={sEnd} onChange={(e) => setSEnd(e.target.value)} />
                 <input type="number" className={`${inputCls} w-28`} placeholder={`${t.ems.targetKw} (${t.ems.optional})`} value={sTargetKw} onChange={(e) => setSTargetKw(e.target.value)} />
                 <input type="number" className={`${inputCls} w-28`} placeholder={`${t.ems.targetSoc} (${t.ems.optional})`} value={sTargetSoc} onChange={(e) => setSTargetSoc(e.target.value)} />
               </div>
               <div className="flex flex-wrap items-center gap-1">
-                <span className="mr-1 text-xs text-slate-500">{t.ems.days}:</span>
+                <span className="mr-1 text-xs text-muted-foreground">{t.ems.days}:</span>
                 {t.ems.dayLabels.map((lbl, d) => (
                   <button
                     key={lbl}
                     type="button"
                     onClick={() => toggleDay(d)}
-                    className={`rounded px-2 py-1 text-xs ${(sMask >> d) & 1 ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"}`}
+                    className={`rounded px-2 py-1 text-xs ${(sMask >> d) & 1 ? "bg-emerald-600 text-white" : "bg-muted text-muted-foreground"}`}
                   >
                     {lbl}
                   </button>
@@ -211,18 +211,18 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
         {/* ── Peak shaving ── */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">{t.ems.peakShaving}</h3>
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.ems.peakShaving}</h3>
             {canWrite && (
               <Button size="sm" variant="outline" onClick={() => setShowPeakForm((v) => !v)}>
                 <Plus className="h-3 w-3" /> {t.ems.addConfig}
               </Button>
             )}
           </div>
-          {(peakConfigs.data ?? []).length === 0 && <p className="text-xs text-slate-500">{t.ems.noConfigs}</p>}
+          {(peakConfigs.data ?? []).length === 0 && <p className="text-xs text-muted-foreground">{t.ems.noConfigs}</p>}
           <div className="space-y-1">
             {(peakConfigs.data ?? []).map((c) => (
-              <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 p-2 text-sm">
-                <span className="text-xs text-slate-500">
+              <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2 text-sm">
+                <span className="text-xs text-muted-foreground">
                   {t.ems.sourceMeter} #{c.sourceMeterId} · {t.ems.thresholdKw} {c.thresholdKw} · {t.ems.hysteresisKw} {c.hysteresisKw} · {t.ems.maxDischargeKw} {c.maxDischargeKw}
                 </span>
                 <span className="flex-1" />
@@ -250,7 +250,7 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
             ))}
           </div>
           {showPeakForm && canWrite && (
-            <div className="mt-2 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <select className={`${inputCls} w-56`} value={pSource} onChange={(e) => setPSource(e.target.value)}>
                   <option value="">{t.ems.sourceMeter}</option>
@@ -276,10 +276,10 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
         {/* ── Auto commands feed ── */}
         {(autoCommands.data ?? []).length > 0 && (
           <div>
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{t.ems.autoCommands}</h3>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.ems.autoCommands}</h3>
             <div className="space-y-1 text-sm">
               {(autoCommands.data ?? []).map((c) => (
-                <div key={c.id} className="flex items-center justify-between border-b border-slate-100 py-1">
+                <div key={c.id} className="flex items-center justify-between border-b border-border py-1">
                   <span className="font-mono text-xs">
                     {c.controlKey}
                     {c.controlValue !== null && c.controlValue !== undefined ? ` = ${c.controlValue}` : ""}
@@ -292,13 +292,13 @@ export function EmsPanel({ meterId, deviceType }: { meterId: number; deviceType:
                   >
                     {c.status}
                   </span>
-                  <span className="text-xs text-slate-400">{fmtTime(c.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{fmtTime(c.createdAt)}</span>
                 </div>
               ))}
             </div>
           </div>
         )}
-        {!canWrite && <p className="text-xs text-slate-500">{t.ems.readonlyRole}</p>}
+        {!canWrite && <p className="text-xs text-muted-foreground">{t.ems.readonlyRole}</p>}
       </CardContent>
     </Card>
   );

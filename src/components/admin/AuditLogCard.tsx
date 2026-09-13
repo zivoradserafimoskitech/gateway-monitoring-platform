@@ -65,13 +65,13 @@ export function AuditLogCard() {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.id}>
-                <TableCell className="whitespace-nowrap text-sm text-slate-500">{fmtTime(r.createdAt)}</TableCell>
+                <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{fmtTime(r.createdAt)}</TableCell>
                 <TableCell className="text-sm">{r.email ?? "—"}</TableCell>
                 <TableCell className="font-mono text-xs">{r.procedure}</TableCell>
-                <TableCell className="max-w-md truncate text-sm text-slate-600" title={r.summary ?? ""}>
+                <TableCell className="max-w-md truncate text-sm text-muted-foreground" title={r.summary ?? ""}>
                   {r.summary ?? "—"}
                 </TableCell>
-                <TableCell className="text-xs text-slate-500">
+                <TableCell className="text-xs text-muted-foreground">
                   {r.ip ?? "—"}
                   {r.userAgent ? <div className="max-w-48 truncate" title={r.userAgent}>{r.userAgent}</div> : null}
                 </TableCell>
@@ -79,7 +79,7 @@ export function AuditLogCard() {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-sm text-slate-500">
+                <TableCell colSpan={5} className="text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>

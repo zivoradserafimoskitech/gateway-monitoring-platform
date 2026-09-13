@@ -9,9 +9,9 @@ export default function NotFound() {
   const { t } = useI18n();
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
-      <Compass className="h-10 w-10 text-slate-300" />
+      <Compass className="h-10 w-10 text-muted-foreground" />
       <h1 className="text-2xl font-bold tracking-tight">{t.common.notFoundTitle}</h1>
-      <p className="max-w-md text-sm text-slate-500">{t.common.notFoundHint}</p>
+      <p className="max-w-md text-sm text-muted-foreground">{t.common.notFoundHint}</p>
       <Button asChild variant="outline">
         <Link to="/">{t.common.backToDashboard}</Link>
       </Button>

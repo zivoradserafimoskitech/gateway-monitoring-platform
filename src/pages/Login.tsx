@@ -63,13 +63,13 @@ export default function Login() {
       if (ready && !loginMfa.isPending) loginMfa.mutate({ pendingToken, code: activeCode });
     };
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
-        <div className="w-full max-w-sm space-y-6 rounded-xl border bg-white p-8 shadow-sm">
+      <div className="flex min-h-screen items-center justify-center bg-muted/40">
+        <div className="w-full max-w-sm space-y-6 rounded-xl border bg-card p-8 shadow-sm">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-6 w-6 text-amber-500" />
             <h1 className="text-xl font-semibold">{t.mfa.loginTitle}</h1>
           </div>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             {useBackup ? t.mfa.loginBackupHint : t.mfa.loginHint}
           </p>
           {useBackup ? (
@@ -117,7 +117,7 @@ export default function Login() {
             </button>
             <button
               type="button"
-              className="text-slate-400 hover:underline"
+              className="text-muted-foreground hover:underline"
               onClick={() => {
                 setPendingToken(null);
                 setCode("");
@@ -133,8 +133,8 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50">
-      <div className="w-full max-w-sm space-y-6 rounded-xl border bg-white p-8 shadow-sm">
+    <div className="flex min-h-screen items-center justify-center bg-muted/40">
+      <div className="w-full max-w-sm space-y-6 rounded-xl border bg-card p-8 shadow-sm">
         <div className="flex items-center gap-2">
           <Zap className="h-6 w-6 text-amber-500" />
           <h1 className="text-xl font-semibold">VoltTrade Cloud</h1>

@@ -85,12 +85,12 @@ export function UnclaimedDevicesCard() {
       </CardHeader>
       <CardContent className="space-y-6">
         {empty ? (
-          <p className="text-sm text-slate-500">{t.admin.unclaimedEmpty}</p>
+          <p className="text-sm text-muted-foreground">{t.admin.unclaimedEmpty}</p>
         ) : (
           <>
             {data.gateways.length > 0 && (
               <div className="space-y-2">
-                <h3 className="text-sm font-medium text-slate-700">{t.nav.gateways}</h3>
+                <h3 className="text-sm font-medium text-foreground">{t.nav.gateways}</h3>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -105,7 +105,7 @@ export function UnclaimedDevicesCard() {
                       <TableRow key={g.id}>
                         <TableCell className="font-mono text-xs">{g.uid}</TableCell>
                         <TableCell>{g.name}</TableCell>
-                        <TableCell className="text-sm text-slate-500">{fmtTime(g.lastSeenAt)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtTime(g.lastSeenAt)}</TableCell>
                         <TableCell>
                           <div className="flex items-center justify-end gap-2">
                             {orgSelect(`g${g.id}`)}
@@ -125,12 +125,12 @@ export function UnclaimedDevicesCard() {
                     ))}
                   </TableBody>
                 </Table>
-                <p className="text-xs text-slate-500">{t.admin.claimCascade}</p>
+                <p className="text-xs text-muted-foreground">{t.admin.claimCascade}</p>
               </div>
             )}
             {data.devices.length > 0 && (
               <div className="space-y-2">
-                <h3 className="text-sm font-medium text-slate-700">{t.nav.meters}</h3>
+                <h3 className="text-sm font-medium text-foreground">{t.nav.meters}</h3>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -148,8 +148,8 @@ export function UnclaimedDevicesCard() {
                         <TableCell>
                           <DeviceTypeBadge type={m.deviceType ?? "meter"} />
                         </TableCell>
-                        <TableCell className="text-sm text-slate-500">{m.model ?? "—"}</TableCell>
-                        <TableCell className="text-sm text-slate-500">{fmtTime(m.lastSeenAt)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{m.model ?? "—"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtTime(m.lastSeenAt)}</TableCell>
                         <TableCell>
                           <div className="flex items-center justify-end gap-2">
                             {orgSelect(`m${m.id}`)}

@@ -38,15 +38,15 @@ export class ErrorBoundary extends Component<Props, State> {
     // dictionary or a provider may be exactly what failed.
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 p-6 text-center">
-        <h1 className="text-xl font-semibold text-slate-800">Something went wrong on this page</h1>
-        <p className="max-w-lg text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-foreground">Something went wrong on this page</h1>
+        <p className="max-w-lg text-sm text-muted-foreground">
           The rest of the application is still running. Reload, or go back and try again.
         </p>
-        <pre className="max-w-full overflow-x-auto rounded bg-slate-100 p-3 text-left text-xs text-slate-600">
+        <pre className="max-w-full overflow-x-auto rounded bg-muted p-3 text-left text-xs text-muted-foreground">
           {this.state.error.message}
         </pre>
         <button
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+          className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/40"
           onClick={() => this.setState({ error: null })}
         >
           Try again

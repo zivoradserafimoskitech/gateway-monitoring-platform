@@ -28,7 +28,7 @@ export default function Admin() {
     return (
       <div className="space-y-2">
         <h1 className="text-2xl font-bold tracking-tight">{t.admin.title}</h1>
-        <p className="text-sm text-slate-500">{t.admin.forbidden}</p>
+        <p className="text-sm text-muted-foreground">{t.admin.forbidden}</p>
       </div>
     );
   }
@@ -37,7 +37,7 @@ export default function Admin() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.admin.title}</h1>
-        <p className="max-w-3xl text-sm text-slate-500">{t.admin.hint}</p>
+        <p className="max-w-3xl text-sm text-muted-foreground">{t.admin.hint}</p>
       </div>
       <Tabs defaultValue="users">
         <TabsList className="flex-wrap">

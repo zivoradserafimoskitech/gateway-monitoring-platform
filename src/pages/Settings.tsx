@@ -22,7 +22,7 @@ export default function Settings() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.settings.title}</h1>
-        <p className="max-w-3xl text-sm text-slate-500">{t.settings.profilesHint}</p>
+        <p className="max-w-3xl text-sm text-muted-foreground">{t.settings.profilesHint}</p>
       </div>
       <Tabs defaultValue="profiles">
         <TabsList className="flex-wrap">

@@ -124,7 +124,7 @@ export default function Ota() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t.ota.title}</h1>
-          <p className="text-sm text-slate-500">{t.ota.subtitle}</p>
+          <p className="text-sm text-muted-foreground">{t.ota.subtitle}</p>
         </div>
         {canWrite && (
           <Button className="gap-2" disabled={gatewayId == null} onClick={() => setOpen(true)}>
@@ -160,26 +160,26 @@ export default function Ota() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-md border border-slate-200 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">{t.ota.lastSeenAt}</p>
+            <div className="rounded-md border border-border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.ota.lastSeenAt}</p>
               <p className="text-sm">{d?.lastSeenAt ? fmtTime(d.lastSeenAt) : "—"}</p>
             </div>
-            <div className="rounded-md border border-slate-200 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">{t.ota.msgPerMin}</p>
+            <div className="rounded-md border border-border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.ota.msgPerMin}</p>
               <p className="font-mono text-sm">{d ? d.msgPerMin : "—"}</p>
             </div>
-            <div className="rounded-md border border-slate-200 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">{t.ota.activeJobs}</p>
+            <div className="rounded-md border border-border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.ota.activeJobs}</p>
               <p className="font-mono text-sm">{d?.activeOtaJobs ?? "—"}</p>
             </div>
-            <div className="rounded-md border border-slate-200 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">{t.ota.samples5min}</p>
+            <div className="rounded-md border border-border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t.ota.samples5min}</p>
               <p className="font-mono text-sm">{d?.samples5min ?? "—"}</p>
             </div>
           </div>
           {d?.poller && d.poller.length > 0 && (
-            <div className="rounded-md border border-slate-200 p-3 text-sm">
-              <p className="mb-1 text-xs uppercase tracking-wide text-slate-500">{t.ota.pollerStats}</p>
+            <div className="rounded-md border border-border p-3 text-sm">
+              <p className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">{t.ota.pollerStats}</p>
               <div className="space-y-1">
                 {d.poller.map((p) => (
                   <div key={p.id} className="flex gap-2 text-xs">
@@ -209,7 +209,7 @@ export default function Ota() {
         </CardHeader>
         <CardContent className="p-0">
           {(jobs.data ?? []).length === 0 ? (
-            <p className="py-10 text-center text-sm text-slate-500">{t.ota.empty}</p>
+            <p className="py-10 text-center text-sm text-muted-foreground">{t.ota.empty}</p>
           ) : (
             <Table>
               <TableHeader>
@@ -244,7 +244,7 @@ export default function Ota() {
                     </TableCell>
                     <TableCell className="text-xs">{j.attempts}</TableCell>
                     <TableCell
-                      className={`max-w-48 truncate text-xs ${j.error ? "text-red-600" : "text-slate-400"}`}
+                      className={`max-w-48 truncate text-xs ${j.error ? "text-red-600" : "text-muted-foreground"}`}
                       title={j.error ?? undefined}
                     >
                       {j.error ?? "—"}

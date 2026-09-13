@@ -13,7 +13,7 @@ type Setpoint = { ts: string; kw: number };
 function kwBadge(kw: number): { text: string; cls: string } {
   if (kw > 0) return { text: `+${kw.toFixed(1)} kW`, cls: "text-amber-600" }; // discharge
   if (kw < 0) return { text: `${kw.toFixed(1)} kW`, cls: "text-emerald-600" }; // charge
-  return { text: "0 kW", cls: "text-slate-400" }; // idle
+  return { text: "0 kW", cls: "text-muted-foreground" }; // idle
 }
 
 export function EmsPlanCard({ meterId }: { meterId: number }) {
@@ -43,16 +43,16 @@ export function EmsPlanCard({ meterId }: { meterId: number }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {!active && <p className="text-sm text-slate-400">{t.emsPlan.empty}</p>}
+        {!active && <p className="text-sm text-muted-foreground">{t.emsPlan.empty}</p>}
         {active && (
           <>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
               <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">{t.emsPlan.active}</span>
               <span className="font-mono text-xs">{active.source}</span>
-              <span className="text-xs text-slate-500">
+              <span className="text-xs text-muted-foreground">
                 {new Date(active.validFrom).toLocaleString()} → {new Date(active.validTo).toLocaleString()}
               </span>
-              <span className="text-xs text-slate-400">#{active.id}</span>
+              <span className="text-xs text-muted-foreground">#{active.id}</span>
             </div>
             <Table>
               <TableHeader>
@@ -67,10 +67,10 @@ export function EmsPlanCard({ meterId }: { meterId: number }) {
                   const b = kwBadge(s.kw);
                   const isNow = i === 0 && new Date(s.ts).getTime() <= now;
                   return (
-                    <TableRow key={s.ts} className={isNow ? "bg-slate-50 font-medium" : ""}>
+                    <TableRow key={s.ts} className={isNow ? "bg-muted/40 font-medium" : ""}>
                       <TableCell className="text-xs">{new Date(s.ts).toLocaleString()}</TableCell>
                       <TableCell className={`font-mono text-xs ${b.cls}`}>{b.text}</TableCell>
-                      <TableCell className="text-xs text-slate-500">
+                      <TableCell className="text-xs text-muted-foreground">
                         {s.kw > 0 ? t.emsPlan.discharge : s.kw < 0 ? t.emsPlan.charge : t.emsPlan.idle}
                       </TableCell>
                     </TableRow>
@@ -82,11 +82,11 @@ export function EmsPlanCard({ meterId }: { meterId: number }) {
         )}
         {history.length > 0 && (
           <div>
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{t.emsPlan.history}</h3>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.emsPlan.history}</h3>
             <div className="space-y-0.5">
               {history.map((p) => (
-                <div key={p.id} className="flex items-center gap-3 text-xs text-slate-500">
-                  <span className={`rounded px-1.5 py-0.5 ${p.status === "expired" ? "bg-slate-100" : "bg-orange-100 text-orange-700"}`}>{p.status}</span>
+                <div key={p.id} className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className={`rounded px-1.5 py-0.5 ${p.status === "expired" ? "bg-muted" : "bg-orange-100 text-orange-700"}`}>{p.status}</span>
                   <span className="font-mono">{p.source}</span>
                   <span>
                     {new Date(p.validFrom).toLocaleString()} → {new Date(p.validTo).toLocaleString()}

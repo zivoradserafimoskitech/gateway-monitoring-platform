@@ -102,7 +102,7 @@ export function UsersCard() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                <p className="text-xs text-slate-500">{t.admin.passwordRule}</p>
+                <p className="text-xs text-muted-foreground">{t.admin.passwordRule}</p>
               </div>
               <div className="space-y-1.5">
                 <Label>{t.admin.role}</Label>
@@ -180,7 +180,7 @@ export function UsersCard() {
                     </span>
                   ) : null}
                   {u.disabled ? (
-                    <span className="ml-1.5 rounded-full bg-slate-200 px-2 py-0.5 text-xs text-slate-600">
+                    <span className="ml-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                       {t.admin.disabled}
                     </span>
                   ) : null}
@@ -202,10 +202,10 @@ export function UsersCard() {
                     </SelectContent>
                   </Select>
                 </TableCell>
-                <TableCell className="text-sm text-slate-600">
+                <TableCell className="text-sm text-muted-foreground">
                   {u.totpEnabled ? t.mfa.statusEnabled : t.mfa.statusDisabled}
                 </TableCell>
-                <TableCell className="text-sm text-slate-500">{fmtTime(u.createdAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{fmtTime(u.createdAt)}</TableCell>
                 <TableCell className="space-x-2 text-right whitespace-nowrap">
                   <Button
                     variant="outline"
@@ -227,7 +227,7 @@ export function UsersCard() {
             ))}
             {(users.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-sm text-slate-500">
+                <TableCell colSpan={6} className="text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>
@@ -259,7 +259,7 @@ export function UsersCard() {
               value={resetPassword}
               onChange={(e) => setResetPassword(e.target.value)}
             />
-            <p className="text-xs text-slate-500">{t.admin.passwordRule}</p>
+            <p className="text-xs text-muted-foreground">{t.admin.passwordRule}</p>
           </div>
           <DialogFooter>
             <Button

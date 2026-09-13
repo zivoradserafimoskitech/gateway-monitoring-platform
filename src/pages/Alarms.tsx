@@ -154,7 +154,7 @@ function EventsTable({ status }: { status: "active" | "acknowledged" | "resolved
             ))}
             {(events.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-sm text-slate-500">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   {t.alarms.noEvents}
                 </TableCell>
               </TableRow>
@@ -240,14 +240,14 @@ function RulesTable() {
                 </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="icon" onClick={() => del.mutate({ id: r.id })}>
-                    <Trash2 className="h-4 w-4 text-slate-400" />
+                    <Trash2 className="h-4 w-4 text-muted-foreground" />
                   </Button>
                 </TableCell>
               </TableRow>
             ))}
             {(rules.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-sm text-slate-500">
+                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>

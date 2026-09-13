@@ -125,7 +125,7 @@ export function NotificationChannelsCard() {
             ))}
             {(channels.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-sm text-slate-400">
+                <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
                   {t.notif.empty}
                 </TableCell>
               </TableRow>

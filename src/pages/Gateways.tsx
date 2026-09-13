@@ -77,7 +77,7 @@ export default function Gateways() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t.gateways.title}</h1>
-          <p className="text-sm text-slate-500">{t.gateways.subtitle}</p>
+          <p className="text-sm text-muted-foreground">{t.gateways.subtitle}</p>
         </div>
         <Button onClick={() => setOpen(true)} className="gap-2">
           <Plus className="h-4 w-4" /> {t.gateways.addGateway}
@@ -133,7 +133,7 @@ export default function Gateways() {
                         })
                       }
                     >
-                      <Pencil className="h-4 w-4 text-slate-400" />
+                      <Pencil className="h-4 w-4 text-muted-foreground" />
                     </Button>
                     <ConfirmButton
                       title={t.gateways.deleteConfirm}
@@ -145,7 +145,7 @@ export default function Gateways() {
               ))}
               {(gateways.data ?? []).length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-sm text-slate-500">
+                  <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                     {t.common.noData}. {t.gateways.addHint}
                   </TableCell>
                 </TableRow>
@@ -265,7 +265,7 @@ export default function Gateways() {
                 </Select>
               </div>
             </div>
-            <p className="text-xs text-slate-500">{t.gateways.addHint}</p>
+            <p className="text-xs text-muted-foreground">{t.gateways.addHint}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
@@ -383,10 +383,10 @@ function SiteManager() {
       </div>
       <ul className="flex flex-wrap gap-2">
         {(sites.data ?? []).map((s) => (
-          <li key={s.id} className="flex items-center gap-1.5 rounded-full bg-slate-100 py-1 pr-1 pl-3 text-sm">
+          <li key={s.id} className="flex items-center gap-1.5 rounded-full bg-muted py-1 pr-1 pl-3 text-sm">
             {s.name}
             {s.timezone && s.timezone !== "UTC" && (
-              <span className="text-xs text-slate-500">{s.timezone}</span>
+              <span className="text-xs text-muted-foreground">{s.timezone}</span>
             )}
             <Link
               to={`/sites/${s.id}/diagram`}
@@ -403,7 +403,7 @@ function SiteManager() {
                 setEdit({ id: s.id, name: s.name, address: s.address ?? "", timezone: s.timezone || "UTC" })
               }
             >
-              <Pencil className="h-3 w-3 text-slate-400" />
+              <Pencil className="h-3 w-3 text-muted-foreground" />
             </Button>
             <ConfirmButton
               title={`${t.settings.removeSite}: ${s.name}`}
@@ -416,7 +416,7 @@ function SiteManager() {
             </ConfirmButton>
           </li>
         ))}
-        {(sites.data ?? []).length === 0 && <li className="text-sm text-slate-500">{t.common.noData}</li>}
+        {(sites.data ?? []).length === 0 && <li className="text-sm text-muted-foreground">{t.common.noData}</li>}
       </ul>
 
       <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
@@ -456,7 +456,7 @@ function SiteManager() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-slate-500">{t.settings.timezoneHint}</p>
+                <p className="text-xs text-muted-foreground">{t.settings.timezoneHint}</p>
               </div>
             </div>
           )}

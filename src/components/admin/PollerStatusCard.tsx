@@ -19,7 +19,7 @@ export function PollerStatusCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <span
-            className={cn("h-2 w-2 rounded-full", status.data?.running ? "bg-emerald-500" : "bg-slate-400")}
+            className={cn("h-2 w-2 rounded-full", status.data?.running ? "bg-emerald-500" : "bg-muted-foreground")}
           />
           {t.admin.pollerTitle}
         </CardTitle>
@@ -29,7 +29,7 @@ export function PollerStatusCard() {
       </CardHeader>
       <CardContent>
         {devices.length === 0 ? (
-          <p className="text-sm text-slate-500">{t.admin.pollerNoDevices}</p>
+          <p className="text-sm text-muted-foreground">{t.admin.pollerNoDevices}</p>
         ) : (
           <Table>
             <TableHeader>
@@ -64,7 +64,7 @@ export function PollerStatusCard() {
                   </TableCell>
                   <TableCell className="text-sm">{d.polls}</TableCell>
                   <TableCell className={cn("text-sm", d.failures > 0 && "text-red-600")}>{d.failures}</TableCell>
-                  <TableCell className="text-sm text-slate-500">{fmtTime(d.lastOkAt)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{fmtTime(d.lastOkAt)}</TableCell>
                   <TableCell className="max-w-64 truncate text-xs text-red-600" title={d.lastError ?? ""}>
                     {d.lastError ?? "—"}
                   </TableCell>

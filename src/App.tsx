@@ -28,14 +28,14 @@ export default function App() {
   const me = trpc.auth.me.useQuery(undefined, { retry: false, staleTime: 60_000 });
 
   if (me.isLoading) {
-    return <div className="flex min-h-screen items-center justify-center text-slate-400">…</div>;
+    return <div className="flex min-h-screen items-center justify-center text-muted-foreground">…</div>;
   }
   // Login screen only when the server enforces auth and there is no session.
   if (me.data?.authRequired && !me.data.user) {
     return (
       <>
         <Login />
-        <Toaster richColors position="bottom-right" theme="light" />
+        <Toaster richColors position="bottom-right" />
       </>
     );
   }
@@ -63,7 +63,7 @@ export default function App() {
           </Route>
         </Routes>
       </ErrorBoundary>
-      <Toaster richColors position="bottom-right" theme="light" />
+      <Toaster richColors position="bottom-right" />
     </>
   );
 }

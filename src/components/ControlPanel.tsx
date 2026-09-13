@@ -71,7 +71,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
           <p className="rounded-md bg-amber-50 p-2 text-sm font-medium text-amber-800">
             {t.control.unavailableUnverified}
           </p>
-          <p className="text-xs text-slate-500">{t.control.unverifiedHint}</p>
+          <p className="text-xs text-muted-foreground">{t.control.unverifiedHint}</p>
         </CardContent>
       </Card>
     );
@@ -117,16 +117,16 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         )}
         <div className="space-y-2">
           {entries.map(([key, def]) => (
-            <div key={key} className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 p-2">
+            <div key={key} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
               <div className="min-w-40">
                 <div className="text-sm font-medium">{def.description ?? key}</div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-muted-foreground">
                   {key} · reg {def.address} · [{def.min}..{def.max}]{def.unit ? ` ${def.unit}` : ""}
                 </div>
               </div>
               <input
                 type="number"
-                className="h-8 w-28 rounded-md border border-slate-300 px-2 text-sm disabled:bg-slate-50"
+                className="h-8 w-28 rounded-md border border-border px-2 text-sm disabled:bg-muted/40"
                 placeholder={`${def.min}..${def.max}`}
                 min={def.min}
                 max={def.max}
@@ -146,7 +146,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
               </Button>
             </div>
           ))}
-          {!canWrite && <p className="text-xs text-slate-500">{t.control.readonlyRole}</p>}
+          {!canWrite && <p className="text-xs text-muted-foreground">{t.control.readonlyRole}</p>}
         </div>
         {feedback && (
           <p className={`rounded-md p-2 text-sm ${feedback.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
@@ -155,10 +155,10 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         )}
         {(history.data ?? []).length > 0 && (
           <div>
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{t.control.history}</h3>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.control.history}</h3>
             <div className="space-y-1 text-sm">
               {(history.data ?? []).map((c) => (
-                <div key={c.id} className="flex items-center justify-between border-b border-slate-100 py-1">
+                <div key={c.id} className="flex items-center justify-between border-b border-border py-1">
                   <span className="font-mono text-xs">
                     {c.controlKey ?? c.kind}
                     {c.controlValue !== null && c.controlValue !== undefined ? ` = ${c.controlValue}` : ""}
@@ -170,7 +170,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
                   >
                     {c.status}
                   </span>
-                  <span className="text-xs text-slate-400">{fmtTime(c.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{fmtTime(c.createdAt)}</span>
                 </div>
               ))}
             </div>

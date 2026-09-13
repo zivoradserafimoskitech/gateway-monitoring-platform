@@ -148,14 +148,14 @@ export function DeviceRegistrationsCard() {
                 <TableCell className="font-mono text-xs">{r.uid}</TableCell>
                 {isSuper && <TableCell>{r.orgName ?? `#${r.orgId}`}</TableCell>}
                 <TableCell className="text-sm">{r.siteName ?? "—"}</TableCell>
-                <TableCell className="text-sm text-slate-600">{r.note ?? "—"}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{r.note ?? "—"}</TableCell>
                 <TableCell>
                   {r.claimedAt ? (
                     <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
                       {t.admin.regArrived} · {fmtTime(r.claimedAt)}
                     </span>
                   ) : (
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                       {t.admin.regWaiting}
                     </span>
                   )}
@@ -171,7 +171,7 @@ export function DeviceRegistrationsCard() {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={isSuper ? 6 : 5} className="text-sm text-slate-500">
+                <TableCell colSpan={isSuper ? 6 : 5} className="text-sm text-muted-foreground">
                   {t.admin.regEmpty}
                 </TableCell>
               </TableRow>

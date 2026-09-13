@@ -692,6 +692,12 @@ export const en = {
     lastError: "Last error",
     backoff: "backoff",
   },
+  theme: {
+    label: "Theme",
+    light: "Light",
+    dark: "Dark",
+    system: "System",
+  },
   lang: {
     en: "English",
     mk: "Македонски",
