@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { GlobalSearch } from "@/components/GlobalSearch";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -187,6 +188,7 @@ export function Layout() {
                 <span className="hidden sm:inline">{t.auth.signOut}</span>
               </Button>
             )}
+            <GlobalSearch />
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

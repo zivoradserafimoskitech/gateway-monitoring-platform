@@ -694,6 +694,13 @@ export const mk: Dictionary = {
     lastError: "Последна грешка",
     backoff: "пауза",
   },
+  search: {
+    label: "Пребарај",
+    placeholder: "Пребарај гејтвеи, уреди, локации…",
+    hint: "Скокни до гејтвеј, уред или локација",
+    empty: "Нема совпаѓања.",
+    jumpTo: "Оди на",
+  },
   theme: {
     label: "Тема",
     light: "Светла",

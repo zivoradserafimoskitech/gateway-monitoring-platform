@@ -692,6 +692,13 @@ export const en = {
     lastError: "Last error",
     backoff: "backoff",
   },
+  search: {
+    label: "Search",
+    placeholder: "Search gateways, devices, sites…",
+    hint: "Jump to a gateway, device or site",
+    empty: "Nothing matches.",
+    jumpTo: "Go to",
+  },
   theme: {
     label: "Theme",
     light: "Light",

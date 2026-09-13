@@ -31,12 +31,25 @@ import {
 } from "@/components/ui/table";
 import { Network, Pencil, Plus, Trash2 } from "lucide-react";
 import { ConfirmButton } from "@/components/ConfirmButton";
+import { SortHeader, useSortable } from "@/hooks/use-sortable";
 import { toast } from "sonner";
 
 export default function Gateways() {
   const { t } = useI18n();
   const utils = trpc.useUtils();
   const gateways = trpc.gateways.list.useQuery(undefined, { refetchInterval: 5000 });
+  // §8: click-to-sort. "Which gateway has been quiet longest" was previously a
+  // question you answered by reading every row.
+  const { sort, toggle, sorted } = useSortable();
+  const rows = sorted(gateways.data ?? [], {
+    status: (g) => g.status,
+    name: (g) => g.name,
+    model: (g) => g.model,
+    uid: (g) => g.uid,
+    site: (g) => g.siteName,
+    meters: (g) => g.meterCount,
+    lastSeen: (g) => (g.lastSeenAt ? new Date(g.lastSeenAt) : null),
+  });
   const sites = trpc.sites.list.useQuery();
   const [open, setOpen] = useState(false);
   const [uid, setUid] = useState("");
@@ -89,19 +102,19 @@ export default function Gateways() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t.common.status}</TableHead>
-                <TableHead>{t.common.name}</TableHead>
-                <TableHead>{t.common.model}</TableHead>
-                <TableHead>{t.gateways.uid}</TableHead>
+                <SortHeader column="status" sort={sort} onToggle={toggle}>{t.common.status}</SortHeader>
+                <SortHeader column="name" sort={sort} onToggle={toggle}>{t.common.name}</SortHeader>
+                <SortHeader column="model" sort={sort} onToggle={toggle}>{t.common.model}</SortHeader>
+                <SortHeader column="uid" sort={sort} onToggle={toggle}>{t.gateways.uid}</SortHeader>
                 <TableHead>{t.gateways.transport}</TableHead>
-                <TableHead>{t.common.site}</TableHead>
-                <TableHead>{t.gateways.meters}</TableHead>
-                <TableHead>{t.common.lastSeen}</TableHead>
+                <SortHeader column="site" sort={sort} onToggle={toggle}>{t.common.site}</SortHeader>
+                <SortHeader column="meters" sort={sort} onToggle={toggle}>{t.gateways.meters}</SortHeader>
+                <SortHeader column="lastSeen" sort={sort} onToggle={toggle}>{t.common.lastSeen}</SortHeader>
                 <TableHead className="text-right">{t.common.actions}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(gateways.data ?? []).map((g) => (
+              {rows.map((g) => (
                 <TableRow key={g.id}>
                   <TableCell>
                     <StatusBadge status={g.status} />
@@ -143,7 +156,7 @@ export default function Gateways() {
                   </TableCell>
                 </TableRow>
               ))}
-              {(gateways.data ?? []).length === 0 && (
+              {rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                     {t.common.noData}. {t.gateways.addHint}

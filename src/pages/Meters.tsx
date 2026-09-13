@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { trpc } from "@/providers/trpc";
+import { SortHeader, useSortable } from "@/hooks/use-sortable";
 import { useI18n } from "@/i18n";
 import { StatusBadge, DeviceTypeBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent } from "@/components/ui/card";
@@ -40,10 +41,22 @@ export default function Meters() {
   const [typeFilter, setTypeFilter] = useState<(typeof TYPE_FILTERS)[number]>("all");
   const meters = trpc.meters.list.useQuery(undefined, { refetchInterval: 5000 });
 
-  const rows = useMemo(() => {
+  const filtered = useMemo(() => {
     const all = meters.data ?? [];
     return typeFilter === "all" ? all : all.filter((m) => (m.deviceType ?? "meter") === typeFilter);
   }, [meters.data, typeFilter]);
+
+  // §8: click-to-sort on top of the existing type filter.
+  const { sort, toggle, sorted } = useSortable();
+  const rows = sorted(filtered, {
+    status: (m) => m.status,
+    name: (m) => m.name,
+    type: (m) => m.deviceType ?? "meter",
+    brand: (m) => m.brand,
+    model: (m) => m.model,
+    site: (m) => m.siteName,
+    lastSeen: (m) => (m.lastSeenAt ? new Date(m.lastSeenAt) : null),
+  });
 
   const typeLabel = (ty: string) =>
     ty === "all"
@@ -75,14 +88,14 @@ export default function Meters() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t.common.status}</TableHead>
-                <TableHead>{t.common.name}</TableHead>
-                <TableHead>{t.devices.type}</TableHead>
-                <TableHead>{t.devices.brand}</TableHead>
-                <TableHead>{t.common.model}</TableHead>
+                <SortHeader column="status" sort={sort} onToggle={toggle}>{t.common.status}</SortHeader>
+                <SortHeader column="name" sort={sort} onToggle={toggle}>{t.common.name}</SortHeader>
+                <SortHeader column="type" sort={sort} onToggle={toggle}>{t.devices.type}</SortHeader>
+                <SortHeader column="brand" sort={sort} onToggle={toggle}>{t.devices.brand}</SortHeader>
+                <SortHeader column="model" sort={sort} onToggle={toggle}>{t.common.model}</SortHeader>
                 <TableHead>{t.devices.connection}</TableHead>
-                <TableHead>{t.common.site}</TableHead>
-                <TableHead>{t.common.lastSeen}</TableHead>
+                <SortHeader column="site" sort={sort} onToggle={toggle}>{t.common.site}</SortHeader>
+                <SortHeader column="lastSeen" sort={sort} onToggle={toggle}>{t.common.lastSeen}</SortHeader>
               </TableRow>
             </TableHeader>
             <TableBody>
