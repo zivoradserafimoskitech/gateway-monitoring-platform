@@ -230,7 +230,21 @@ export default function Reports() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">{fmt(d.avgPowerFactor, 3)}</TableCell>
-                        <TableCell className="text-right">{d.samples}</TableCell>
+                        <TableCell className="text-right">
+                          {d.samples}
+                          {/* §9.7: a count alone says nothing — 96 is excellent
+                              for a 15-minute meter and catastrophic for one
+                              reporting every 30 seconds. The share is measured
+                              against this device's own normal day. */}
+                          {d.coverage !== null && d.coverage < 0.9 && (
+                            <span
+                              className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700"
+                              title={t.reports.coverageHint}
+                            >
+                              {Math.round(d.coverage * 100)}%
+                            </span>
+                          )}
+                        </TableCell>
                       </TableRow>
                     ))}
                     {m.days.length === 0 && (

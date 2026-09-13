@@ -174,7 +174,7 @@ function RulesTable() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [metric, setMetric] = useState<string>("voltageL1");
-  const [operator, setOperator] = useState<"gt" | "lt">("gt");
+  const [operator, setOperator] = useState<"gt" | "lt" | "stuck">("gt");
   const [threshold, setThreshold] = useState("253");
   const [severity, setSeverity] = useState<"info" | "warning" | "critical">("warning");
   const [meterId, setMeterId] = useState<string>("all");
@@ -224,7 +224,7 @@ function RulesTable() {
                 <TableCell className="font-mono text-xs">
                   {r.metric === "gatewayOffline" ? t.alarms.gatewayOffline : r.metric}
                 </TableCell>
-                <TableCell>{r.operator === "gt" ? ">" : "<"}</TableCell>
+                <TableCell>{r.operator === "gt" ? ">" : r.operator === "lt" ? "<" : t.alarms.stuck}</TableCell>
                 <TableCell>
                   {r.threshold} {METRIC_UNITS[r.metric as MetricKey] ?? ""}
                 </TableCell>
@@ -283,21 +283,25 @@ function RulesTable() {
                 </div>
                 <div className="space-y-2">
                   <Label>{t.alarms.operator}</Label>
-                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt")}>
+                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt" | "stuck")}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="gt">&gt; {t.alarms.gt}</SelectItem>
                       <SelectItem value="lt">&lt; {t.alarms.lt}</SelectItem>
+                      <SelectItem value="stuck">{t.alarms.stuck}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{t.alarms.threshold}</Label>
+                  <Label>{operator === "stuck" ? t.alarms.stuckSeconds : t.alarms.threshold}</Label>
                   <Input type="number" value={threshold} onChange={(e) => setThreshold(e.target.value)} />
+                  {operator === "stuck" ? (
+                    <p className="text-xs text-muted-foreground">{t.alarms.stuckHint}</p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label>{t.alarms.severity}</Label>

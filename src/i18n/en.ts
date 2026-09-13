@@ -252,6 +252,10 @@ export const en = {
     resolve: "Resolve",
     appliesTo: "Applies to",
     allMeters: "All meters",
+    stuck: "unchanged for",
+    stuckSeconds: "Unchanged for (seconds)",
+    stuckHint:
+      "Fires when the metric reports the exact same value for this long while the device is still online — a frozen register stays inside every other rule's limits.",
     gt: "greater than",
     lt: "less than",
     noEvents: "No events in this state.",
@@ -271,6 +275,7 @@ export const en = {
     exportKwh: "Export (kWh)",
     maxDemand: "Max demand (kW)",
     avgPf: "Avg. PF",
+    coverageHint: "Share of this device’s usual daily samples that actually arrived. A low figure means the totals for this day are built on incomplete data.",
     samples: "Samples",
     selectScope: "Choose a meter or site and a period, then generate the report.",
     counterResetNote: "Counter reset or meter swap detected — total is the post-reset sum",

@@ -152,6 +152,19 @@ export interface TelemetryStore {
   ): Promise<HistoryPoint[]>;
   /** Per-meter average power per bucket — routers aggregate across meters. */
   powerTrend(from: Date, bucketSec: number): Promise<TrendPoint[]>;
+  /**
+   * §9.7 data quality: timestamp of the most recent sample at/after `since`
+   * whose `key` differs from `value`, or null when every stored sample in that
+   * window holds exactly this value.
+   *
+   * This is what turns a per-replica suspicion into a fact. The in-memory run
+   * that tracks an unchanged value dies with the process, so a restart would
+   * otherwise reset the clock and a register frozen for a week would never
+   * reach its window. Only called once a run has already reached the window,
+   * never on the ingest hot path. `key` MUST pass METRIC_KEY_RE.
+   */
+  lastChangeSince(meterId: number, key: string, value: number, since: Date): Promise<Date | null>;
+
   /** Energy counter value of the first sample at/after `from` (for "energy today"). */
   firstEnergySince(meterId: number, from: Date): Promise<number | null>;
   /** Same, for all meters at once, one set-based query. */

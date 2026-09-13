@@ -190,7 +190,12 @@ export const alarmRules = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     // metric key, e.g. voltageL1, activePowerKw, frequencyHz, powerFactor, gatewayOffline
     metric: varchar("metric", { length: 64 }).notNull(),
-    operator: mysqlEnum("operator", ["gt", "lt"]).notNull(),
+    // gt/lt compare the value against `threshold`. "stuck" is §9.7 data
+    // quality: the value has not CHANGED for `threshold` seconds, which is the
+    // failure the other two are blind to — a frozen register stays inside its
+    // limits forever while the device reports as perfectly healthy.
+    operator: mysqlEnum("operator", ["gt", "lt", "stuck"]).notNull(),
+    // For gt/lt a value in the metric's own unit; for "stuck", seconds.
     threshold: double("threshold").notNull(),
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     // null meterId => applies to all meters

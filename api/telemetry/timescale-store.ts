@@ -284,6 +284,21 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     }));
   }
 
+  // §9.7: see TelemetryStore.lastChangeSince.
+  async lastChangeSince(meterId: number, key: string, value: number, since: Date): Promise<Date | null> {
+    assertValidMetricKeys([key]); // the whitelist IS the injection defence
+    const col = COLUMN_BACKED_METRICS[key];
+    const expr = col ?? `(values_json->>'${key}')::double precision`; // key is whitelisted above
+    const { rows } = await this.pool.query(
+      `select ts from telemetry
+       where meter_id = $1 and ts >= $2::timestamptz
+         and ${expr} is not null and ${expr} <> $3
+       order by ts desc limit 1`,
+      [meterId, since, value],
+    );
+    return rows[0]?.ts ? new Date(rows[0].ts) : null;
+  }
+
   async firstEnergySince(meterId: number, from: Date): Promise<number | null> {
     const { rows } = await this.pool.query(
       `select energy_import_kwh as v from telemetry

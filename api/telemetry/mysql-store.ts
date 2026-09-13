@@ -282,6 +282,31 @@ export class MySqlTelemetryStore implements TelemetryStore {
     }));
   }
 
+  // §9.7: see TelemetryStore.lastChangeSince. A row where the key is absent is
+  // NOT a change — the register simply was not reported in that frame — so the
+  // null case is excluded rather than counted as different.
+  async lastChangeSince(meterId: number, key: string, value: number, since: Date): Promise<Date | null> {
+    assertValidMetricKeys([key]); // the whitelist IS the injection defence
+    const db = getDb();
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const col = COLUMN_BACKED_METRICS[key];
+    const expr = col
+      ? sql`${sql.raw(col)}`
+      : sql`cast(json_unquote(json_extract(values_json, ${`$."${key}"`})) as double)`;
+    const res = await db.execute(sql`
+      select ${telemetry.ts} as ts
+      from ${telemetry}
+      where ${telemetry.meterId} = ${meterId}
+        and ${telemetry.ts} >= ${utcStr(since)}
+        and ${expr} is not null
+        and ${expr} <> ${value}
+      order by ${telemetry.ts} desc
+      limit 1`);
+    const rows = (res as unknown as [Record<string, unknown>[]])[0];
+    const ts = rows[0]?.ts;
+    return ts ? new Date(ts as string | number | Date) : null;
+  }
+
   async firstEnergySince(meterId: number, from: Date): Promise<number | null> {
     const db = getDb();
     const rows = await db

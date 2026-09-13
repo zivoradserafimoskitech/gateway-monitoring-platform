@@ -532,6 +532,8 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 6 | The aggregate half of a split range overlapped the raw half | Found by the new chart test, and older than this branch: every split read the cutoff's OWN hour from both sources, so reports and settlement intervals had been double-counting it — samples inflated, weighted averages leaning toward the tail. `aggregateUpperBound()` stops the aggregate before that hour; raw serves it, which is exactly the source that still holds it |
 | 7 | `uuid` advisory in a shipping package | Pinned past GHSA-w5hq-g745-h8pq by override. exceljs still depends on uuid ^8 upstream and uses only `{v4}`, so ^11.1.1 — the last line with a CJS require condition — closes it without npm's proposed downgrade of exceljs to 3.4.0. No high or moderate advisory now reaches a runtime package |
 | 8 | No dark mode | The `.dark` palette had been in index.css since scaffolding and next-themes was already a dependency; what was missing was a provider, a toggle, and pages that read the tokens instead of hardcoding light greys. ~260 classes across 37 files moved onto the token layer. The sidebar was hand-edited, not swept — that rail is deliberately dark in BOTH themes. Chart grids and axes follow the theme through currentColor |
+| 9.7 | Nothing detected a frozen register | A stuck sensor returns the SAME plausible number forever: the device stays online, every gt/lt rule sees a value inside its limits, nothing fires, and that number goes on feeding EMS decisions and billing. A new `stuck` rule operator reads `threshold` as seconds-unchanged and reuses the existing dedup, hysteresis, duration, maintenance-window and notification machinery. Exact equality, not a tolerance band — a live sensor jitters in its last digits, so a band would call a genuinely steady 50.00 Hz supply stuck |
+| 9.7 | Reports could not say how complete they were | Each day now carries `coverage`: its sample count over the median of the device's other days. A day the gateway spent mostly offline used to look like a normal day with a smaller total, and got invoiced. Calibrated from the report itself, so there is no nominal sample interval to configure and it works the same for a pushing MQTT device and a polled Modbus one |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -562,6 +564,17 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still open by design: those are the roadmap, not
-  repairs. Two of them landed on the way — the setpoint deadman (§9.1) and device-offline
-  alarming (§9.6) — because both were closing a safety gap rather than adding a feature.
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Four have
+  landed: the setpoint deadman (§9.1), device-offline alarming (§9.6) and now data-quality
+  monitoring (§9.7) in its two halves — frozen-register detection and per-day completeness.
+  The next two worth building, in order, are the site-level grid import/export limit with
+  curtailment (§9.2), which is a contractual obligation in most markets and sits on control
+  machinery that already exists, and OIDC single sign-on (§9.12), which is a procurement
+  blocker for industrial customers rather than a feature. The remaining nine are real but
+  none of them blocks anything.
+
+  **Not built in §9.7: gap detection as an alarm.** The largest gap inside an hour needs a
+  window function, and a TimescaleDB continuous aggregate does not allow one — building it on
+  MySQL alone would give the two stores different answers, which is the class of bug this
+  branch spent its time removing. A device that stops reporting entirely is already covered by
+  the offline alarms.

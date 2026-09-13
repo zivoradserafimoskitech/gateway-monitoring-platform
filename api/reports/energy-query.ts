@@ -2,6 +2,7 @@
 // UI) and the v8/D3 scheduled-report generator (xlsx/pdf). Scope "site" also
 // covers the fleet-wide case (siteId null = all sites).
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { withCoverage } from "./coverage";
 import { getDb } from "../queries/connection";
 import { gateways, meters, sites } from "@db/schema";
 import type { Meter } from "@db/schema";
@@ -81,7 +82,12 @@ export async function queryEnergyReport(input: {
   const byId = new Map(meterRows.map((m) => [m.id, m]));
   const perMeter = await Promise.all(
     meterFilter.map(async (id) => {
-      const days = await getTelemetryStore().dailyReport(id, input.from, input.to, { dayBuckets });
+      // §9.7: each day carries how complete its own data was, so a day the
+      // gateway spent mostly offline cannot be read as a normal day with a
+      // smaller total.
+      const days = withCoverage(
+        await getTelemetryStore().dailyReport(id, input.from, input.to, { dayBuckets }),
+      );
       const totalImport = days.reduce((s, d) => s + (d.importKwh ?? 0), 0);
       const totalExport = days.reduce((s, d) => s + (d.exportKwh ?? 0), 0);
       const maxDemand = days.reduce((s, d) => Math.max(s, d.maxDemandKw ?? 0), 0);

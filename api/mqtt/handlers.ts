@@ -3,7 +3,7 @@
 import { eq, and, inArray } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { meters, alarmRules, alarms, alarmBreachState, deviceProfiles } from "@db/schema";
-import { getTelemetryWriter } from "../telemetry";
+import { getTelemetryWriter, getTelemetryStore } from "../telemetry";
 import { markMeterSeen } from "./liveness";
 import type { MetricKey, RegisterDef } from "@contracts/modbus";
 import { DEFAULT_REGISTER_MAPS, DEFAULT_METER_PHASES } from "@contracts/modbus";
@@ -11,6 +11,7 @@ import { parseResponse, decodeRegisters, registerSpan, buildBlocks } from "../mo
 import { shiftedAddress } from "@contracts/modbus";
 import { isInMaintenance, notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
 import { alarmTransition } from "../alarms/hysteresis";
+import { confirmStuck, stuckStep, type StuckRecord } from "../alarms/stuck";
 import { telemetryValueRejected, telemetryValueDecoded, c30FrameUndecodable } from "../lib/observability";
 import { matchOutstanding, stampResponded, confirmVerifiedWrite } from "./c30-outstanding";
 import type { Gateway, Meter } from "@db/schema";
@@ -329,6 +330,61 @@ export function invalidateBreachCache(): void {
   breachState.clear();
 }
 
+
+// ─── §9.7 data quality: frozen registers ─────────────────────────────────────
+// A stuck register is the failure every other rule is blind to: the device
+// stays online and the value stays inside its thresholds, so nothing fires
+// while that number feeds EMS decisions and billing reports.
+//
+// The run is tracked in memory so a healthy signal — which changes on almost
+// every sample — costs one comparison and no I/O. Only once a run reaches the
+// rule's window does it cost a query, and that query is what makes the answer
+// survive a restart: the in-memory run dies with the process, the telemetry
+// rows do not.
+const stuckRuns = new Map<string, StuckRecord>();
+
+/** Drop cached stuck runs (rule edits, tests). */
+export function invalidateStuckRuns(): void {
+  stuckRuns.clear();
+}
+
+async function isStuck(
+  ruleId: number,
+  meterId: number,
+  metric: string,
+  value: number,
+  thresholdSec: number,
+  now: number,
+): Promise<boolean> {
+  const key = `${ruleId}:${meterId}`;
+  const windowMs = Math.max(0, thresholdSec) * 1000;
+  const step = stuckStep(stuckRuns.get(key), value, now, windowMs);
+  stuckRuns.set(key, step.next);
+  if (step.kind !== "suspect") return false;
+
+  try {
+    const changedAt = await getTelemetryStore().lastChangeSince(
+      meterId,
+      metric,
+      value,
+      new Date(now - windowMs),
+    );
+    const { stuck, next } = confirmStuck(step.next, changedAt ? changedAt.getTime() : null, now, windowMs);
+    stuckRuns.set(key, next);
+    return stuck;
+  } catch (err) {
+    // A store that cannot answer must not invent an alarm about plant data.
+    // Failing closed here means "no alarm", which is the same state as before
+    // this rule existed — the opposite choice would page an operator because a
+    // query timed out.
+    console.warn(
+      `[alarms] stuck check unavailable for meter ${meterId} ${metric}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
 async function evaluateAlarmRules(
   meter: Meter,
   values: Record<string, number>,
@@ -345,8 +401,13 @@ async function evaluateAlarmRules(
     const value = values[rule.metric];
     if (value === undefined || value === null) continue;
 
-    const breached = rule.operator === "gt" ? value > rule.threshold : value < rule.threshold;
     const now = Date.now();
+    const breached =
+      rule.operator === "stuck"
+        ? await isStuck(rule.id, meter.id, rule.metric, value, rule.threshold, now)
+        : rule.operator === "gt"
+          ? value > rule.threshold
+          : value < rule.threshold;
     const durationMs = (rule.durationSec ?? 0) * 1000;
     const rec = await loadBreachState(rule.id, meter.id, breached);
     const decision = alarmTransition(rec, breached, now, durationMs);
@@ -384,10 +445,13 @@ async function evaluateAlarmRules(
             threshold: rule.threshold,
             severity: rule.severity,
             message:
-              `${rule.name}: ${rule.metric} = ${value} ` +
-              `(${rule.operator === "gt" ? ">" : "<"} ${rule.threshold}` +
-              (durationMs > 0 ? ` for ${Math.round(durationMs / 60_000)} min` : "") +
-              ")",
+              rule.operator === "stuck"
+                ? `${rule.name}: ${rule.metric} has not changed from ${value} for ` +
+                  `${Math.round(rule.threshold / 60)} min`
+                : `${rule.name}: ${rule.metric} = ${value} ` +
+                  `(${rule.operator === "gt" ? ">" : "<"} ${rule.threshold}` +
+                  (durationMs > 0 ? ` for ${Math.round(durationMs / 60_000)} min` : "") +
+                  ")",
             status: "active",
             triggeredAt: new Date(),
           })

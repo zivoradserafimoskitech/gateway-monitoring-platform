@@ -118,7 +118,7 @@ export const alarmsRouter = createRouter({
         // (e.g. ESMU socPercent/bmsStatusCode). Evaluation simply skips metrics
         // a device doesn't report, so any non-empty key is valid here.
         metric: z.string().min(1).max(100),
-        operator: z.enum(["gt", "lt"]),
+        operator: z.enum(["gt", "lt", "stuck"]),
         threshold: z.number(),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
         meterId: z.number().nullable().optional(),
