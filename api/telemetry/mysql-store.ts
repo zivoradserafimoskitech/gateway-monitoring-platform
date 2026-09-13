@@ -17,7 +17,7 @@ import type {
 } from "./types";
 import { env } from "../lib/env";
 import { COLUMN_BACKED_METRICS, assertValidMetricKeys } from "./types";
-import { retentionCutoff } from "./retention";
+import { aggregateUpperBound, retentionCutoff } from "./retention";
 // v7/C5 merge semantics for ranges that straddle the retention cutoff; shared
 // with the Timescale store so the two cannot drift (see merge.ts).
 import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "./merge";
@@ -154,7 +154,7 @@ export class MySqlTelemetryStore implements TelemetryStore {
     const cutoff = retentionCutoff();
     const parts: HistoryPoint[][] = [];
     if (from < cutoff) {
-      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : cutoff, bucketSec, powerKey));
+      parts.push(await this.historyFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketSec, powerKey));
     }
     if (to >= cutoff) {
       parts.push(await this.historyRaw(meterId, from > cutoff ? from : cutoff, to, bucketSec, powerKey));
@@ -324,7 +324,7 @@ export class MySqlTelemetryStore implements TelemetryStore {
     const cutoff = retentionCutoff();
     const parts: DailyReportRow[][] = [];
     if (from < cutoff) {
-      parts.push(await this.dailyReportFromHourly(meterId, from, to < cutoff ? to : cutoff, opts));
+      parts.push(await this.dailyReportFromHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), opts));
     }
     if (to >= cutoff) {
       parts.push(await this.dailyReportRaw(meterId, from > cutoff ? from : cutoff, to, opts));
@@ -497,7 +497,7 @@ export class MySqlTelemetryStore implements TelemetryStore {
     const cutoff = retentionCutoff();
     const parts: EnergyIntervalBucket[][] = [];
     if (from < cutoff) {
-      parts.push(await this.energyIntervalsHourly(meterId, from, to < cutoff ? to : cutoff, bucketMin));
+      parts.push(await this.energyIntervalsHourly(meterId, from, to < cutoff ? to : aggregateUpperBound(cutoff), bucketMin));
     }
     if (to >= cutoff) {
       parts.push(await this.energyIntervalsRaw(meterId, from > cutoff ? from : cutoff, to, bucketMin));

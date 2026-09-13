@@ -216,7 +216,13 @@ d("TimescaleDB continuous aggregates", () => {
     };
     const inner = store as unknown as Privates;
     const from = new Date(DAY0);
-    const to = new Date(DAY0 + 6 * H);
+    // Ends one millisecond BEFORE 06:00, so the range holds whole hours only.
+    // With `to` exactly on the hour, raw picks up the single 06:00 sample as a
+    // 25th, one-sample bucket while the aggregate reports that hour in full —
+    // the two are then legitimately different and prove nothing. In the real
+    // split that partial bucket cannot arise: history() hands the aggregate a
+    // bound that stops before the cutoff's own hour (aggregateUpperBound).
+    const to = new Date(DAY0 + 6 * H - 1);
     const raw = await inner.historyRaw(METER, from, to, 3600, "batteryPowerKw");
     const agg = await inner.historyFromHourly(METER, from, to, 3600, "batteryPowerKw");
     expect(agg.length).toBeGreaterThan(0);

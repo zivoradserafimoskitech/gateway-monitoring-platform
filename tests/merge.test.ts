@@ -4,6 +4,7 @@
 // the cutoff falls on — worth pinning without a database in the loop.
 import { describe, it, expect } from "vitest";
 import { mergeDayRows, mergeEnergyBuckets, mergeHistoryPoints } from "../api/telemetry/merge";
+import { aggregateUpperBound } from "../api/telemetry/retention";
 import type { DailyReportRow, EnergyIntervalBucket, HistoryPoint } from "../api/telemetry/types";
 
 const day = (over: Partial<DailyReportRow>): DailyReportRow => ({
@@ -165,5 +166,21 @@ describe("mergeHistoryPoints", () => {
       "2025-01-15T00:00:00.000Z",
       "2025-01-15T01:00:00.000Z",
     ]);
+  });
+});
+
+describe("aggregateUpperBound", () => {
+  it("stops before the hour the cutoff falls inside", () => {
+    // Both sources hold that hour: the rollup has all of it, and raw still has
+    // everything from the cutoff onward. Reading both counts it twice.
+    const cutoff = new Date("2025-01-15T10:37:12.500Z");
+    expect(aggregateUpperBound(cutoff).toISOString()).toBe("2025-01-15T09:59:59.999Z");
+  });
+
+  it("stops before the whole hour when the cutoff is exactly on one", () => {
+    // 10:00 is itself the first instant raw covers, so the rollup must stop at
+    // 09:59:59.999 rather than including the 10:00 hour.
+    const cutoff = new Date("2025-01-15T10:00:00.000Z");
+    expect(aggregateUpperBound(cutoff).toISOString()).toBe("2025-01-15T09:59:59.999Z");
   });
 });
