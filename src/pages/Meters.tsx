@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { trpc } from "@/providers/trpc";
-import { SortHeader, useSortable } from "@/hooks/use-sortable";
+import { useSortable } from "@/hooks/use-sortable";
+import { SortHeader } from "@/components/SortHeader";
 import { useI18n } from "@/i18n";
 import { StatusBadge, DeviceTypeBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent } from "@/components/ui/card";

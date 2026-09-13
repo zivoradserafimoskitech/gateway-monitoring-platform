@@ -4,10 +4,7 @@
 // Sorting is local and the tables are already bounded by the org-scoped
 // queries that feed them, so this stays a client concern — no new endpoint and
 // no change to what the server returns.
-import { useCallback, useState, type ReactNode } from "react";
-import { TableHead } from "@/components/ui/table";
-import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useCallback, useState } from "react";
 
 export type SortDir = "asc" | "desc";
 export interface SortState {
@@ -56,37 +53,4 @@ export function useSortable(initial: SortState | null = null) {
   );
 
   return { sort, toggle, sorted };
-}
-
-export function SortHeader({
-  column,
-  sort,
-  onToggle,
-  children,
-  className,
-}: {
-  column: string;
-  sort: SortState | null;
-  onToggle: (key: string) => void;
-  children: ReactNode;
-  className?: string;
-}) {
-  const active = sort?.key === column;
-  const Icon = !active ? ChevronsUpDown : sort.dir === "asc" ? ChevronUp : ChevronDown;
-  return (
-    <TableHead className={className}>
-      <button
-        type="button"
-        onClick={() => onToggle(column)}
-        aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
-        className={cn(
-          "-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 hover:text-foreground",
-          active ? "text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {children}
-        <Icon className="h-3 w-3 shrink-0 opacity-70" />
-      </button>
-    </TableHead>
-  );
 }

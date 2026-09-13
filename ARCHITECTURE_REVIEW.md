@@ -554,8 +554,8 @@ still open, and the phased plan in §10 remains the intended order of work.
   property), which this repository cannot make on its own.
 - **`powerTrend` past the cutoff.** Unchanged and deliberately so: its input is capped at 168
   hours, so it cannot reach the 90-day cutoff in the first place.
-- **Advisories: 16 down to 10, none reaching a shipping package.** Measured on the runner: 16
-  (1 low, 13 moderate, 2 high) became 10 (1 low, 9 moderate, 0 high). The `uuid` advisory, the
+- **Advisories: 16 down to 9, none reaching a shipping package.** Measured on the runner: 16
+  (1 low, 13 moderate, 2 high) became 9 (1 low, 8 moderate, 0 high). The `uuid` advisory, the
   only one that reached a runtime dependency, is closed by the override above. The rest are
   build tooling (vitest, esbuild via drizzle-kit, postcss): reported every run, not blocking,
   and not reachable by an attacker against a deployed gateway.

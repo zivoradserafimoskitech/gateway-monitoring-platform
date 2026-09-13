@@ -31,7 +31,8 @@ import {
 } from "@/components/ui/table";
 import { Network, Pencil, Plus, Trash2 } from "lucide-react";
 import { ConfirmButton } from "@/components/ConfirmButton";
-import { SortHeader, useSortable } from "@/hooks/use-sortable";
+import { useSortable } from "@/hooks/use-sortable";
+import { SortHeader } from "@/components/SortHeader";
 import { toast } from "sonner";
 
 export default function Gateways() {
