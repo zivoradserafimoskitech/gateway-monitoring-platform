@@ -527,6 +527,13 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 8 | A render error blanked the whole app | An error boundary around the routes keeps the shell, shows the message and resets on navigation. On a monitoring product a white page is indistinguishable from the server being down |
 | 8 | Toasts followed the OS theme, the app did not | `next-themes` is imported by the toaster with no provider mounted, so `useTheme` fell back to "system" and a dark desktop got dark toasts over a light-only application. Pinned to light until the product has a dark palette |
 
+| 1.4 | Devices had no tenant at provisioning time | The other half of the null-org fix, without touching the broker: a pre-registered UID stamps the gateway on first publish, `MQTT_DEFAULT_ORG_ID` covers a single-tenant installation, and anything unregistered still lands in the queue. Also fixed a second case the queue could not see — an auto-provisioned METER was NULL-org even under a gateway that had an owner, so it was invisible to the tenant whose uplink it arrived on |
+| 6 | Charts stopped at the retention cutoff | `history()` splits at the cutoff and merges, like the reports already did. The hourly rollups gain voltage, current, frequency, battery power and irradiance (0027, timescale/003) — the last two are the PRIMARY_POWER_KEY of BESS and weather devices and live in values_json, so without them those charts went flat while a meter's did not |
+| 6 | The aggregate half of a split range overlapped the raw half | Found by the new chart test, and older than this branch: every split read the cutoff's OWN hour from both sources, so reports and settlement intervals had been double-counting it — samples inflated, weighted averages leaning toward the tail. `aggregateUpperBound()` stops the aggregate before that hour; raw serves it, which is exactly the source that still holds it |
+| 7 | `uuid` advisory in a shipping package | Pinned past GHSA-w5hq-g745-h8pq by override. exceljs still depends on uuid ^8 upstream and uses only `{v4}`, so ^11.1.1 — the last line with a CJS require condition — closes it without npm's proposed downgrade of exceljs to 3.4.0. No high or moderate advisory now reaches a runtime package |
+| 8 | No dark mode | The `.dark` palette had been in index.css since scaffolding and next-themes was already a dependency; what was missing was a provider, a toggle, and pages that read the tokens instead of hardcoding light greys. ~260 classes across 37 files moved onto the token layer. The sidebar was hand-edited, not swept — that rail is deliberately dark in BOTH themes. Chart grids and axes follow the theme through currentColor |
+| 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
+
 ### Deliberately not changed
 
 - **§1.2, high-availability state — mostly closed, without Redis.** The loops that command plant
@@ -539,27 +546,22 @@ still open, and the phased plan in §10 remains the intended order of work.
   The other three — alarm hysteresis, the login lockout and the pending MFA challenge — have
   since moved into the database as well (see the table above), so no correctness-critical state
   remains in per-process memory.
-- **§1.4, null-org auto-provisioning — half closed.** The queue and the claim action exist. The
-  remaining half derives the tenant from a broker-authenticated client identity at provisioning
-  time, so no device ever lands in limbo; that requires broker configuration this repository
-  cannot make on its own.
-- **Charts past the retention cutoff.** `history` and `powerTrend` still read raw rows only, so
-  a chart older than 90 days is empty — on **both** stores, unchanged by this work. Closing it
-  means aggregating the open `values_json` key space (a BESS chart follows `batteryPowerKw`,
-  which is not a column), which is a larger change than the report path needed.
-- **Advisories: 16 down to 11, and no high ones left.** Measured on the runner before and after:
-  16 (1 low, 13 moderate, 2 high) became 11 (1 low, 10 moderate, 0 high). Of the eleven, exactly
-  one is in a package that ships — `uuid` below 11.1.1, reached through `exceljs`. It is the one
-  npm cannot resolve without a breaking change: its suggested fix downgrades `exceljs` from 4.x
-  to 3.4.0, which is not a trade worth making for a missing bounds check in a code path the
-  report generator does not use. Revisit when exceljs ships a newer `uuid`. The remaining ten are
-  build tooling (vitest, esbuild via drizzle-kit, postcss) and are reported but do not block.
-- **Dark mode.** Not shipped rather than half-shipped: every page hardcodes light
-  slate/white classes, so mounting a theme provider without a dark palette would produce
-  unreadable screens. The visible symptom — dark toasts over a light app — is fixed above.
-- **Global search, table sorting and offset pagination in the UI.** The lists that grow
-  without bound (alarms, devices) already have filters, and the REST API is keyset-paginated;
-  these are UX work rather than defects.
+- **§1.4, broker-derived identity.** A device can now be given its tenant in advance or by a
+  single-tenant default, and an unregistered one is visible in the queue rather than lost. What
+  still does not exist is deriving the tenant from a broker-authenticated client identity, so
+  that open enrolment on a multi-tenant broker needs no paperwork at all. That is broker
+  configuration (EMQX authentication plus either a tenant-carrying topic or an MQTT 5 user
+  property), which this repository cannot make on its own.
+- **`powerTrend` past the cutoff.** Unchanged and deliberately so: its input is capped at 168
+  hours, so it cannot reach the 90-day cutoff in the first place.
+- **Advisories: 16 down to 10, none reaching a shipping package.** Measured on the runner: 16
+  (1 low, 13 moderate, 2 high) became 10 (1 low, 9 moderate, 0 high). The `uuid` advisory, the
+  only one that reached a runtime dependency, is closed by the override above. The rest are
+  build tooling (vitest, esbuild via drizzle-kit, postcss): reported every run, not blocking,
+  and not reachable by an attacker against a deployed gateway.
+- **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
+  are org-scoped and now sortable and searchable; paging the tables themselves is UX work
+  nobody has asked for rather than a defect.
 - **§9, the recommended new functions.** Still open by design: those are the roadmap, not
   repairs. Two of them landed on the way — the setpoint deadman (§9.1) and device-offline
   alarming (§9.6) — because both were closing a safety gap rather than adding a feature.
