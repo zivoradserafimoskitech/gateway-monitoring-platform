@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { COVERAGE_OK } from "@contracts/types";
 import { useI18n } from "@/i18n";
 import { fmt } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -236,7 +237,7 @@ export default function Reports() {
                               for a 15-minute meter and catastrophic for one
                               reporting every 30 seconds. The share is measured
                               against this device's own normal day. */}
-                          {d.coverage !== null && d.coverage < 0.9 && (
+                          {d.coverage !== null && d.coverage < COVERAGE_OK && (
                             <span
                               className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700"
                               title={t.reports.coverageHint}

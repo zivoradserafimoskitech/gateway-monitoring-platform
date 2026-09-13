@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import type { EnergyReport } from "./energy-query";
+import { COVERAGE_OK } from "@contracts/types";
 
 export interface GeneratedReport {
   path: string;
@@ -33,7 +34,11 @@ function tableRows(report: EnergyReport): string[][] {
         fmtN(d.exportKwh, 2),
         fmtN(d.maxDemandKw, 2) + (d.demandDerived ? " (derived)" : ""),
         fmtN(d.avgPowerFactor, 3),
-        String(d.samples),
+        // §9.7: a scheduled report is filed and invoiced from, so a day built
+        // on partial data has to say so here as much as on screen — in the
+        // same marker style as the (est) and (derived) flags above.
+        String(d.samples) +
+          (d.coverage !== null && d.coverage < COVERAGE_OK ? ` (${Math.round(d.coverage * 100)}% of usual)` : ""),
       ]);
     }
     rows.push([m.meter.name, "TOTAL", m.totalImportKwh.toFixed(2), m.totalExportKwh.toFixed(2), m.maxDemandKw.toFixed(2), "", ""]);

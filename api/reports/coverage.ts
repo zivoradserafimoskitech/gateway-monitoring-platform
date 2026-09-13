@@ -12,9 +12,7 @@
 // for an MQTT device that pushes and a Modbus device that is polled, and needs
 // no schema change or store-specific query — the rows are already in hand.
 import type { DailyReportRow } from "../telemetry/types";
-
-/** A day is complete enough not to be worth flagging above this. */
-export const COVERAGE_OK = 0.9;
+export { COVERAGE_OK } from "@contracts/types";
 
 export function median(values: number[]): number | null {
   if (values.length === 0) return null;

@@ -8,11 +8,14 @@ import { gateways, meters, sites } from "@db/schema";
 import type { Meter } from "@db/schema";
 import { getTelemetryStore } from "../telemetry";
 import { localDayRanges } from "../lib/tz";
-import type { DailyReportRow } from "../telemetry/types";
+import type { DailyReportRowWithCoverage } from "./coverage";
 
 export interface EnergyReportMeter {
   meter: Meter;
-  days: DailyReportRow[];
+  // §9.7: each day carries its own completeness, so the UI and the scheduled
+  // xlsx/pdf can both mark a day built on partial data rather than presenting
+  // it as a smaller-but-normal total.
+  days: DailyReportRowWithCoverage[];
   totalImportKwh: number;
   totalExportKwh: number;
   maxDemandKw: number;
