@@ -42,8 +42,21 @@ describe("emergency stop enforcement", () => {
     // The commands table is the record of what reached plant. A preview row in
     // it would be indistinguishable from a real command in the one place an
     // incident review looks.
-    const log = execute.slice(execute.indexOf("export async function executeAndLog"));
-    expect(log).not.toContain("dryRun");
+    //
+    // Asserted on the SIGNATURE and the call, not on the string "dryRun"
+    // appearing somewhere in the function: the first version of this test
+    // forbade the word outright and then failed on a comment explaining why
+    // the parameter is absent. A test that cannot tell code from prose about
+    // the code will keep costing a cycle for no finding.
+    const signature = execute.slice(
+      execute.indexOf("export async function executeAndLog"),
+      execute.indexOf("{", execute.indexOf("export async function executeAndLog")),
+    );
+    expect(signature).not.toContain("dryRun");
+    // ...and it calls executeControl with no options argument, so it cannot
+    // request a dry run even by accident.
+    const body = execute.slice(execute.indexOf("export async function executeAndLog"));
+    expect(body).toContain("await executeControl(meter, key, value)");
   });
 
   it("makes that a type rather than a convention", () => {
