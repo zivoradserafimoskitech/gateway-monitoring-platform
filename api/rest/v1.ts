@@ -11,8 +11,14 @@
 //   GET /api/v1/alarms[?status=]     alarms (default: active)
 //                                    [&limit=&cursor=] opt-in keyset paging
 //
+//   GET /api/v1/openapi.json       §9.13: the machine-readable spec
+//
 // Auth: `Authorization: Bearer etk_...` with a non-revoked key. Keys are
 // managed via the tRPC apiKeys router (admin) — see docs/api-v1.md.
+//
+// §9.13: every authenticated request is rate limited per (key, scope), and the
+// response carries X-RateLimit-Limit / -Remaining / -Scope. Over the limit is
+// a 429 with Retry-After.
 import { Hono } from "hono";
 import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
@@ -20,6 +26,8 @@ import { alarms, gateways, meters, sites } from "@db/schema";
 import { lookupApiKey } from "../lib/api-keys";
 import { getTelemetryStore } from "../telemetry";
 import { METRIC_KEY_RE } from "../telemetry/types";
+import { consume } from "./rate-limit-store";
+import { openApiSpec } from "./openapi";
 
 type Vars = {
   Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null; scopes: string[] | null } };
@@ -74,10 +82,40 @@ restV1.use("*", async (c, next) => {
   if (extra && !scopeAllowed(key.scopes, extra)) {
     return c.json({ error: `API key lacks required scope: ${extra}` }, 403);
   }
+
+  // §9.13: rate limit per (key, scope). Charged against the MOST SPECIFIC
+  // scope the route needs, so a telemetry range scan is not paid for out of
+  // the same budget as a /sites lookup — the two do not cost the same, and one
+  // shared allowance would have to be set at the price of the dearer call.
+  //
+  // After authentication on purpose: an unauthenticated request never reaches
+  // a bucket, so nobody can exhaust a key's quota by guessing at its id.
+  const chargedScope: string = extra ?? coarse;
+  const rate = await consume(key.id, chargedScope, new Date());
+  c.header("X-RateLimit-Limit", String(rate.limit));
+  c.header("X-RateLimit-Remaining", String(rate.remaining));
+  c.header("X-RateLimit-Scope", chargedScope);
+  if (!rate.allowed) {
+    c.header("Retry-After", String(rate.retryAfterSec));
+    return c.json(
+      {
+        error: `Rate limit exceeded for scope '${chargedScope}' (${rate.limit}/min)`,
+        retryAfter: rate.retryAfterSec,
+      },
+      429,
+    );
+  }
+
   // scopes are exposed on the context for debugging only — never log the raw key.
   c.set("apiKey", { id: key.id, name: key.name, role: key.role, orgId: key.orgId, scopes: key.scopes });
   await next();
 });
+
+// §9.13: the machine-readable contract. Behind the key like every other route:
+// an integrator has a key by the time they need the spec, and an open endpoint
+// enumerating the surface is a gift to anyone probing. It is generated from
+// ./openapi.ts, which a test keeps in step with the routes registered here.
+restV1.get("/openapi.json", (c) => c.json(openApiSpec()));
 
 // v8/D2 multitenancy: every REST read is scoped to the key's org (keys are
 // backfilled to Default Org, so legacy integrations are unaffected).

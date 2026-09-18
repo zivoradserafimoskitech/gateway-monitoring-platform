@@ -44,6 +44,7 @@ curl -H "Authorization: Bearer etk_…" https://your-host/api/v1/devices
 | GET | `/api/v1/devices/:id/telemetry` | **audit wave 4: multi-metric bucketed series** (any telemetry keys, e.g. SoC trend) — see below. Requires `telemetry:read`. |
 | PUT | `/api/v1/devices/:id/ems-plan` | **v9 Contract A: push an EMS plan** (upsert/supersede) — see below. |
 | GET | `/api/v1/devices/:id/ems-plan` | **v9 Contract A:** the active plan covering now, else the next upcoming active plan, else `{ "plan": null }`. |
+| GET | `/api/v1/openapi.json` | **§9.13: the OpenAPI 3.1 document** for everything in this table — see below. |
 | GET | `/api/v1/alarms?status=` | Alarms, newest first (limit 500). `status`: `active` (default) \| `acknowledged` \| `resolved` \| `all`. |
 
 ## Energy intervals (ERP / billing)
@@ -209,11 +210,72 @@ local schedules / idle.
 | 403 | key scopes don't include `control` **and** `ems:write` (role alone is not enough — even an `admin`-role key needs the scopes) |
 | 404 | device unknown **or not in the key's org** |
 
+## Rate limits (§9.13)
+
+Per **key** and per **scope**, not per key alone: a telemetry range scan, a
+device listing and an EMS plan push do not cost the same, and one shared
+allowance would have to be priced at the dearest of them — throttling the cheap
+calls for no reason.
+
+| Scope charged | Default | Env override |
+|---|---|---|
+| `read` (every GET, and the fallback for anything unrecognised) | 120/min | `RATE_READ_PER_MIN` |
+| `telemetry:read` (`GET /devices/:id/telemetry`) | 60/min | `RATE_TELEMETRY_PER_MIN` |
+| `control` (every non-GET) | 30/min | `RATE_CONTROL_PER_MIN` |
+| `ems:write` (`PUT /devices/:id/ems-plan`) | 30/min | `RATE_EMS_WRITE_PER_MIN` |
+
+A route is charged against the **most specific** scope it requires, so a
+telemetry call is billed to `telemetry:read` and not also to `read`.
+
+Every response carries:
+
+```
+X-RateLimit-Limit:     120      # requests per minute for the charged scope
+X-RateLimit-Remaining: 117      # whole tokens left
+X-RateLimit-Scope:     read     # which budget this request was billed to
+```
+
+Over the limit is `429` with `Retry-After` in seconds and
+`{ "error": …, "retryAfter": N }`.
+
+It is a **token bucket**, not a fixed window: a fixed window lets a caller
+spend a full quota at 11:59:59 and another at 12:00:00 — twice the published
+rate, at the worst possible moment. Refill is continuous, and burst equals the
+per-minute rate, so a client that has been quiet may spend a minute's worth at
+once (which is what a batch job looks like) and no more.
+
+Two deliberate behaviours worth knowing:
+
+- Buckets live in the database, so the published number is the number across
+  every replica, and it survives a deploy.
+- The limiter **fails open**. If its own bookkeeping is unavailable, requests
+  are allowed. It exists to bound abuse, not to become a second thing that can
+  take the API down.
+
+Unauthenticated and scope-rejected requests are never charged, so nobody can
+drain a key's quota by guessing at its id.
+
+## OpenAPI (§9.13)
+
+`GET /api/v1/openapi.json` returns an OpenAPI 3.1 document for everything
+above. It sits behind the same Bearer key as every other route: an integrator
+has a key by the time they need the spec, and an open endpoint enumerating the
+surface is a gift to anyone probing.
+
+The document is hand-written (`api/rest/openapi.ts`) — nothing in this stack
+generates one, since the REST surface is Hono handlers rather than a
+schema-first framework. What keeps it honest is
+`api/rest/openapi-routes.test.ts`, which walks the routes Hono has actually
+registered and fails in **both** directions: a route with no spec entry, and a
+spec entry for a route that no longer exists. The second is the one that bites,
+because a client generated from it discovers the 404 in production.
+
 ## Responses & errors
 
 - `200` — JSON body with a single top-level collection key (`sites` / `devices` / `alarms`), `{ deviceId, ts, values, … }`, or the energy-intervals envelope.
 - `400` — bad parameter (e.g. invalid `status` value or non-numeric device id).
 - `401` — missing/garbage/revoked key, or key past its `expiresAt` (`API key expired`). Revocation takes effect immediately (30 s lookup cache is evicted on revoke).
+- `429` — rate limit exceeded for the scope this route charges against; see **Rate limits** above. `Retry-After` says when to come back.
 - `403` — the key's scopes don't cover the route's required scope (`read` for GET, `control` for PUT/POST/DELETE, plus `telemetry:read` for the telemetry endpoint and `ems:write` for plan pushes). Since audit wave 4, NULL-scopes legacy keys are **read-only** and therefore get 403 on every non-read route.
 - `404` — unknown device id.
 
@@ -321,7 +383,7 @@ authentic to whatever receives them.
   The older notification channels (v7/C2) still exist and still POST alarm JSON
   on breach and escalation, unsigned and without retry — they are the right
   tool for a chat hook, not for an integration.
-- Rate limiting is not built in — front the API with your reverse proxy
-  (Caddy/Nginx) if you expose it publicly; keys are per-integration so you can
-  revoke a leaking client without touching others.
+- Rate limiting is built in as of §9.13 (per key, per scope — see above). A
+  reverse proxy in front is still worth having for TLS and for bounding
+  unauthenticated traffic, which never reaches a bucket by design.
 - Verified by `scripts/probe-v7-rest-api.py` (10/10) and `scripts/probe-v8-rest-energy.ts` (energy intervals, 10/10).

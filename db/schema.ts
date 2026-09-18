@@ -982,3 +982,33 @@ export const webhookDeliveries = mysqlTable(
   ],
 );
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+
+// ─── §9.13: REST API rate-limit buckets ──────────────────────────────────────
+// One token bucket per (api key, scope). In the DATABASE rather than in
+// process memory on purpose: an in-memory limiter multiplies the quota by the
+// number of replicas and resets on every deploy, so the published number stops
+// being the number. The same reasoning moved login lockout and alarm
+// hysteresis out of memory earlier in this branch.
+//
+// Written on every API request, so it is deliberately one narrow row: a
+// primary key lookup and an update, no indexes to maintain beyond the key.
+export const apiRateBuckets = mysqlTable(
+  "api_rate_buckets",
+  {
+    keyId: bigint("key_id", { mode: "number", unsigned: true }).notNull(),
+    scope: varchar("scope", { length: 32 }).notNull(),
+    // Fractional: refill is continuous, so a caller sitting exactly at the
+    // limit is spaced out evenly rather than let through in a clump each
+    // minute.
+    tokens: double("tokens").notNull(),
+    updatedAt: timestamp("updated_at", { fsp: 3 }).notNull().defaultNow(),
+    // Compare-and-set counter. The natural version would be updated_at, but
+    // an equality test on a fractional timestamp depends on the driver
+    // round-tripping milliseconds exactly, and a silent mismatch there would
+    // make every write lose its race and disable the limiter without anyone
+    // noticing. An integer cannot fail that way.
+    version: int("version").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.keyId, t.scope] })],
+);
+export type ApiRateBucket = typeof apiRateBuckets.$inferSelect;

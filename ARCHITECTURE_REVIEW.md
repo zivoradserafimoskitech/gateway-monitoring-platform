@@ -550,6 +550,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.15 | — the timestamp is inside the MAC | `t=<unix>,v1=<hmac>` over `` `${t}.${rawBody}` ``, not over the body alone. Signing the body alone leaves a captured request valid forever: an attacker replays it unchanged and it still verifies. With the timestamp bound in, moving it breaks the signature and keeping it lets the receiver reject anything past its tolerance. The verifier checks the MAC BEFORE the clock, so a receiver cannot be used to probe which timestamps it accepts without holding the secret |
 | 9.15 | — the queue IS the retry | The delivery row is written before anything is sent, so a process dying mid-send resumes instead of losing the event, and the body is frozen at emit time: a retry must re-send the event as it WAS, not as the database looks now — an alarm that has since resolved must never be re-delivered as "raised" carrying a resolved body. Backoff is jittered ±25%, because every delivery to one endpoint fails in the same instant when it goes down, and an unjittered schedule aims the whole backlog at a service that is already struggling |
 | 9.15 | — 4xx is not retried, and nothing auto-disables | A 5xx means "not now"; a 4xx means "not ever" — the receiver is telling us the request is wrong, and seven identical retries will not make it right (408 and 429 excepted: both are explicit asks to come back later). The subscription's consecutive-failure count is surfaced but never acted on: an integration that switches itself off is how a customer discovers weeks later that their ERP stopped receiving alarms |
+| 9.13 | The REST API had no rate limit | The docs said "front it with your reverse proxy", which is not an answer: a proxy sees an IP and a path, not which API KEY is calling or which SCOPE the call needs, so it cannot tell a polling dashboard from an integration pushing plans, and cannot stop one tenant's key consuming everyone else's capacity. Limits are now per (key, scope), charged against the most specific scope a route requires — a telemetry range scan, a device listing and an EMS plan push do not cost the same, and one shared allowance would have to be priced at the dearest of them |
+| 9.13 | — a bucket, in the database, failing open | A token bucket rather than a fixed window, because a fixed window lets a caller spend a full quota at 11:59:59 and another at 12:00:00 — twice the published rate at the worst moment. In the database rather than in process memory, because an in-memory limiter multiplies the quota by the replica count and resets on every deploy, so the documented number stops being the number. And it fails OPEN: a limiter that rejects traffic because its own bookkeeping is unavailable has turned a storage problem into a total outage of the public API |
+| 9.13 | — the clock is not trusted to run forwards | Elapsed time is clamped at zero. Skew between replicas or an NTP step backwards would otherwise compute a negative refill and DRAIN the bucket, which is the one way a rate limiter can lock out a caller who did nothing wrong. Rejected requests write nothing at all — the refill is a pure function of elapsed time, so the next read derives it again, and a client hammering an exhausted limit costs reads rather than amplifying writes |
+| 9.13 | No machine-readable API contract | `GET /api/v1/openapi.json` now serves an OpenAPI 3.1 document, behind the same key as everything else. Hand-written, because nothing in this stack generates one from Hono handlers — and therefore paired with a test that walks the routes Hono actually registered and fails in BOTH directions: a route with no spec entry, and a spec entry for a route that no longer exists. The second is the one that bites, because a client generated from it finds the 404 in production. The test is what makes the file a contract rather than documentation |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -580,18 +584,19 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Eight have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Nine have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
-  monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), and signed,
-  retried webhook subscriptions (§9.15).
+  monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
+  retried webhook subscriptions (§9.15), and per-scope REST rate limits with a published
+  OpenAPI document (§9.13).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining eight are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining seven are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but
