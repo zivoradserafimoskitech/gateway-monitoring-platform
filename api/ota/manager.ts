@@ -119,6 +119,12 @@ async function otaSweep(): Promise<void> {
         await dispatch(job);
       }
     }
+    // §9.9: advance staged rollouts here rather than on a loop of their own —
+    // a rollout's next wave depends on the job statuses this sweep has just
+    // settled, and two timers racing over that would dispatch a wave against
+    // a view of the previous one that was already stale.
+    const { rolloutSweep } = await import("./rollout-driver");
+    await rolloutSweep();
   } catch (err) {
     console.error("[ota] sweep error:", err instanceof Error ? err.message : err);
   }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { ConfirmButton } from "@/components/ConfirmButton";
+import { FirmwareRolloutCard } from "@/components/FirmwareRolloutCard";
 import { useI18n } from "@/i18n";
 import { fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -132,6 +133,11 @@ export default function Ota() {
           </Button>
         )}
       </div>
+
+      {/* §9.9: fleet rollouts come FIRST. The per-gateway job table below is
+          the tool for one device; updating a fleet with it, one row at a time,
+          is the thing staged rollouts exist to stop people doing. */}
+      <FirmwareRolloutCard />
 
       {/* Gateway selector */}
       <div className="max-w-sm space-y-2">

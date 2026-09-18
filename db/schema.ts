@@ -1134,3 +1134,86 @@ export const orgInvites = mysqlTable(
   ],
 );
 export type OrgInvite = typeof orgInvites.$inferSelect;
+
+// ─── §9.9: firmware releases and staged rollouts ─────────────────────────────
+// Firmware could only be pushed one gateway at a time, from an ad-hoc payload
+// carrying whatever URL somebody typed. A fleet update was therefore a script
+// looping over every gateway — which is how an installation loses all of them
+// at the same moment to a bad image.
+//
+// A release registry means a rollout points at a KNOWN artifact with a
+// checksum, rather than at a URL that was correct in the ticket.
+export const firmwareReleases = mysqlTable(
+  "firmware_releases",
+  {
+    id: serial("id").primaryKey(),
+    model: varchar("model", { length: 128 }).notNull(),
+    version: varchar("version", { length: 64 }).notNull(),
+    url: varchar("url", { length: 1000 }).notNull(),
+    // sha256 of the image. The gateway is expected to verify it before
+    // flashing; recording it here means "which bytes did we ship" has an
+    // answer months later, when the question is asked by somebody holding a
+    // device that no longer boots.
+    sha256: varchar("sha256", { length: 64 }),
+    notes: varchar("notes", { length: 1000 }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("firmware_model_version_unique").on(t.model, t.version),
+    index("firmware_org_idx").on(t.orgId),
+  ],
+);
+export type FirmwareRelease = typeof firmwareReleases.$inferSelect;
+
+// A rollout is the staging policy: canary first, then fixed waves, halting the
+// moment the numbers look wrong. There is deliberately no automatic rollback —
+// firmware cannot be reliably rolled back over the air, and a gateway that
+// boots into an image which no longer reaches the broker is beyond anything
+// this system can do. Halting and telling somebody is the honest behaviour.
+export const otaRollouts = mysqlTable(
+  "ota_rollouts",
+  {
+    id: serial("id").primaryKey(),
+    releaseId: bigint("release_id", { mode: "number", unsigned: true }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Its own batch even when it is one device: a rollout that starts with ten
+    // is a rollout that can break ten.
+    canaryCount: int("canary_count").notNull().default(1),
+    batchSize: int("batch_size").notNull().default(10),
+    failureThresholdPct: int("failure_threshold_pct").notNull().default(10),
+    status: mysqlEnum("status", ["draft", "running", "paused", "halted", "completed"]).notNull().default("draft"),
+    haltReason: varchar("halt_reason", { length: 500 }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    finishedAt: timestamp("finished_at"),
+  },
+  (t) => [index("ota_rollouts_org_idx").on(t.orgId), index("ota_rollouts_status_idx").on(t.status)],
+);
+export type OtaRollout = typeof otaRollouts.$inferSelect;
+
+// One row per gateway in the rollout, carrying its wave and the job that was
+// created for it. The membership is FROZEN when the rollout is created rather
+// than re-evaluated from a filter each sweep: a gateway that comes online
+// halfway through must not silently join a wave that has already been judged.
+export const otaRolloutTargets = mysqlTable(
+  "ota_rollout_targets",
+  {
+    id: serial("id").primaryKey(),
+    rolloutId: bigint("rollout_id", { mode: "number", unsigned: true }).notNull(),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }).notNull(),
+    batchIndex: int("batch_index").notNull(),
+    status: mysqlEnum("status", ["pending", "sent", "ack", "failed"]).notNull().default("pending"),
+    jobId: bigint("job_id", { mode: "number", unsigned: true }),
+    error: varchar("error", { length: 500 }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [
+    uniqueIndex("ota_rollout_target_unique").on(t.rolloutId, t.gatewayId),
+    index("ota_rollout_target_rollout_idx").on(t.rolloutId),
+  ],
+);
+export type OtaRolloutTarget = typeof otaRolloutTargets.$inferSelect;
