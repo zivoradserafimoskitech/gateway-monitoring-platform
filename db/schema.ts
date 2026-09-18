@@ -1073,3 +1073,64 @@ export const dataExports = mysqlTable(
   (t) => [index("data_exports_org_idx").on(t.orgId), index("data_exports_status_idx").on(t.status)],
 );
 export type DataExport = typeof dataExports.$inferSelect;
+
+// ─── §9.11: organization membership, invites and switching ───────────────────
+// A user belonged to exactly one org (users.org_id) with one global role. Two
+// things that come up constantly were therefore impossible: an engineer who
+// looks after three customer sites needs access to three tenants, and an
+// installer commissioning a new site needs to be brought in without somebody
+// typing a password on their behalf and sending it over chat.
+//
+// Membership is ADDITIVE rather than a rewrite of the scoping model.
+// users.org_id and users.role stay exactly what they were — the ACTIVE org and
+// the role in it — so every org-scoped query, every guard and every router is
+// untouched. Switching org means checking a membership and moving those two
+// fields. The invariant is one sentence: users.org_id/users.role mirror the
+// membership the user is currently acting under.
+export const orgMemberships = mysqlTable(
+  "org_memberships",
+  {
+    id: serial("id").primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    // The role IN THIS ORG. The same person can be an operator for one tenant
+    // and a viewer for another, which is the usual arrangement when a
+    // contractor looks after several customers.
+    role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("org_membership_unique").on(t.userId, t.orgId),
+    index("org_membership_user_idx").on(t.userId),
+    index("org_membership_org_idx").on(t.orgId),
+  ],
+);
+export type OrgMembership = typeof orgMemberships.$inferSelect;
+
+// Invites. The token is stored HASHED, like a session token and an API key: a
+// database dump should not hand somebody the ability to create accounts in
+// every tenant that has an invite outstanding.
+export const orgInvites = mysqlTable(
+  "org_invites",
+  {
+    id: serial("id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    email: varchar("email", { length: 255 }).notNull(),
+    role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    invitedBy: bigint("invited_by", { mode: "number", unsigned: true }),
+    // Invites expire. One that does not is a credential with no owner sitting
+    // in an inbox indefinitely.
+    expiresAt: timestamp("expires_at").notNull(),
+    acceptedAt: timestamp("accepted_at"),
+    acceptedUserId: bigint("accepted_user_id", { mode: "number", unsigned: true }),
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("org_invite_token_unique").on(t.tokenHash),
+    index("org_invite_org_idx").on(t.orgId),
+    index("org_invite_email_idx").on(t.email),
+  ],
+);
+export type OrgInvite = typeof orgInvites.$inferSelect;

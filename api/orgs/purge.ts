@@ -35,6 +35,8 @@ import {
   meters,
   notificationChannels,
   onCallShifts,
+  orgInvites,
+  orgMemberships,
   orgs,
   otaJobs,
   reportSchedules,
@@ -115,6 +117,10 @@ export async function purgeOrg(orgId: number): Promise<PurgeCounts> {
     ["deviceRegistrations", () => db.delete(deviceRegistrations).where(eq(deviceRegistrations.orgId, orgId))],
     ["otaJobs", () => db.delete(otaJobs).where(eq(otaJobs.orgId, orgId))],
     ["apiKeys", () => db.delete(apiKeys).where(eq(apiKeys.orgId, orgId))],
+    // §9.11: memberships and outstanding invites. An invite that outlived its
+    // org is a link that creates an account in a tenant that no longer exists.
+    ["orgInvites", () => db.delete(orgInvites).where(eq(orgInvites.orgId, orgId))],
+    ["orgMemberships", () => db.delete(orgMemberships).where(eq(orgMemberships.orgId, orgId))],
     ["meters", () => db.delete(meters).where(eq(meters.orgId, orgId))],
     ["gateways", () => db.delete(gateways).where(eq(gateways.orgId, orgId))],
     ["sites", () => db.delete(sites).where(eq(sites.orgId, orgId))],

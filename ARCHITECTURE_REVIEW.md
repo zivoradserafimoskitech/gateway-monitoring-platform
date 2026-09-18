@@ -559,6 +559,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.14 | Retention was one number for everybody | A tenant under a regulator requiring five years of interval data and one who wants nothing kept past a month are both reasonable; a single TELEMETRY_RAW_DAYS has to be wrong for one of them. The catch is that the purge sweeps a shared table, so it now runs at the LONGEST retention anyone asked for and applies shorter ones as targeted deletes — otherwise the global sweep would delete, at ninety days, the very rows somebody is paying to keep for five years. A single-tenant deployment does exactly what it did before |
 | 9.14 | — and rolls up before it deletes | To the LATEST cutoff in the plan, not the earliest: a tenant on a seven-day retention would otherwise lose hours that never reached an aggregate, and their reports would go blank rather than coarse |
 | 9.14 | "Delete our data" had no implementation | The nearest thing was deleting rows by hand in whatever order occurred to whoever held the console, which is how a tenant ends up gone from the org table and still present in telemetry, alarms and the command audit trail. Deletion is now scheduled with a grace period, children before parents, every table counted — and the counts logged, because this is the one operation with nothing left to inspect afterwards. Scheduled rather than immediate because an irreversible delete executed the instant somebody clicks has no way back from a misclick; cancelling during the window is a supported action rather than a database restore. Typing the org's exact name is required, and deleting your OWN org is refused — it would delete your account mid-request and leave the purge half-done with nobody able to sign in and finish it |
+| 9.11 | A user belonged to exactly one org, forever | Two ordinary situations were therefore impossible: an engineer looking after three customers' sites needed three accounts, and an installer had to be brought in by an admin typing a password on their behalf and sending it over chat. Memberships are ADDITIVE rather than a rewrite of the scoping model — `users.org_id` and `users.role` keep their meaning as the ACTIVE org and the role in it, so every org-scoped query, guard and router is untouched. Switching checks a membership and moves those two fields; the invariant is one sentence, and the migration backfills every existing user so nobody opens the switcher and finds they belong to nothing |
+| 9.11 | — a role PER org, not one globally | The same person is an operator for one tenant and a viewer for another, which is what a contractor looking after several customers actually needs. A superadmin can act anywhere without holding a membership row in every tenant: requiring one would make an org nobody remembered to add them to invisible to the one account meant to see everything, and the switcher says "platform admin" so "why am I an admin here" stays answerable |
+| 9.11 | — and leaving is handled, not just joining | Removing somebody from the org they are ACTING under moves them to another membership they still hold, or disables the account when none is left. An account signed in with no tenant is not a state anything downstream expects. Removing your own membership is refused |
+| 9.11 | Onboarding meant typing someone's password for them | Invitations: a hashed token (like a session and an API key — a database dump must not hand somebody the ability to create accounts in every tenant with an invite outstanding), expiring by default in seven days and capped at ninety, single use, revocable. The link is emailed when a mailer is configured and ALWAYS returned to the inviter, because a deployment with no SMTP still has to be able to invite somebody. Accepting an invite for an address that already has an account adds a membership and NEVER touches the password — otherwise knowing a colleague's email would be a way to reset it. And accepting does not create a session: a link in an inbox should not be enough to be signed in |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -589,19 +593,20 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Ten have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Eleven have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
   monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
   retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
-  document (§9.13), and per-org export, retention and deletion (§9.14).
+  document (§9.13), per-org export, retention and deletion (§9.14), and org membership with
+  invites and switching (§9.11).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining six are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining five are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but

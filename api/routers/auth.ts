@@ -7,7 +7,7 @@ import { TRPCError } from "@trpc/server";
 import QRCode from "qrcode";
 import { createRouter, publicQuery, authed, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { sessions, users, auditLog, mfaBackupCodes,
+import { sessions, users, auditLog, mfaBackupCodes, orgMemberships,
   loginAttempts as loginAttemptsTable,
 } from "@db/schema";
 import {
@@ -572,6 +572,7 @@ export const authRouter = createRouter({
     )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const orgId = stampOrg(ctx.user, input.orgId);
       const inserted = await db
         .insert(users)
         .values({
@@ -579,9 +580,19 @@ export const authRouter = createRouter({
           name: input.name,
           passwordHash: hashPassword(input.password),
           role: input.role,
-          orgId: stampOrg(ctx.user, input.orgId),
+          orgId,
         })
         .$returningId();
+      // §9.11: a user created here is a member of the org they were created
+      // in. Without the row they would work — users.org_id still drives every
+      // scoped query — but the org switcher would show them belonging to
+      // nothing, which is a worse lie than having no switcher at all.
+      if (orgId !== null) {
+        await db
+          .insert(orgMemberships)
+          .values({ userId: inserted[0].id, orgId, role: input.role })
+          .onDuplicateKeyUpdate({ set: { role: input.role } });
+      }
       return { id: inserted[0].id };
     }),
 

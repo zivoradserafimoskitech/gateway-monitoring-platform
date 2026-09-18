@@ -5,13 +5,32 @@
 import { z } from "zod";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, admin, superadmin } from "../middleware";
+import { createRouter, admin, authed, publicQuery, superadmin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { dataExports, deviceRegistrations, gateways, meters, orgs, sites, users } from "@db/schema";
+import {
+  dataExports,
+  deviceRegistrations,
+  gateways,
+  meters,
+  orgInvites,
+  orgMemberships,
+  orgs,
+  sites,
+  users,
+} from "@db/schema";
 import { DOWNLOAD_TTL_MIN, newDownloadToken } from "../orgs/export";
 import { deletionDueAt, DELETION_GRACE_DAYS } from "../orgs/purge";
 import { TELEMETRY_RAW_DAYS } from "../telemetry/retention";
-import { evictUserCache } from "../lib/auth";
+import { evictUserCache, evictUserCacheForUser, hashPassword } from "../lib/auth";
+import {
+  INVITE_TTL_DAYS,
+  inviteExpiryFrom,
+  inviteState,
+  inviteTokenHash,
+  mayActAs,
+  newInviteToken,
+} from "../orgs/invites";
+import { sendMail } from "../lib/mailer";
 import { evictGatewayCache } from "../mqtt/service";
 import { assertRowOrg, isSuper, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
 
@@ -51,8 +70,336 @@ export const orgsRouter = createRouter({
       if (!u[0]) throw new TRPCError({ code: "NOT_FOUND", message: `User ${input.userId} not found` });
       if (u[0].isSuperadmin) throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot reassign the superadmin's home org" });
       await db.update(users).set({ orgId: input.orgId }).where(eq(users.id, input.userId));
+      // §9.11: moving someone's home org also makes them a member of it. The
+      // membership carries the role they already have, so this is a move
+      // rather than a promotion.
+      const current = await db.select({ role: users.role }).from(users).where(eq(users.id, input.userId)).limit(1);
+      await db
+        .insert(orgMemberships)
+        .values({ userId: input.userId, orgId: input.orgId, role: current[0]?.role ?? "viewer" })
+        .onDuplicateKeyUpdate({ set: { role: current[0]?.role ?? "viewer" } });
       evictUserCache(); // org change must take effect within the cache TTL
       return { ok: true };
+    }),
+
+  // ─── §9.11: membership, invites and org switching ──────────────────────────
+  // A user belonged to exactly one org with one global role, which made two
+  // ordinary situations impossible: an engineer looking after three customers'
+  // sites, and an installer who needs to be brought in without somebody typing
+  // a password on their behalf and sending it over chat.
+
+  /** The orgs the signed-in user may act under, and which one is active. */
+  myOrgs: authed.query(async ({ ctx }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ orgId: orgMemberships.orgId, role: orgMemberships.role, name: orgs.name })
+      .from(orgMemberships)
+      .innerJoin(orgs, eq(orgMemberships.orgId, orgs.id))
+      .where(eq(orgMemberships.userId, ctx.user!.id))
+      .orderBy(orgs.name);
+    // A superadmin can act anywhere, so the switcher offers everything rather
+    // than only the tenants somebody remembered to add them to.
+    if (isSuper(ctx.user)) {
+      const all = await db.select({ id: orgs.id, name: orgs.name }).from(orgs).orderBy(orgs.name);
+      const byId = new Map(rows.map((r) => [r.orgId, r]));
+      return {
+        activeOrgId: ctx.user!.orgId ?? null,
+        orgs: all.map((o) => ({
+          orgId: o.id,
+          name: o.name,
+          role: byId.get(o.id)?.role ?? "admin",
+          viaSuperadmin: !byId.has(o.id),
+        })),
+      };
+    }
+    return {
+      activeOrgId: ctx.user!.orgId ?? null,
+      orgs: rows.map((r) => ({ orgId: r.orgId, name: r.name, role: r.role, viaSuperadmin: false })),
+    };
+  }),
+
+  // Switching moves users.org_id and users.role to mirror the membership being
+  // acted under. Everything downstream — every org-scoped query and guard —
+  // keeps reading those two fields and needs no knowledge that memberships
+  // exist at all.
+  switchOrg: authed.input(z.object({ orgId: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const memberships = await db
+      .select({ orgId: orgMemberships.orgId, role: orgMemberships.role })
+      .from(orgMemberships)
+      .where(eq(orgMemberships.userId, ctx.user!.id));
+    const decision = mayActAs(ctx.user, memberships, input.orgId);
+    if (!decision.allowed) {
+      // NOT_FOUND rather than FORBIDDEN: which org ids exist is not something
+      // a member of one tenant should be able to enumerate.
+      throw new TRPCError({ code: "NOT_FOUND", message: "Organization not found" });
+    }
+    const exists = await db.select({ id: orgs.id }).from(orgs).where(eq(orgs.id, input.orgId)).limit(1);
+    if (!exists[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Organization not found" });
+    await db
+      .update(users)
+      .set({ orgId: input.orgId, role: decision.role as "admin" | "operator" | "viewer" })
+      .where(eq(users.id, ctx.user!.id));
+    // The cached user row carries org and role, so without this the switch
+    // takes effect whenever the cache happens to expire.
+    evictUserCacheForUser(ctx.user!.id);
+    return { orgId: input.orgId, role: decision.role };
+  }),
+
+  members: admin.query(async ({ ctx }) => {
+    const orgId = isSuper(ctx.user) ? null : (ctx.user!.orgId ?? -1);
+    const db = getDb();
+    const rows = await db
+      .select({
+        userId: orgMemberships.userId,
+        orgId: orgMemberships.orgId,
+        role: orgMemberships.role,
+        email: users.email,
+        name: users.name,
+        orgName: orgs.name,
+        createdAt: orgMemberships.createdAt,
+      })
+      .from(orgMemberships)
+      .innerJoin(users, eq(orgMemberships.userId, users.id))
+      .innerJoin(orgs, eq(orgMemberships.orgId, orgs.id))
+      .where(orgId === null ? undefined : eq(orgMemberships.orgId, orgId))
+      .orderBy(orgs.name, users.email);
+    return rows;
+  }),
+
+  setMemberRole: admin
+    .input(z.object({ userId: z.number(), orgId: z.number(), role: z.enum(["admin", "operator", "viewer"]) }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isSuper(ctx.user) && input.orgId !== (ctx.user!.orgId ?? -1)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You may only manage your own organization" });
+      }
+      const db = getDb();
+      await db
+        .update(orgMemberships)
+        .set({ role: input.role })
+        .where(and(eq(orgMemberships.userId, input.userId), eq(orgMemberships.orgId, input.orgId)));
+      // The role only takes effect immediately for the org the user is
+      // currently acting under; in any other org it applies when they switch.
+      await db
+        .update(users)
+        .set({ role: input.role })
+        .where(and(eq(users.id, input.userId), eq(users.orgId, input.orgId)));
+      evictUserCacheForUser(input.userId);
+      return { ok: true };
+    }),
+
+  removeMember: admin
+    .input(z.object({ userId: z.number(), orgId: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isSuper(ctx.user) && input.orgId !== (ctx.user!.orgId ?? -1)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You may only manage your own organization" });
+      }
+      if (input.userId === ctx.user!.id) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own membership" });
+      }
+      const db = getDb();
+      await db
+        .delete(orgMemberships)
+        .where(and(eq(orgMemberships.userId, input.userId), eq(orgMemberships.orgId, input.orgId)));
+      // Somebody removed from the org they were ACTING under must not keep
+      // acting under it. Move them to any other membership they still hold,
+      // and disable them when none is left rather than leaving an account with
+      // no tenant quietly signed in.
+      const left = await db
+        .select({ orgId: orgMemberships.orgId, role: orgMemberships.role })
+        .from(orgMemberships)
+        .where(eq(orgMemberships.userId, input.userId))
+        .limit(1);
+      const acting = await db
+        .select({ orgId: users.orgId })
+        .from(users)
+        .where(eq(users.id, input.userId))
+        .limit(1);
+      if (acting[0]?.orgId === input.orgId) {
+        if (left[0]) {
+          await db.update(users).set({ orgId: left[0].orgId, role: left[0].role }).where(eq(users.id, input.userId));
+        } else {
+          await db.update(users).set({ orgId: null, disabled: 1 }).where(eq(users.id, input.userId));
+        }
+      }
+      evictUserCacheForUser(input.userId);
+      return { ok: true };
+    }),
+
+  invites: admin.query(async ({ ctx }) => {
+    const db = getDb();
+    const where = isSuper(ctx.user) ? undefined : eq(orgInvites.orgId, ctx.user!.orgId ?? -1);
+    // No token, not even hashed: the list is a management view, and a hash is
+    // still the thing an offline attack starts from.
+    return db
+      .select({
+        id: orgInvites.id,
+        orgId: orgInvites.orgId,
+        email: orgInvites.email,
+        role: orgInvites.role,
+        expiresAt: orgInvites.expiresAt,
+        acceptedAt: orgInvites.acceptedAt,
+        revokedAt: orgInvites.revokedAt,
+        createdAt: orgInvites.createdAt,
+      })
+      .from(orgInvites)
+      .where(where)
+      .orderBy(desc(orgInvites.createdAt))
+      .limit(100);
+  }),
+
+  invite: admin
+    .input(
+      z.object({
+        email: z.string().email().max(255),
+        role: z.enum(["admin", "operator", "viewer"]).default("viewer"),
+        orgId: z.number().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const orgId = input.orgId ?? ctx.user?.orgId ?? null;
+      if (orgId === null) throw new TRPCError({ code: "BAD_REQUEST", message: "No organization to invite into" });
+      if (!isSuper(ctx.user) && orgId !== (ctx.user?.orgId ?? -1)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You may only invite into your own organization" });
+      }
+      const db = getDb();
+      const email = input.email.toLowerCase();
+      const existing = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+      if (existing[0]) {
+        const already = await db
+          .select({ id: orgMemberships.id })
+          .from(orgMemberships)
+          .where(and(eq(orgMemberships.userId, existing[0].id), eq(orgMemberships.orgId, orgId)))
+          .limit(1);
+        if (already[0]) {
+          throw new TRPCError({ code: "CONFLICT", message: "That person is already a member of this organization" });
+        }
+      }
+      const token = newInviteToken();
+      const expiresAt = inviteExpiryFrom();
+      const inserted = await db
+        .insert(orgInvites)
+        .values({
+          orgId,
+          email,
+          role: input.role,
+          tokenHash: inviteTokenHash(token),
+          invitedBy: ctx.user?.id ?? null,
+          expiresAt,
+        })
+        .$returningId();
+
+      const link = `/invite/${token}`;
+      // Emailed when a mailer is configured, and ALWAYS returned: a deployment
+      // with no SMTP must still be able to invite somebody, by handing the
+      // link over through whatever channel it actually has.
+      try {
+        const org = await db.select({ name: orgs.name }).from(orgs).where(eq(orgs.id, orgId)).limit(1);
+        await sendMail({
+          to: [email],
+          subject: `You have been invited to ${org[0]?.name ?? "VoltTrade Cloud"}`,
+          text:
+            `You have been invited to join ${org[0]?.name ?? "an organization"} on VoltTrade Cloud ` +
+            `as ${input.role}.\n\nOpen this link to accept: ${link}\n\n` +
+            `The invitation expires on ${expiresAt.toISOString()}.`,
+        });
+      } catch (e) {
+        console.warn("[invite] could not send mail:", e instanceof Error ? e.message : e);
+      }
+      // Shown exactly once, like an API key.
+      return { id: inserted[0].id, token, link, expiresAt, ttlDays: INVITE_TTL_DAYS };
+    }),
+
+  revokeInvite: admin.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ id: orgInvites.id, orgId: orgInvites.orgId })
+      .from(orgInvites)
+      .where(eq(orgInvites.id, input.id))
+      .limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Invite not found" });
+    if (!isSuper(ctx.user) && rows[0].orgId !== (ctx.user?.orgId ?? -1)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Invite not found" });
+    }
+    await db.update(orgInvites).set({ revokedAt: new Date() }).where(eq(orgInvites.id, input.id));
+    return { ok: true };
+  }),
+
+  // Public: the person accepting does not have an account yet, which is the
+  // whole point. The token is the credential, and it is checked by HASH — the
+  // stored value is not usable to accept anything.
+  acceptInvite: publicQuery
+    .input(
+      z.object({
+        token: z.string().min(32).max(128),
+        name: z.string().min(1).max(255).optional(),
+        password: z.string().min(8).max(128).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const db = getDb();
+      const rows = await db
+        .select()
+        .from(orgInvites)
+        .where(eq(orgInvites.tokenHash, inviteTokenHash(input.token)))
+        .limit(1);
+      const invite = rows[0];
+      // One message for "no such invite" and for a token that never existed:
+      // the endpoint is public, and distinguishing them turns it into an
+      // oracle for guessing tokens.
+      if (!invite) throw new TRPCError({ code: "NOT_FOUND", message: "This invitation is not valid" });
+      const state = inviteState(invite);
+      if (state !== "usable") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `This invitation is ${state}` });
+      }
+
+      const existing = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, invite.email))
+        .limit(1);
+      let userId: number;
+      if (existing[0]) {
+        // An existing account simply gains a membership. Accepting an invite
+        // must never be a way to reset somebody else's password by knowing
+        // their address.
+        userId = existing[0].id;
+      } else {
+        if (!input.password || !input.name) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A name and password are required to create your account",
+          });
+        }
+        const inserted = await db
+          .insert(users)
+          .values({
+            email: invite.email,
+            name: input.name,
+            passwordHash: hashPassword(input.password),
+            role: invite.role,
+            orgId: invite.orgId,
+          })
+          .$returningId();
+        userId = inserted[0].id;
+      }
+      await db
+        .insert(orgMemberships)
+        .values({ userId, orgId: invite.orgId, role: invite.role })
+        .onDuplicateKeyUpdate({ set: { role: invite.role } });
+      await db
+        .update(orgInvites)
+        .set({ acceptedAt: new Date(), acceptedUserId: userId })
+        .where(eq(orgInvites.id, invite.id));
+      evictUserCacheForUser(userId);
+      // No session is created here: accepting an invitation and signing in are
+      // separate acts, and a link in an inbox should not be enough to be
+      // holding a session.
+      return { ok: true, email: invite.email, existingAccount: Boolean(existing[0]) };
     }),
 
   // ─── §9.14: retention, export and deletion ─────────────────────────────────

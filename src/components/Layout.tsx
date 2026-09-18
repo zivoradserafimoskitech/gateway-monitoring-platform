@@ -27,6 +27,7 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlobalSearch } from "@/components/GlobalSearch";
+import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -188,6 +189,9 @@ export function Layout() {
                 <span className="hidden sm:inline">{t.auth.signOut}</span>
               </Button>
             )}
+            {/* §9.11: renders nothing unless the user can act under more than
+                one organization, so a single-tenant deployment is unchanged. */}
+            <OrgSwitcher />
             <GlobalSearch />
             <ThemeToggle />
             <DropdownMenu>

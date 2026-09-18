@@ -17,6 +17,7 @@ import Settings from "@/pages/Settings";
 import Admin from "@/pages/Admin";
 import NotFound from "@/pages/NotFound";
 import Login from "@/pages/Login";
+import AcceptInvite from "@/pages/AcceptInvite";
 
 export default function App() {
   // The boundary resets on navigation: a page that threw must not keep the
@@ -30,6 +31,21 @@ export default function App() {
   if (me.isLoading) {
     return <div className="flex min-h-screen items-center justify-center text-muted-foreground">…</div>;
   }
+  // §9.11: accepting an invitation happens BEFORE the login gate. The person
+  // following the link does not have an account yet — sending somebody an
+  // invitation and then showing them a login screen is the loop this exists to
+  // break.
+  if (location.pathname.startsWith("/invite/")) {
+    return (
+      <>
+        <Routes>
+          <Route path="/invite/:token" element={<AcceptInvite />} />
+        </Routes>
+        <Toaster richColors position="bottom-right" />
+      </>
+    );
+  }
+
   // Login screen only when the server enforces auth and there is no session.
   if (me.data?.authRequired && !me.data.user) {
     return (

@@ -5,6 +5,7 @@ import { ProfileImportDialog } from "@/components/ProfileImportDialog";
 import { ProfilesTable } from "@/components/ProfilesTable";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
 import { OrgLifecycleCard } from "@/components/OrgLifecycleCard";
+import { OrgMembersCard } from "@/components/OrgMembersCard";
 import { DataExportCard } from "@/components/DataExportCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
 import { MfaCard } from "@/components/MfaCard";
@@ -47,6 +48,9 @@ export default function Settings() {
         <TabsContent value="general" className="space-y-6 pt-4">
           {/* v8/D2: organizations — superadmin only */}
           <OrganizationsCard />
+          {/* §9.11: membership and invitations — admin, since bringing a
+              colleague in should not require the platform account. */}
+          <OrgMembersCard />
           {/* §9.14: a tenant's data has to be able to leave — admin, not
               superadmin, so "give us our data" does not have to route through
               whoever holds the platform account. */}
