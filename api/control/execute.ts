@@ -92,11 +92,17 @@ function buildWriteRequest(slave: number, address: number, value: number): Buffe
   return frame;
 }
 
+/** The statuses the commands audit table can hold — what actually reached plant. */
+export type LiveControlStatus = "ok" | "sent" | "failed";
+
 export interface ControlResult {
   // "preview" is a dry run: everything up to the bus write happened, nothing
   // was written. It is a distinct status rather than an "ok" with a prefix so
-  // no caller can mistake a rehearsal for a command that reached the plant.
-  status: "ok" | "sent" | "failed" | "preview";
+  // no caller can mistake a rehearsal for a command that reached the plant —
+  // and because it is OUTSIDE LiveControlStatus, the compiler refuses to let
+  // one be inserted into the commands table. The invariant is the type, not a
+  // comment asking people to remember it.
+  status: LiveControlStatus | "preview";
   detail: string;
   /** Wave 4 / T4: C30 writes carry the outstanding read-back registration so
    *  executeAndLog can link the control commands row once inserted. */
@@ -285,6 +291,13 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
   const db = getDb();
   try {
     const result = await executeControl(meter, key, value);
+    if (result.status === "preview") {
+      // Unreachable: this function never asks for a dry run, and that is the
+      // point — the narrowing below is what lets the insert typecheck, so the
+      // day someone adds a dryRun parameter here they get a compile error
+      // rather than rehearsals quietly logged as real commands.
+      throw new Error("internal: preview result returned from a live control write");
+    }
     const inserted = await db
       .insert(commands)
       .values({

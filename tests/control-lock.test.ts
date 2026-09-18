@@ -46,6 +46,17 @@ describe("emergency stop enforcement", () => {
     expect(log).not.toContain("dryRun");
   });
 
+  it("makes that a type rather than a convention", () => {
+    // "preview" sits outside LiveControlStatus, which is what the commands
+    // table accepts, so the compiler refuses the insert. Typecheck caught this
+    // when the status union first widened — the guard is what keeps it caught
+    // rather than a comment asking the next person to remember.
+    expect(execute).toContain('export type LiveControlStatus = "ok" | "sent" | "failed"');
+    expect(execute).toContain('status: LiveControlStatus | "preview"');
+    const log = execute.slice(execute.indexOf("export async function executeAndLog"));
+    expect(log).toContain('result.status === "preview"');
+  });
+
   it("routes every EMS writer through the guarded chokepoint", () => {
     // If a future controller writes with its own Modbus client, the lock stops
     // applying to it and this test is how that gets noticed.
