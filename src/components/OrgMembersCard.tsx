@@ -12,6 +12,7 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
+import { useNow } from "@/hooks/use-now";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +30,7 @@ export function OrgMembersCard() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.user?.role === "admin";
   const utils = trpc.useUtils();
+  const now = useNow();
   const members = trpc.orgs.members.useQuery(undefined, { enabled: isAdmin });
   const invites = trpc.orgs.invites.useQuery(undefined, { enabled: isAdmin });
 
@@ -73,10 +75,13 @@ export function OrgMembersCard() {
     }
   };
 
+  // Reading the clock during render is impure, and it is also wrong here: an
+  // invite that expires in two minutes should start reading "expired" two
+  // minutes later without somebody reloading the page.
   const inviteState = (i: { revokedAt: Date | null; acceptedAt: Date | null; expiresAt: Date }): string => {
     if (i.revokedAt) return t.orgMembers.inviteRevoked;
     if (i.acceptedAt) return t.orgMembers.inviteAccepted;
-    if (new Date(i.expiresAt).getTime() <= Date.now()) return t.orgMembers.inviteExpired;
+    if (new Date(i.expiresAt).getTime() <= now) return t.orgMembers.inviteExpired;
     return t.orgMembers.invitePending;
   };
 
