@@ -3,12 +3,12 @@
 // (system commands: kind=control, userId null). Mutation audit rows come free
 // via the RBAC middleware.
 import { z } from "zod";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { commands, emsPeakShaving, emsPlans, emsSchedules, meters } from "@db/schema";
-import { assertOrgWrite, isSuper, meterOrg, orgWhere, stampOrg } from "../lib/org-scope";
+import { commands, curtailmentAssets, emsPeakShaving, emsPlans, emsSchedules, gridLimits, meters, sites } from "@db/schema";
+import { assertOrgRead, assertOrgWrite, isSuper, meterOrg, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
 import type { User } from "@db/schema";
 
 async function assertMeter(id: number): Promise<void> {
@@ -55,6 +55,27 @@ const peakInput = z.object({
   thresholdKw: z.number().finite().min(0),
   hysteresisKw: z.number().finite().min(0).optional(),
   maxDischargeKw: z.number().finite().positive(),
+  enabled: z.boolean().optional(),
+});
+
+// §9.2: a connection limit is a positive magnitude in both directions —
+// "export at most 100 kW" — so the sign convention never reaches the operator.
+const gridLimitInput = z.object({
+  siteId: z.number(),
+  pccMeterId: z.number(),
+  maxImportKw: z.number().finite().min(0).nullable().optional(),
+  maxExportKw: z.number().finite().min(0).nullable().optional(),
+  deadbandKw: z.number().finite().min(0).optional(),
+  // A zero step would freeze the controller at whatever it currently holds.
+  maxStepKw: z.number().finite().positive().optional(),
+  enabled: z.boolean().optional(),
+});
+
+const assetInput = z.object({
+  siteId: z.number(),
+  meterId: z.number(),
+  priority: z.number().int().min(0).max(10_000).optional(),
+  ratedKw: z.number().finite().positive(),
   enabled: z.boolean().optional(),
 });
 
@@ -141,6 +162,111 @@ export const emsRouter = createRouter({
       await assertRowOrg(ctx.user, "peak", input.id);
       const db = getDb();
       await db.delete(emsPeakShaving).where(eq(emsPeakShaving.id, input.id));
+      return { ok: true };
+    }),
+  }),
+
+  // §9.2: the site's grid connection limit and the assets that may be curtailed
+  // to hold it. One limit row per site; the EMS tick reads both every pass.
+  gridLimits: createRouter({
+    list: authed.query(async ({ ctx }) => {
+      const db = getDb();
+      const rows = await db
+        .select({ limit: gridLimits, siteName: sites.name, pccName: meters.name })
+        .from(gridLimits)
+        .leftJoin(sites, eq(gridLimits.siteId, sites.id))
+        .leftJoin(meters, eq(gridLimits.pccMeterId, meters.id))
+        .where(orgWhere(ctx.user, gridLimits.orgId))
+        .orderBy(gridLimits.siteId);
+      return rows.map((r) => ({ ...r.limit, siteName: r.siteName, pccMeterName: r.pccName }));
+    }),
+
+    upsert: operator.input(gridLimitInput).mutation(async ({ input, ctx }) => {
+      await assertMeter(input.pccMeterId);
+      assertOrgWrite(ctx.user, await meterOrg(input.pccMeterId), "Device");
+      assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
+      if (input.maxImportKw == null && input.maxExportKw == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Set at least one of the import or export limits — a limit row with neither does nothing",
+        });
+      }
+      const db = getDb();
+      const existing = await db
+        .select({ id: gridLimits.id })
+        .from(gridLimits)
+        .where(eq(gridLimits.siteId, input.siteId))
+        .limit(1);
+      if (existing[0]) {
+        await db.update(gridLimits).set(input).where(eq(gridLimits.id, existing[0].id));
+        return { id: existing[0].id };
+      }
+      const res = await db.insert(gridLimits).values({ ...input, orgId: stampOrg(ctx.user) }).$returningId();
+      return { id: res[0].id };
+    }),
+
+    remove: operator.input(z.object({ siteId: z.number() })).mutation(async ({ input, ctx }) => {
+      assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
+      const db = getDb();
+      // The assets go with the limit: leaving them behind would make a future
+      // limit on the same site silently inherit an old curtailment order.
+      await db.delete(curtailmentAssets).where(eq(curtailmentAssets.siteId, input.siteId));
+      await db.delete(gridLimits).where(eq(gridLimits.siteId, input.siteId));
+      return { ok: true };
+    }),
+
+    assets: authed.input(z.object({ siteId: z.number() })).query(async ({ input, ctx }) => {
+      assertOrgRead(ctx.user, await siteOrg(input.siteId), "Site");
+      const db = getDb();
+      const rows = await db
+        .select({ asset: curtailmentAssets, meterName: meters.name, model: meters.model })
+        .from(curtailmentAssets)
+        .leftJoin(meters, eq(curtailmentAssets.meterId, meters.id))
+        .where(eq(curtailmentAssets.siteId, input.siteId))
+        .orderBy(asc(curtailmentAssets.priority));
+      return rows.map((r) => ({ ...r.asset, meterName: r.meterName, model: r.model }));
+    }),
+
+    addAsset: operator.input(assetInput).mutation(async ({ input, ctx }) => {
+      await assertMeter(input.meterId);
+      assertOrgWrite(ctx.user, await meterOrg(input.meterId), "Device");
+      assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
+      const db = getDb();
+      const dup = await db
+        .select({ id: curtailmentAssets.id })
+        .from(curtailmentAssets)
+        .where(and(eq(curtailmentAssets.siteId, input.siteId), eq(curtailmentAssets.meterId, input.meterId)))
+        .limit(1);
+      if (dup[0]) throw new TRPCError({ code: "CONFLICT", message: "That device is already in the curtailment order" });
+      const res = await db.insert(curtailmentAssets).values(input).$returningId();
+      return { id: res[0].id };
+    }),
+
+    updateAsset: operator
+      .input(z.object({ id: z.number(), patch: assetInput.partial().omit({ siteId: true, meterId: true }) }))
+      .mutation(async ({ input, ctx }) => {
+        const db = getDb();
+        const rows = await db
+          .select({ siteId: curtailmentAssets.siteId })
+          .from(curtailmentAssets)
+          .where(eq(curtailmentAssets.id, input.id))
+          .limit(1);
+        if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Curtailment asset not found" });
+        assertOrgWrite(ctx.user, await siteOrg(rows[0].siteId), "Site");
+        await db.update(curtailmentAssets).set(input.patch).where(eq(curtailmentAssets.id, input.id));
+        return { ok: true };
+      }),
+
+    removeAsset: operator.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const rows = await db
+        .select({ siteId: curtailmentAssets.siteId })
+        .from(curtailmentAssets)
+        .where(eq(curtailmentAssets.id, input.id))
+        .limit(1);
+      if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Curtailment asset not found" });
+      assertOrgWrite(ctx.user, await siteOrg(rows[0].siteId), "Site");
+      await db.delete(curtailmentAssets).where(eq(curtailmentAssets.id, input.id));
       return { ok: true };
     }),
   }),

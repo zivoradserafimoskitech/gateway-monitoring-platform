@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ExternalLink } from "lucide-react";
 import { EmsPanel } from "@/components/EmsPanel";
 import { EmsPlanCard } from "@/components/EmsPlanCard";
+import { GridLimitCard } from "@/components/GridLimitCard";
 
 /** Origin attribution from the commands.result prefix (see api/ems/controller.ts tagLastCommand). */
 function originBadge(result: string | null, t: ReturnType<typeof useI18n>["t"]): { label: string; cls: string } {
@@ -43,6 +44,10 @@ export default function Ems() {
         <h1 className="text-2xl font-bold tracking-tight">{t.emsPage.title}</h1>
         <p className="text-sm text-muted-foreground">{t.emsPage.subtitle}</p>
       </div>
+
+      {/* §9.2: the connection limit outranks every other EMS decision, so it
+          sits above them on the page as well as in the controller. */}
+      <GridLimitCard />
 
       {/* ── Fleet commands (all org devices, live) ── */}
       <Card>

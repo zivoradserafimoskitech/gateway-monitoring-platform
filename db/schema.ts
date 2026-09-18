@@ -214,6 +214,64 @@ export const alarmRules = mysqlTable(
 export type AlarmRule = typeof alarmRules.$inferSelect;
 export type InsertAlarmRule = typeof alarmRules.$inferInsert;
 
+// §9.2: grid connection limit per site.
+//
+// A connection agreement caps import and, more often the binding one, export.
+// Breaching it is a contractual and often regulatory event, so the limit has
+// to hold without a human watching. One row per site; the controller reads it
+// on every EMS tick.
+export const gridLimits = mysqlTable(
+  "grid_limits",
+  {
+    id: serial("id").primaryKey(),
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).notNull(),
+    // Meter at the point of common coupling — the one that actually sees what
+    // crosses the boundary. Its activePowerKw is signed: + import, − export.
+    pccMeterId: bigint("pcc_meter_id", { mode: "number", unsigned: true }).notNull(),
+    maxImportKw: double("max_import_kw"),
+    // Positive magnitude, not a negative number: "export at most 100 kW".
+    maxExportKw: double("max_export_kw"),
+    // Release only this far inside the limit, so the loop does not hunt.
+    deadbandKw: double("deadband_kw").notNull().default(5),
+    // Ceiling on how far the total curtailment moves in one tick, so a single
+    // wild reading cannot take a whole array offline at once.
+    maxStepKw: double("max_step_kw").notNull().default(25),
+    // Durable total curtailment in kW. Curtailing changes the measurement that
+    // asked for it, so the controller holds this and nudges it rather than
+    // recomputing from each reading — and it must survive a restart, or the
+    // site un-curtails the moment the process bounces.
+    curtailKw: double("curtail_kw").notNull().default(0),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [uniqueIndex("grid_limits_site_unique").on(t.siteId), index("grid_limits_org_idx").on(t.orgId)],
+);
+export type GridLimitRow = typeof gridLimits.$inferSelect;
+
+// Which assets may be curtailed for that site, and in what order. Lower
+// priority curtails first — the column exists so an operator can put a leased
+// array ahead of an owned one and have that obeyed rather than averaged away.
+export const curtailmentAssets = mysqlTable(
+  "curtailment_assets",
+  {
+    id: serial("id").primaryKey(),
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).notNull(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    priority: int("priority").notNull().default(100),
+    // Nameplate kW: the denominator when the limit register is a percentage.
+    ratedKw: double("rated_kw").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("curtail_asset_site_meter_unique").on(t.siteId, t.meterId),
+    index("curtail_asset_site_idx").on(t.siteId),
+  ],
+);
+export type CurtailmentAsset = typeof curtailmentAssets.$inferSelect;
+
 // ─── Alarm events ────────────────────────────────────────────────────────────
 export const alarms = mysqlTable(
   "alarms",

@@ -62,9 +62,9 @@
 // the loop never throws. Idempotency: identical (meter, key, value) commands
 // are suppressed for IDEMPOTENCY_MS (5 min) so steady-state schedules don't
 // rewrite the same register every tick.
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { deviceProfiles, emsPeakShaving, emsSchedules, gateways, meters, sites } from "@db/schema";
+import { curtailmentAssets, deviceProfiles, emsPeakShaving, emsSchedules, gateways, gridLimits, meters, sites } from "@db/schema";
 import type { Meter } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog, executeControl } from "../control/execute";
 import type { ControllableMap } from "../control/execute";
@@ -78,6 +78,8 @@ import {
 } from "./watchdog";
 import { guarded } from "../lib/error-reporting";
 import { withLease } from "../lib/leader";
+import { env } from "../lib/env";
+import { allocateCurtailment, gridStatus, limitPct, stepCurtailment, type CurtailAsset, type GridLimits } from "./curtail";
 import {
   kwToMode,
   peakHoldPower,
@@ -260,6 +262,123 @@ async function activePlanSocLimits(
     map.set(r.meterId, { minSoc: r.minSoc ?? null, maxSoc: r.maxSoc ?? null });
   }
   return map;
+}
+
+
+// ─── §9.2 grid connection limit ──────────────────────────────────────────────
+// Runs FIRST, ahead of peak shaving, plans and schedules: a connection
+// agreement is contractual, so nothing else may out-vote it for the assets it
+// touches. The arithmetic lives in curtail.ts; this is the part that owns
+// telemetry, writes and the durable total.
+//
+// The register is activePowerLimitPct — the key the profile importer and the
+// control probes already use — so every write still goes through the same
+// whitelist, verification gate, range clamp and read-back as any other
+// setpoint. An asset whose profile does not declare it simply cannot be
+// curtailed, and saying so once is better than failing quietly every tick.
+const curtailWarned = new Set<number>();
+
+/** Returns the meter ids curtailment drove this tick. */
+async function evalGridLimits(): Promise<Set<number>> {
+  const drove = new Set<number>();
+  const db = getDb();
+  const rows = await db.select().from(gridLimits).where(eq(gridLimits.enabled, true));
+  if (rows.length === 0) return drove;
+
+  const store = getTelemetryStore();
+  const latest = await store.latestAll(); // one fleet read, not one per asset
+  const maxAgeMs = env.controlTelemetryMaxAgeMs;
+  const now = Date.now();
+
+  for (const g of rows) {
+    try {
+      const assetRows = await db
+        .select()
+        .from(curtailmentAssets)
+        .where(and(eq(curtailmentAssets.siteId, g.siteId), eq(curtailmentAssets.enabled, true)))
+        .orderBy(asc(curtailmentAssets.priority));
+      if (assetRows.length === 0) continue;
+
+      const limits: GridLimits = {
+        maxImportKw: g.maxImportKw ?? null,
+        maxExportKw: g.maxExportKw ?? null,
+        deadbandKw: g.deadbandKw,
+        maxStepKw: g.maxStepKw,
+      };
+
+      // The point-of-common-coupling reading is the contractual measurement,
+      // so it gets the same age bound as every other control decision.
+      const pcc = await store.freshForControl(g.pccMeterId);
+      const gridKw = pcc.fresh ? (pcc.row?.values.activePowerKw ?? null) : null;
+
+      let nextKw: number;
+      if (gridKw === null) {
+        // FAIL CLOSED, and note which way closed runs here: HOLD the current
+        // curtailment. Releasing is the action that breaches the agreement, and
+        // we have no measurement saying it is safe — so a site that was
+        // curtailed when its meter went dark stays curtailed until it comes
+        // back. Going further and curtailing MORE would be inventing a breach
+        // from no data, which costs generation for nothing.
+        nextKw = g.curtailKw;
+        const age = pcc.ageMs == null ? "no telemetry" : `${Math.round(pcc.ageMs / 1000)}s old`;
+        console.warn(
+          `[ems] grid limit site ${g.siteId}: PCC meter ${g.pccMeterId} telemetry stale (${age}) — holding curtailment at ${nextKw} kW`,
+        );
+      } else {
+        nextKw = stepCurtailment(g.curtailKw, gridStatus(gridKw, limits), limits);
+      }
+
+      const assets: CurtailAsset[] = assetRows.map((a) => {
+        const row = latest.get(a.meterId);
+        const fresh = row !== undefined && now - row.ts.getTime() <= maxAgeMs;
+        return {
+          meterId: a.meterId,
+          priority: a.priority,
+          ratedKw: a.ratedKw,
+          // Stale output counts as unknown, and the allocator passes over it
+          // rather than assigning a share to a device that may not be running.
+          outputKw: fresh ? (row.values.activePowerKw ?? null) : null,
+        };
+      });
+
+      const shares = allocateCurtailment(nextKw, assets);
+      const meterMap = await loadMeters(assetRows.map((a) => a.meterId));
+      for (const share of shares) {
+        const meter = meterMap.get(share.meterId);
+        if (!meter) continue;
+        const wl = await controllableForModel(meter.model);
+        if (!wl.activePowerLimitPct) {
+          if (!curtailWarned.has(share.meterId)) {
+            curtailWarned.add(share.meterId);
+            console.warn(
+              `[ems] grid limit site ${g.siteId}: ${meter.name} has no activePowerLimitPct in its profile — cannot curtail it`,
+            );
+          }
+          continue;
+        }
+        const pct = limitPct(share);
+        await send(
+          meter,
+          "activePowerLimitPct",
+          pct,
+          `grid limit site ${g.siteId} (${gridKw === null ? "held, PCC stale" : `${gridKw} kW at PCC`}, total ${nextKw} kW curtailed)`,
+        );
+        drove.add(share.meterId);
+      }
+
+      if (nextKw !== g.curtailKw) {
+        // Durable so a restart resumes where it left off. Without this the
+        // first tick after a bounce would release the whole site at once.
+        await db.update(gridLimits).set({ curtailKw: nextKw }).where(eq(gridLimits.id, g.id));
+      }
+    } catch (err) {
+      console.error(
+        `[ems] grid limit site ${g.siteId} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return drove;
 }
 
 /** Returns the BESS meter ids peak shaving drove this tick (v9 priority gate). */
@@ -597,10 +716,13 @@ export async function refreshWatchdogs(meters: Meter[]): Promise<number> {
 export async function emsTick(): Promise<void> {
   try {
     const now = new Date();
-    // v9 priority: peak shaving > active plan > schedules.
+    // Priority: grid connection limit > peak shaving > active plan > schedules.
+    // §9.2 sits at the top because it is the only one of the four that is a
+    // contractual obligation rather than an optimisation.
+    const gridDrove = await evalGridLimits();
     const peakDrove = await evalPeakShaving();
-    const planDrove = await evalPlans(now, peakDrove);
-    await evalSchedules(now, new Set([...peakDrove, ...planDrove]));
+    const planDrove = await evalPlans(now, new Set([...gridDrove, ...peakDrove]));
+    await evalSchedules(now, new Set([...gridDrove, ...peakDrove, ...planDrove]));
     // Refresh the deadman AFTER the setpoints for this tick have been issued,
     // so a device that was just commanded is confirmed reachable by the same
     // pass. Devices under EMS management are those with a schedule or a
