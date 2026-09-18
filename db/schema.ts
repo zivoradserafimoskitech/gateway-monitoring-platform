@@ -577,6 +577,19 @@ export const orgs = mysqlTable(
   {
     id: serial("id").primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
+    // §9.14: per-tenant raw telemetry retention. NULL means "use the
+    // deployment default" (TELEMETRY_RAW_DAYS), which is what every existing
+    // org keeps. A tenant under a regulator that requires five years of
+    // interval data and one that wants nothing kept past a month cannot both
+    // be served by a single global number.
+    telemetryRawDays: int("telemetry_raw_days"),
+    // §9.14: the deletion path. Scheduled rather than immediate on purpose —
+    // an irreversible delete of a tenant's entire history, executed the
+    // instant somebody clicks, has no way back from a misclick. The grace
+    // period is the feature; cancelling during it is a supported action.
+    deletionRequestedAt: timestamp("deletion_requested_at"),
+    deletionRequestedBy: bigint("deletion_requested_by", { mode: "number", unsigned: true }),
+    deletionScheduledFor: timestamp("deletion_scheduled_for"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("orgs_name_unique").on(t.name)],
@@ -1012,3 +1025,51 @@ export const apiRateBuckets = mysqlTable(
   (t) => [primaryKey({ columns: [t.keyId, t.scope] })],
 );
 export type ApiRateBucket = typeof apiRateBuckets.$inferSelect;
+
+
+// ─── §9.14: per-org data export ──────────────────────────────────────────────
+// A tenant's data has to be able to LEAVE. Until now the only ways out were a
+// scheduled energy report (one metric, emailed) and direct database access
+// (everyone's data at once). Neither is an answer to "give us our data" —
+// which arrives as a contract clause, as a regulator's question, or on the day
+// a customer moves to another supplier and is entitled to take their history
+// with them.
+//
+// Built asynchronously because it is not a request-sized job: a year of
+// interval data for a site is tens of millions of rows, and a tRPC call that
+// tried to return it would time out long before it finished.
+export const dataExports = mysqlTable(
+  "data_exports",
+  {
+    id: serial("id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    requestedBy: bigint("requested_by", { mode: "number", unsigned: true }),
+    status: mysqlEnum("status", ["pending", "running", "ready", "failed", "expired"]).notNull().default("pending"),
+    // Telemetry is optional and bounded by a range: most requests are for
+    // configuration and alarms, and defaulting to "every sample ever" would
+    // make the common case unusably slow.
+    includeTelemetry: boolean("include_telemetry").notNull().default(false),
+    rangeFrom: timestamp("range_from"),
+    rangeTo: timestamp("range_to"),
+    filePath: varchar("file_path", { length: 500 }),
+    sizeBytes: bigint("size_bytes", { mode: "number", unsigned: true }),
+    // Per-table row counts, so the recipient can check they got everything
+    // rather than trusting that a file that opened is a file that is complete.
+    rowCounts: json("row_counts"),
+    // Random, expiring, and re-issuable. A URL token rather than a session
+    // because the file is streamed by a plain HTTP route — see the expiry
+    // note in api/orgs/export.ts.
+    downloadToken: varchar("download_token", { length: 64 }),
+    tokenExpiresAt: timestamp("token_expires_at"),
+    error: varchar("error", { length: 500 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    // The archive is deleted from disk after this. An export sitting on a
+    // server forever is a copy of a tenant's entire history that nobody is
+    // watching.
+    expiresAt: timestamp("expires_at"),
+  },
+  (t) => [index("data_exports_org_idx").on(t.orgId), index("data_exports_status_idx").on(t.status)],
+);
+export type DataExport = typeof dataExports.$inferSelect;

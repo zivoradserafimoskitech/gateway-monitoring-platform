@@ -4,6 +4,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProfileImportDialog } from "@/components/ProfileImportDialog";
 import { ProfilesTable } from "@/components/ProfilesTable";
 import { OrganizationsCard } from "@/components/OrganizationsCard";
+import { OrgLifecycleCard } from "@/components/OrgLifecycleCard";
+import { DataExportCard } from "@/components/DataExportCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
 import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
@@ -45,6 +47,13 @@ export default function Settings() {
         <TabsContent value="general" className="space-y-6 pt-4">
           {/* v8/D2: organizations — superadmin only */}
           <OrganizationsCard />
+          {/* §9.14: a tenant's data has to be able to leave — admin, not
+              superadmin, so "give us our data" does not have to route through
+              whoever holds the platform account. */}
+          <DataExportCard />
+          {/* §9.14: how long it is kept, and the scheduled path for removing
+              an organization entirely. */}
+          <OrgLifecycleCard />
         </TabsContent>
         <TabsContent value="notifications" className="space-y-6 pt-4">
           <NotificationChannelsCard />

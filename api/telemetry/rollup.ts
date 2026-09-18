@@ -8,9 +8,11 @@
 //
 // TimescaleDB deployments use native continuous aggregates + retention policies
 // instead — this module is only wired up for the MySQL store (boot.ts).
-import { sql } from "drizzle-orm";
+import { isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { retentionCutoff } from "./retention";
+import { orgs } from "@db/schema";
+import { retentionCutoff, TELEMETRY_RAW_DAYS } from "./retention";
+import { defaultNeedsOwnPass, retentionPlan, type RetentionPlan } from "../orgs/retention";
 
 const ROLLUP_INTERVAL_MIN = parseInt(process.env.ROLLUP_INTERVAL_MIN || "10", 10);
 
@@ -149,6 +151,83 @@ export async function purgeRaw(cutoffUtc: Date): Promise<{ rolledHours: number; 
   return { rolledHours, deleted };
 }
 
+/**
+ * §9.14: purge with per-org retention.
+ *
+ * Reads the overrides, builds the plan (api/orgs/retention.ts), rolls up
+ * everything that is about to disappear, then deletes in three passes:
+ *
+ *  1. The global sweep, at the LONGEST retention anybody asked for. Running it
+ *     at the default instead would delete, at ninety days, the very rows a
+ *     tenant is paying to keep for five years.
+ *  2. The default, as a targeted delete — but only when somebody keeps longer,
+ *     since otherwise pass 1 already IS the default. A single-tenant
+ *     deployment therefore does exactly what it did before this existed.
+ *  3. Each org keeping less than the longest, at its own later cutoff.
+ *
+ * The same production guard as purgeRaw: this deletes data, and it refuses to
+ * do that against a remote database without ALLOW_UNSAFE_PROD=1.
+ */
+export async function purgeRawScoped(now: Date = new Date()): Promise<{
+  rolledHours: number;
+  deleted: number;
+  plan: RetentionPlan;
+}> {
+  const url = process.env.DATABASE_URL ?? "";
+  const local = /localhost|127\.0\.0\.1/.test(url);
+  if (!local && process.env.ALLOW_UNSAFE_PROD !== "1") {
+    throw new Error("purgeRawScoped refuses to run against a remote DB without ALLOW_UNSAFE_PROD=1");
+  }
+  const db = getDb();
+  const overrideRows = await db
+    .select({ orgId: orgs.id, days: orgs.telemetryRawDays })
+    .from(orgs)
+    .where(isNotNull(orgs.telemetryRawDays));
+  const plan = retentionPlan(
+    now,
+    TELEMETRY_RAW_DAYS,
+    overrideRows.map((r) => ({ orgId: r.orgId, days: r.days as number })),
+  );
+
+  // Roll up to the LATEST cutoff in the plan: a tenant with a short retention
+  // would otherwise lose hours that never reached an aggregate, and their
+  // reports would go blank rather than coarse.
+  const oldest = await db.execute(sql`
+    select unix_timestamp(min(ts)) as oldest_epoch from telemetry where ts < ${utcStr(plan.rollupUpTo)}`);
+  const oldestEpoch = (oldest as unknown as [Record<string, unknown>[]])[0][0]?.oldest_epoch;
+  let rolledHours = 0;
+  if (oldestEpoch !== null && oldestEpoch !== undefined) {
+    rolledHours = await rollupRange(new Date(Number(oldestEpoch) * 1000), plan.rollupUpTo);
+  }
+
+  let deleted = 0;
+  const del = await db.execute(sql`delete from telemetry where ts < ${utcStr(plan.globalCutoff)}`);
+  deleted += Number((del as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+
+  if (defaultNeedsOwnPass(plan, now, TELEMETRY_RAW_DAYS)) {
+    const defaultCutoff = retentionCutoff(now);
+    const overrideIds = overrideRows.map((r) => r.orgId);
+    // Devices with NO org are the deployment's own (auto-provisioned hardware
+    // still in the unclaimed queue), so they follow the deployment's rule.
+    const notOverridden =
+      overrideIds.length > 0
+        ? sql`(m.org_id is null or m.org_id not in (${sql.join(overrideIds.map((id) => sql`${id}`), sql`, `)}))`
+        : sql`1 = 1`;
+    const r = await db.execute(sql`
+      delete t from telemetry t join meters m on m.id = t.meter_id
+      where ${notOverridden} and t.ts < ${utcStr(defaultCutoff)}`);
+    deleted += Number((r as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+  }
+
+  for (const { orgId, cutoff } of plan.perOrg) {
+    const r = await db.execute(sql`
+      delete t from telemetry t join meters m on m.id = t.meter_id
+      where m.org_id = ${orgId} and t.ts < ${utcStr(cutoff)}`);
+    deleted += Number((r as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+  }
+  return { rolledHours, deleted, plan };
+}
+
 let timer: NodeJS.Timeout | null = null;
 
 /**
@@ -163,10 +242,14 @@ export function startRetentionLoop(): void {
       const now = Date.now();
       const lastClosedHour = new Date(Math.floor(now / 3_600_000) * 3_600_000 - 3_600_000);
       await rollupHour(lastClosedHour);
-      const cutoff = retentionCutoff();
-      const { rolledHours, deleted } = await purgeRaw(cutoff);
+      // §9.14: per-org retention. purgeRaw (one global cutoff) is kept for the
+      // probes and for anything that wants the old single-horizon behaviour.
+      const { rolledHours, deleted, plan } = await purgeRawScoped();
       if (deleted > 0) {
-        console.log(`[retention] purged ${deleted} raw rows older than ${cutoff.toISOString()} (${rolledHours} hours rolled up)`);
+        console.log(
+          `[retention] purged ${deleted} raw rows (global cutoff ${plan.globalCutoff.toISOString()}, ` +
+            `${plan.perOrg.length} org override(s), ${rolledHours} hours rolled up)`,
+        );
       }
     } catch (err) {
       console.error("[retention] tick failed:", err instanceof Error ? err.message : err);

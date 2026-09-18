@@ -377,6 +377,65 @@ saved — a hostname that resolved publicly then can be re-pointed at an interna
 address afterwards, and these requests carry a signature that makes them look
 authentic to whatever receives them.
 
+## Data export, retention and deletion (§9.14)
+
+Not part of the REST API — these are tRPC procedures on `orgs` plus one plain
+HTTP download route — but an integrator asking "how do we get our data out" and
+"how long do you keep it" ends up here, so they are documented together.
+
+**Export.** `orgs.requestExport` queues a build; `orgs.exports` lists them;
+`orgs.exportLink` issues a short-lived URL, and `GET /api/exports/:token`
+streams the archive. Admin, not superadmin: making it superadmin-only would
+route every "give us our data" request through whoever holds the platform
+account.
+
+The archive is NDJSON — one JSON object per line, section headers of the form
+`{"_table": "devices", "_rows": 12}` between sections. A stream, not one JSON
+document, so a reader can process it incrementally and a truncated file is
+detectably truncated instead of an unparseable blob. It contains sites,
+gateways, devices, users, alarms and the command audit trail, plus raw
+telemetry when asked for with a date range.
+
+Password hashes, MFA secrets and API key hashes are **not** in it. An export is
+a copy of a tenant's data, not of the things protecting their accounts.
+
+Per-table row counts are stored with the export and shown beside it, so the
+recipient can check they received everything rather than trusting that a file
+which opened is a file that is whole. A build that fails deletes its
+half-written file: an incomplete archive looks like data and is not.
+
+Archives are removed from disk after `EXPORT_TTL_HOURS` (default 72), and the
+download token expires after `EXPORT_DOWNLOAD_TTL_MIN` (default 15) because it
+travels in a URL, and URLs end up in proxy logs and browser history. Ask for
+another link whenever you need one.
+
+**Retention.** `orgs.setRetention` sets `telemetryRawDays` per organization;
+NULL means the deployment default (`TELEMETRY_RAW_DAYS`, 90). Only RAW samples
+are purged — hourly rollups are kept, and charts and reports past the cutoff
+are served from them.
+
+The purge sweeps a shared table, so it runs at the **longest** retention anyone
+asked for and applies shorter ones as targeted deletes. Otherwise a global
+sweep at ninety days would delete the rows a tenant is paying to keep for five
+years. Everything about to be deleted is rolled up to the latest cutoff in the
+plan first, so a tenant on a short retention gets coarse history rather than a
+blank chart.
+
+**Deletion.** `orgs.scheduleDeletion` requires the organization's exact name
+and schedules the purge `ORG_DELETION_GRACE_DAYS` (default 7) ahead;
+`orgs.cancelDeletion` calls it off until then. It is scheduled rather than
+immediate because an irreversible delete of a tenant's entire history executed
+the instant somebody clicks has no way back from a misclick, and the grace
+period is the feature. Deleting the organization you belong to is refused: it
+would delete your own account mid-request and leave the purge half-done with
+nobody able to sign in and finish it.
+
+When it runs it removes children before parents — telemetry and rollups by
+device, then alarms, commands, EMS rows, channels, keys, devices, gateways,
+sites, users, export archives, and finally the organization — and logs the
+per-table counts. That log line is the only record afterwards, which is
+precisely why it exists.
+
 ## Notes
 
 - Alarm **webhooks**: prefer the signed, retried subscriptions above (§9.15).

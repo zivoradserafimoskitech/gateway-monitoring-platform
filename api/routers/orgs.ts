@@ -7,7 +7,10 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, admin, superadmin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { deviceRegistrations, gateways, meters, orgs, sites, users } from "@db/schema";
+import { dataExports, deviceRegistrations, gateways, meters, orgs, sites, users } from "@db/schema";
+import { DOWNLOAD_TTL_MIN, newDownloadToken } from "../orgs/export";
+import { deletionDueAt, DELETION_GRACE_DAYS } from "../orgs/purge";
+import { TELEMETRY_RAW_DAYS } from "../telemetry/retention";
 import { evictUserCache } from "../lib/auth";
 import { evictGatewayCache } from "../mqtt/service";
 import { assertRowOrg, isSuper, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
@@ -51,6 +54,176 @@ export const orgsRouter = createRouter({
       evictUserCache(); // org change must take effect within the cache TTL
       return { ok: true };
     }),
+
+  // ─── §9.14: retention, export and deletion ─────────────────────────────────
+  // Retention was one global number, which cannot serve two tenants at once:
+  // one under a regulator requiring five years of interval data and one who
+  // wants nothing kept past a month are both reasonable.
+  setRetention: superadmin
+    .input(
+      z.object({
+        orgId: z.number(),
+        // null clears the override and returns the org to the deployment
+        // default, which is what every org has until somebody sets one.
+        telemetryRawDays: z.number().int().min(1).max(3650).nullable(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const db = getDb();
+      const o = await db.select({ id: orgs.id }).from(orgs).where(eq(orgs.id, input.orgId)).limit(1);
+      if (!o[0]) throw new TRPCError({ code: "NOT_FOUND", message: `Organization ${input.orgId} not found` });
+      await db
+        .update(orgs)
+        .set({ telemetryRawDays: input.telemetryRawDays })
+        .where(eq(orgs.id, input.orgId));
+      return { ok: true, defaultDays: TELEMETRY_RAW_DAYS };
+    }),
+
+  // An admin may export their OWN org; a superadmin may export any. Export is
+  // a read of data the caller can already see, so it is not superadmin-only —
+  // making it so would mean every "give us our data" request routes through
+  // whoever holds the platform account.
+  exports: admin.query(async ({ ctx }) => {
+    const db = getDb();
+    const where = isSuper(ctx.user) ? undefined : eq(dataExports.orgId, ctx.user!.orgId ?? -1);
+    const rows = await db
+      .select({
+        id: dataExports.id,
+        orgId: dataExports.orgId,
+        status: dataExports.status,
+        includeTelemetry: dataExports.includeTelemetry,
+        rangeFrom: dataExports.rangeFrom,
+        rangeTo: dataExports.rangeTo,
+        sizeBytes: dataExports.sizeBytes,
+        rowCounts: dataExports.rowCounts,
+        error: dataExports.error,
+        createdAt: dataExports.createdAt,
+        completedAt: dataExports.completedAt,
+        expiresAt: dataExports.expiresAt,
+      })
+      .from(dataExports)
+      .where(where)
+      .orderBy(desc(dataExports.createdAt))
+      .limit(50);
+    return rows;
+  }),
+
+  requestExport: admin
+    .input(
+      z.object({
+        orgId: z.number().optional(),
+        includeTelemetry: z.boolean().default(false),
+        rangeFrom: z.date().optional(),
+        rangeTo: z.date().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const orgId = input.orgId ?? ctx.user?.orgId ?? null;
+      if (orgId === null) throw new TRPCError({ code: "BAD_REQUEST", message: "No organization to export" });
+      if (!isSuper(ctx.user) && orgId !== (ctx.user?.orgId ?? -1)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You may only export your own organization" });
+      }
+      if (input.includeTelemetry && (!input.rangeFrom || !input.rangeTo)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A telemetry export needs a from/to range — 'every sample ever' is not a request anyone can serve",
+        });
+      }
+      if (input.rangeFrom && input.rangeTo && input.rangeTo <= input.rangeFrom) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "rangeTo must be after rangeFrom" });
+      }
+      const db = getDb();
+      // One build at a time per org. Two concurrent exports of the same tenant
+      // are the same file twice, and the second only slows the first down.
+      const inflight = await db
+        .select({ id: dataExports.id })
+        .from(dataExports)
+        .where(and(eq(dataExports.orgId, orgId), sql`${dataExports.status} in ('pending','running')`))
+        .limit(1);
+      if (inflight[0]) {
+        throw new TRPCError({ code: "CONFLICT", message: "An export for this organization is already being built" });
+      }
+      const res = await db
+        .insert(dataExports)
+        .values({
+          orgId,
+          requestedBy: ctx.user?.id ?? null,
+          includeTelemetry: input.includeTelemetry,
+          rangeFrom: input.rangeFrom ?? null,
+          rangeTo: input.rangeTo ?? null,
+        })
+        .$returningId();
+      return { id: res[0].id };
+    }),
+
+  // Issues a fresh, short-lived link. The token travels in a URL, and URLs end
+  // up in proxy logs and browser history, so it expires in minutes and is
+  // re-issued on demand rather than being stored as a permanent address.
+  exportLink: admin.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ id: dataExports.id, orgId: dataExports.orgId, status: dataExports.status })
+      .from(dataExports)
+      .where(eq(dataExports.id, input.id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Export not found" });
+    if (!isSuper(ctx.user) && row.orgId !== (ctx.user?.orgId ?? -1)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Export not found" });
+    }
+    if (row.status !== "ready") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `Export is ${row.status}, not ready` });
+    }
+    const token = newDownloadToken();
+    const tokenExpiresAt = new Date(Date.now() + DOWNLOAD_TTL_MIN * 60_000);
+    await db.update(dataExports).set({ downloadToken: token, tokenExpiresAt }).where(eq(dataExports.id, input.id));
+    return { url: `/api/exports/${token}`, expiresAt: tokenExpiresAt, ttlMinutes: DOWNLOAD_TTL_MIN };
+  }),
+
+  // Scheduled, never immediate. An irreversible delete of a tenant's entire
+  // history executed the moment somebody clicks has no way back from a
+  // misclick or a misread ticket; the grace period is the feature.
+  scheduleDeletion: superadmin
+    .input(z.object({ orgId: z.number(), confirmName: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = getDb();
+      const rows = await db.select().from(orgs).where(eq(orgs.id, input.orgId)).limit(1);
+      const org = rows[0];
+      if (!org) throw new TRPCError({ code: "NOT_FOUND", message: `Organization ${input.orgId} not found` });
+      // Typing the name is not ceremony: the id in a dropdown is one misclick
+      // from the row above it, and this operation has nothing to inspect
+      // afterwards.
+      if (input.confirmName !== org.name) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Type the organization's exact name to confirm deletion",
+        });
+      }
+      // Deleting your own org would delete your own account mid-request and
+      // leave the purge half-done with nobody able to sign in and finish it.
+      if ((ctx.user?.orgId ?? null) === input.orgId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot schedule deletion of your own organization" });
+      }
+      const scheduledFor = deletionDueAt();
+      await db
+        .update(orgs)
+        .set({
+          deletionRequestedAt: new Date(),
+          deletionRequestedBy: ctx.user?.id ?? null,
+          deletionScheduledFor: scheduledFor,
+        })
+        .where(eq(orgs.id, input.orgId));
+      return { scheduledFor, graceDays: DELETION_GRACE_DAYS };
+    }),
+
+  cancelDeletion: superadmin.input(z.object({ orgId: z.number() })).mutation(async ({ input }) => {
+    const db = getDb();
+    await db
+      .update(orgs)
+      .set({ deletionRequestedAt: null, deletionRequestedBy: null, deletionScheduledFor: null })
+      .where(eq(orgs.id, input.orgId));
+    return { ok: true };
+  }),
 
   // ─── Unclaimed devices ─────────────────────────────────────────────────────
   // MQTT auto-provisioning creates a gateway (and its meters) the first time

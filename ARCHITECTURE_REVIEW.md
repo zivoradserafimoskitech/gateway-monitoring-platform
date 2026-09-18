@@ -554,6 +554,11 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.13 | — a bucket, in the database, failing open | A token bucket rather than a fixed window, because a fixed window lets a caller spend a full quota at 11:59:59 and another at 12:00:00 — twice the published rate at the worst moment. In the database rather than in process memory, because an in-memory limiter multiplies the quota by the replica count and resets on every deploy, so the documented number stops being the number. And it fails OPEN: a limiter that rejects traffic because its own bookkeeping is unavailable has turned a storage problem into a total outage of the public API |
 | 9.13 | — the clock is not trusted to run forwards | Elapsed time is clamped at zero. Skew between replicas or an NTP step backwards would otherwise compute a negative refill and DRAIN the bucket, which is the one way a rate limiter can lock out a caller who did nothing wrong. Rejected requests write nothing at all — the refill is a pure function of elapsed time, so the next read derives it again, and a client hammering an exhausted limit costs reads rather than amplifying writes |
 | 9.13 | No machine-readable API contract | `GET /api/v1/openapi.json` now serves an OpenAPI 3.1 document, behind the same key as everything else. Hand-written, because nothing in this stack generates one from Hono handlers — and therefore paired with a test that walks the routes Hono actually registered and fails in BOTH directions: a route with no spec entry, and a spec entry for a route that no longer exists. The second is the one that bites, because a client generated from it finds the 404 in production. The test is what makes the file a contract rather than documentation |
+| 9.14 | A tenant's data could not leave | The only routes out were a scheduled energy report (one metric, emailed) and direct database access (everyone's data at once). Neither answers "give us our data", which arrives as a contract clause, as a regulator's question, or on the day a customer moves supplier. Per-org export now writes sites, gateways, devices, users, alarms and the control audit trail as NDJSON, with raw telemetry optional and range-bounded, built in the background because a year of interval data for one site is tens of millions of rows. Password hashes and MFA secrets are excluded: an export is a copy of a tenant's DATA, not of the things protecting their accounts |
+| 9.14 | — admin, not superadmin, and counted | Making export superadmin-only would route every "give us our data" request through whoever holds the platform account. Per-table row counts ship with the archive so the recipient can check they got everything rather than trusting that a file which opened is a file that is whole, and a build that fails deletes its half-written file — an incomplete archive looks like data and is not |
+| 9.14 | Retention was one number for everybody | A tenant under a regulator requiring five years of interval data and one who wants nothing kept past a month are both reasonable; a single TELEMETRY_RAW_DAYS has to be wrong for one of them. The catch is that the purge sweeps a shared table, so it now runs at the LONGEST retention anyone asked for and applies shorter ones as targeted deletes — otherwise the global sweep would delete, at ninety days, the very rows somebody is paying to keep for five years. A single-tenant deployment does exactly what it did before |
+| 9.14 | — and rolls up before it deletes | To the LATEST cutoff in the plan, not the earliest: a tenant on a seven-day retention would otherwise lose hours that never reached an aggregate, and their reports would go blank rather than coarse |
+| 9.14 | "Delete our data" had no implementation | The nearest thing was deleting rows by hand in whatever order occurred to whoever held the console, which is how a tenant ends up gone from the org table and still present in telemetry, alarms and the command audit trail. Deletion is now scheduled with a grace period, children before parents, every table counted — and the counts logged, because this is the one operation with nothing left to inspect afterwards. Scheduled rather than immediate because an irreversible delete executed the instant somebody clicks has no way back from a misclick; cancelling during the window is a supported action rather than a database restore. Typing the org's exact name is required, and deleting your OWN org is refused — it would delete your account mid-request and leave the purge half-done with nobody able to sign in and finish it |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -584,19 +589,19 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Nine have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Ten have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
   monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
-  retried webhook subscriptions (§9.15), and per-scope REST rate limits with a published
-  OpenAPI document (§9.13).
+  retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
+  document (§9.13), and per-org export, retention and deletion (§9.14).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining seven are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining six are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but
