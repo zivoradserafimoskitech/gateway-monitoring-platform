@@ -540,6 +540,12 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.4 | Setpoints could only be tried by sending them | A dry run reports what a write would do — whitelist, verification gate, clamped value, target register, and whether the device is stopped — through the same function as the real path, stopping before the bus. A rehearsal running different code from the performance would be worth less than none. Previews never reach the commands table: that is the record of what went to plant, and an incident review must not find rehearsals mixed into it |
 | 9.7 | Nothing detected a frozen register | A stuck sensor returns the SAME plausible number forever: the device stays online, every gt/lt rule sees a value inside its limits, nothing fires, and that number goes on feeding EMS decisions and billing. A new `stuck` rule operator reads `threshold` as seconds-unchanged and reuses the existing dedup, hysteresis, duration, maintenance-window and notification machinery. Exact equality, not a tolerance band — a live sensor jitters in its last digits, so a band would call a genuinely steady 50.00 Hz supply stuck |
 | 9.7 | Reports could not say how complete they were | Each day now carries `coverage`: its sample count over the median of the device's other days. A day the gateway spent mostly offline used to look like a normal day with a smaller total, and got invoiced. Calibrated from the report itself, so there is no nominal sample interval to configure and it works the same for a pushing MQTT device and a polled Modbus one |
+| 9.8 | Alarms could only be silenced by the siteful | A maintenance window blanks a whole site and stops the alarm being RAISED at all. The case that actually comes up is narrower — one rule, or one device, is known-broken and should stop paging people while somebody fixes it. Suppression scopes to a rule, a device or a site, and the alarm is still raised, still stored and still shown, carrying the reason nobody was called. "Do not wake anyone" is not the same instruction as "pretend it did not occur", and only the first is ever what an engineer standing at a faulty inverter means |
+| 9.8 | — the reason is not optional | `reason` is NOT NULL in the table and non-blank in the API. A suppression nobody can explain is how an installation ends up permanently quiet with the original problem long forgotten, and the row outliving its author is the normal case, not the exception |
+| 9.8 | — checked at dispatch, re-checked at escalation | Not at raise time. The ordinary sequence is that an alarm pages somebody, they look at it, and they suppress it while they work; a check that only ran when the alarm first fired would go on escalating the very thing they had just silenced fifteen minutes later |
+| 9.8 | Every channel was paged at every hour | An on-call rota: shifts bind a channel to days and hours in a named timezone, reusing the `ems_schedules` window shape (bit 0 = Sunday, equal start and end means all day, an end before the start is a night shift). A night shift belongs to the day it BEGINS, so Friday 22:00–06:00 is still on duty at 02:00 on Saturday rather than being two disjoint pieces of Friday |
+| 9.8 | — opt-in, and it fails open | An org with no enabled shifts keeps the previous behaviour exactly: every channel notified. And an hour the rota does not cover still delivers to everyone, with a warning on the screen and in the log — a duplicate page is recoverable, a missed one is not, and a rota that quietly pages nobody because somebody half-configured it is worse than no rota at all. Resolutions bypass the rota entirely: they go to whoever was actually woken, not to whoever is on duty now |
+| 9.8 | — one implementation of "who is on duty" | The shift-window decision lives in `contracts/`, so the dispatcher and the "on duty now" badge run the same function. `tzOffsetMs`/`localClock` moved there with it. A second copy on the browser side is how a rota that reads correct on screen pages the wrong person at 03:00 |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -570,16 +576,21 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Four have
-  landed: the setpoint deadman (§9.1), device-offline alarming (§9.6) and now data-quality
-  monitoring (§9.7) in its two halves — frozen-register detection and per-day completeness.
-  Six have landed: the setpoint deadman (§9.1), the grid connection limit with curtailment
-  (§9.2), the emergency stop and command dry-run (§9.4), device-offline alarming (§9.6) and
-  data-quality monitoring (§9.7) in both halves. The next one worth building is OIDC single
-  sign-on (§9.12) — a procurement blocker for industrial customers rather than a feature, and
-  the first item here that cannot be proved in CI: there is no identity provider on a runner,
-  so the flow can be unit-tested and shipped behind a flag but not demonstrated end to end
-  without a real tenant. The remaining seven are real but none of them blocks anything.
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Seven have
+  landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
+  emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
+  monitoring (§9.7) in both halves, and now alarm suppression with an on-call rota (§9.8).
+  §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
+  alarms — a frozen register and a silent gateway both page now where neither did before — and
+  the machinery for deciding which of them is worth waking a person for had not moved since
+  maintenance windows. Adding detection without adding judgement is how an installation learns
+  to ignore its own alarms.
+
+  The remaining nine are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  the one with the most commercial weight — a procurement blocker for industrial customers
+  rather than a feature — and is also the first item here that cannot be proved in CI: there is
+  no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but
+  not demonstrated end to end without a real tenant.
 
   **Not built in §9.7: gap detection as an alarm.** The largest gap inside an hour needs a
   window function, and a TimescaleDB continuous aggregate does not allow one — building it on

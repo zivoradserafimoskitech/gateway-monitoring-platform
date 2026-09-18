@@ -10,10 +10,18 @@ import { TRPCError } from "@trpc/server";
 import { desc, eq, isNull, or, type Column, type SQL } from "drizzle-orm";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { maintenanceWindows, notificationChannels, alarmNotifications, sites } from "@db/schema";
+import {
+  alarmNotifications,
+  alarmRules,
+  alarmSuppressions,
+  maintenanceWindows,
+  notificationChannels,
+  onCallShifts,
+  sites,
+} from "@db/schema";
 import { invalidateMaintenanceCache, parseTelegramTarget } from "../alarms/notify";
 import { parseEgressUrl, BlockedEgressError } from "../lib/egress";
-import { isSuper, stampOrg, assertRowOrg, siteOrg, assertOrgWrite } from "../lib/org-scope";
+import { isSuper, stampOrg, assertRowOrg, meterOrg, siteOrg, assertOrgWrite } from "../lib/org-scope";
 import type { User } from "@db/schema";
 
 // Validate a channel target for its transport. Throws a tRPC BAD_REQUEST with
@@ -190,6 +198,167 @@ export const notificationsRouter = createRouter({
       invalidateMaintenanceCache();
       return { id: inserted[0].id };
     }),
+
+  // ─── §9.8 targeted suppression ─────────────────────────────────────────────
+  // Narrower than a maintenance window, and different in kind: a suppressed
+  // alarm is still raised and still appears in history carrying the reason it
+  // was not sent. "Do not wake anyone" is not the same instruction as "pretend
+  // it did not happen", and only the first of the two is ever what an engineer
+  // standing at a misbehaving inverter actually means.
+  suppressions: authed.query(async ({ ctx }) => {
+    return getDb()
+      .select()
+      .from(alarmSuppressions)
+      .where(visibleOrg(ctx.user, alarmSuppressions.orgId))
+      .orderBy(desc(alarmSuppressions.createdAt));
+  }),
+
+  createSuppression: operator
+    .input(
+      z.object({
+        scope: z.enum(["rule", "meter", "site"]),
+        refId: z.number().int().positive(),
+        startsAt: z.date(),
+        endsAt: z.date(),
+        // Required, and required to be non-blank: a suppression with no reason
+        // is how an installation ends up permanently quiet with nobody
+        // remembering why.
+        reason: z.string().trim().min(1).max(255),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.endsAt <= input.startsAt) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "endsAt must be after startsAt" });
+      }
+      // Silencing something requires the right to administer it — otherwise a
+      // tenant could mute another tenant's devices by guessing ids.
+      if (input.scope === "meter") {
+        assertOrgWrite(ctx.user, await meterOrg(input.refId), "Device");
+      } else if (input.scope === "site") {
+        assertOrgWrite(ctx.user, await siteOrg(input.refId), "Site");
+      } else {
+        const rows = await getDb()
+          .select({ orgId: alarmRules.orgId })
+          .from(alarmRules)
+          .where(eq(alarmRules.id, input.refId))
+          .limit(1);
+        assertOrgWrite(ctx.user, rows[0] ? rows[0].orgId : undefined, "Alarm rule");
+      }
+      const inserted = await getDb()
+        .insert(alarmSuppressions)
+        .values({
+          scope: input.scope,
+          refId: input.refId,
+          startsAt: input.startsAt,
+          endsAt: input.endsAt,
+          reason: input.reason,
+          createdBy: ctx.user?.id ?? null,
+          orgId: stampOrg(ctx.user, null),
+        })
+        .$returningId();
+      return { id: inserted[0].id };
+    }),
+
+  removeSuppression: operator.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ orgId: alarmSuppressions.orgId })
+      .from(alarmSuppressions)
+      .where(eq(alarmSuppressions.id, input.id))
+      .limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Suppression not found" });
+    assertMayWrite(ctx.user, rows[0].orgId, "Suppression");
+    await db.delete(alarmSuppressions).where(eq(alarmSuppressions.id, input.id));
+    return { ok: true };
+  }),
+
+  // ─── §9.8 on-call rota ─────────────────────────────────────────────────────
+  // Opt-in by construction: an org with no enabled shifts keeps the pre-rota
+  // behaviour and every channel is notified. Dispatch also fails open on an
+  // hour nobody covers — a duplicate page is recoverable, a missed one is not.
+  onCall: authed.query(async ({ ctx }) => {
+    const rows = await getDb()
+      .select({ shift: onCallShifts, channelName: notificationChannels.name })
+      .from(onCallShifts)
+      .leftJoin(notificationChannels, eq(onCallShifts.channelId, notificationChannels.id))
+      .where(visibleOrg(ctx.user, onCallShifts.orgId))
+      .orderBy(desc(onCallShifts.createdAt));
+    return rows.map((r) => ({ ...r.shift, channelName: r.channelName }));
+  }),
+
+  createShift: operator
+    .input(
+      z.object({
+        channelId: z.number().int().positive(),
+        // Bit 0 = Sunday, same shape as ems_schedules. 127 = every day.
+        dayOfWeekMask: z.number().int().min(0).max(127).default(127),
+        startMin: z.number().int().min(0).max(1439).default(0),
+        // Equal start and end means all day; end < start wraps past midnight.
+        endMin: z.number().int().min(0).max(1439).default(0),
+        timezone: z.string().min(1).max(64).default("UTC"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.dayOfWeekMask === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A shift on no day of the week would never be on duty",
+        });
+      }
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: input.timezone });
+      } catch {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Unknown timezone: ${input.timezone}` });
+      }
+      const db = getDb();
+      const ch = await db
+        .select({ orgId: notificationChannels.orgId })
+        .from(notificationChannels)
+        .where(eq(notificationChannels.id, input.channelId))
+        .limit(1);
+      if (!ch[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Channel not found" });
+      assertMayWrite(ctx.user, ch[0].orgId, "Channel");
+      const inserted = await db
+        .insert(onCallShifts)
+        .values({
+          channelId: input.channelId,
+          dayOfWeekMask: input.dayOfWeekMask,
+          startMin: input.startMin,
+          endMin: input.endMin,
+          timezone: input.timezone,
+          orgId: stampOrg(ctx.user, null),
+        })
+        .$returningId();
+      return { id: inserted[0].id };
+    }),
+
+  toggleShift: operator
+    .input(z.object({ id: z.number(), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = getDb();
+      const rows = await db
+        .select({ orgId: onCallShifts.orgId })
+        .from(onCallShifts)
+        .where(eq(onCallShifts.id, input.id))
+        .limit(1);
+      if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Shift not found" });
+      assertMayWrite(ctx.user, rows[0].orgId, "Shift");
+      await db.update(onCallShifts).set({ enabled: input.enabled }).where(eq(onCallShifts.id, input.id));
+      return { ok: true };
+    }),
+
+  removeShift: operator.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ orgId: onCallShifts.orgId })
+      .from(onCallShifts)
+      .where(eq(onCallShifts.id, input.id))
+      .limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Shift not found" });
+    assertMayWrite(ctx.user, rows[0].orgId, "Shift");
+    await db.delete(onCallShifts).where(eq(onCallShifts.id, input.id));
+    return { ok: true };
+  }),
 
   removeMaintenance: operator.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
     const db = getDb();

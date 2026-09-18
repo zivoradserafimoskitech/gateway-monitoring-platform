@@ -280,6 +280,66 @@ export const curtailmentAssets = mysqlTable(
 );
 export type CurtailmentAsset = typeof curtailmentAssets.$inferSelect;
 
+// §9.8: targeted alarm suppression, with a reason.
+//
+// Maintenance windows already silence a whole SITE for a period. What was
+// missing is the narrow case that actually comes up: one rule, or one device,
+// is known to be misbehaving and should stop paging people while it is fixed —
+// without going dark on everything else at that site.
+//
+// Deliberately different from a maintenance window in one respect: a suppressed
+// alarm is still RAISED and still appears in history, carrying the reason it
+// was not sent. A maintenance window blocks the alarm outright, which loses the
+// record that the condition ever happened. Suppression means "do not wake
+// anyone", not "pretend it did not occur".
+export const alarmSuppressions = mysqlTable(
+  "alarm_suppressions",
+  {
+    id: serial("id").primaryKey(),
+    // What is silenced: one rule, one device, or one site.
+    scope: mysqlEnum("scope", ["rule", "meter", "site"]).notNull(),
+    refId: bigint("ref_id", { mode: "number", unsigned: true }).notNull(),
+    startsAt: timestamp("starts_at").notNull(),
+    endsAt: timestamp("ends_at").notNull(),
+    // NOT nullable: a suppression with no reason is how an installation ends
+    // up permanently quiet with nobody remembering why.
+    reason: varchar("reason", { length: 255 }).notNull(),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("alarm_supp_scope_idx").on(t.scope, t.refId), index("alarm_supp_org_idx").on(t.orgId)],
+);
+export type AlarmSuppression = typeof alarmSuppressions.$inferSelect;
+
+// §9.8: who is on duty. Without a rota every channel receives everything at
+// every hour, which is how a 3 a.m. page reaches six people who cannot act on
+// it and one who can.
+//
+// Opt-in by construction: when an org has NO shifts configured, dispatch is
+// unchanged and every channel is notified. A rota that quietly pages nobody
+// because it was half-configured is worse than no rota at all.
+export const onCallShifts = mysqlTable(
+  "on_call_shifts",
+  {
+    id: serial("id").primaryKey(),
+    channelId: bigint("channel_id", { mode: "number", unsigned: true }).notNull(),
+    // Same shape as ems_schedules: bit 0 = Sunday.
+    dayOfWeekMask: int("day_of_week_mask").notNull().default(127),
+    startMin: int("start_min").notNull().default(0),
+    // Equal start and end means all day; end < start wraps past midnight,
+    // which is what a night shift is.
+    endMin: int("end_min").notNull().default(0),
+    // The rota is read in a human's local time, not the server's.
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("on_call_channel_idx").on(t.channelId), index("on_call_org_idx").on(t.orgId)],
+);
+export type OnCallShift = typeof onCallShifts.$inferSelect;
+
 // ─── Alarm events ────────────────────────────────────────────────────────────
 export const alarms = mysqlTable(
   "alarms",
@@ -294,6 +354,10 @@ export const alarms = mysqlTable(
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     message: varchar("message", { length: 500 }).notNull(),
     status: mysqlEnum("status", ["active", "acknowledged", "resolved"]).notNull().default("active"),
+    // §9.8: set when a suppression stopped this alarm being dispatched. The
+    // alarm is still here — the record of the condition is not the thing
+    // anyone wanted silenced.
+    suppressedReason: varchar("suppressed_reason", { length: 255 }),
     triggeredAt: timestamp("triggered_at").notNull().defaultNow(),
     acknowledgedAt: timestamp("acknowledged_at"),
     resolvedAt: timestamp("resolved_at"),

@@ -125,7 +125,21 @@ function EventsTable({ status }: { status: "active" | "acknowledged" | "resolved
                 <TableCell>
                   <SeverityBadge severity={a.severity} />
                 </TableCell>
-                <TableCell className="max-w-md text-sm">{a.message}</TableCell>
+                <TableCell className="max-w-md text-sm">
+                  {a.message}
+                  {/* §9.8: a suppressed alarm is still raised and still shown —
+                      suppression means "do not wake anyone", not "pretend it
+                      did not occur". The reason is on the row so a review a
+                      week later can see who decided to sit on it and why. */}
+                  {a.suppressedReason && (
+                    <span
+                      className="ml-2 whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                      title={`${t.alarms.suppressedHint} ${a.suppressedReason}`}
+                    >
+                      {t.alarms.suppressed}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell className="text-sm">{a.meterName ?? a.gatewayName ?? "—"}</TableCell>
                 <TableCell className="text-sm">
                   {a.value !== null && a.value !== undefined

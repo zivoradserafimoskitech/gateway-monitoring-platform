@@ -8,6 +8,8 @@ import { ApiKeysCard } from "@/components/ApiKeysCard";
 import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
 import { MaintenanceWindowsCard } from "@/components/MaintenanceWindowsCard";
+import { OnCallRotaCard } from "@/components/OnCallRotaCard";
+import { AlarmSuppressionCard } from "@/components/AlarmSuppressionCard";
 import { DeliveryHistoryCard } from "@/components/DeliveryHistoryCard";
 import { ChangePasswordCard } from "@/components/ChangePasswordCard";
 
@@ -48,6 +50,12 @@ export default function Settings() {
               channels they act on — all three answer "who gets told, when, and
               did it actually arrive". */}
           <MaintenanceWindowsCard />
+          {/* §9.8: the narrow cousin of a maintenance window — one rule or one
+              device silenced with a reason, while the alarm still gets raised
+              and recorded. */}
+          <AlarmSuppressionCard />
+          {/* §9.8: and who is actually awake to receive what is left. */}
+          <OnCallRotaCard />
           <DeliveryHistoryCard />
         </TabsContent>
         <TabsContent value="security" className="space-y-6 pt-4">

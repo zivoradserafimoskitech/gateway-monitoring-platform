@@ -1,8 +1,9 @@
 // §8: notifications.maintenance / createMaintenance / removeMaintenance had no
 // screen, so the one mechanism that stops a planned outage from paging the
 // whole on-call rota could not be used from the product.
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { useNow } from "@/hooks/use-now";
 import { useI18n } from "@/i18n";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,21 +17,6 @@ import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 const ALL_SITES = "all";
-
-/** Current time as state, re-read every minute.
- *
- *  Reading the clock during render is impure — React may render at any moment,
- *  so the "in progress" badge would change on unrelated re-renders and not
- *  change at all while the page sits open. A window that starts in two minutes
- *  should start looking active two minutes later without a refresh. */
-function useNow(intervalMs = 60_000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 /** datetime-local value → Date. The input is local time, which is what an
  *  operator scheduling a site visit means. */
