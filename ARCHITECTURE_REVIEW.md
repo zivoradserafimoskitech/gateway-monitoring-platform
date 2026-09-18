@@ -535,6 +535,9 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.2 | No grid connection limit | A connection agreement caps import and, more often the binding one, export; breaching it is contractual and often regulatory. Per-site limits with a curtailment order that is obeyed rather than averaged, running FIRST in the EMS tick — ahead of peak shaving, plans and schedules, because it is the only one of the four that is an obligation rather than an optimisation. Writes go through `activePowerLimitPct`, so the existing whitelist, verification gate, range clamp and read-back all still apply |
 | 9.2 | — closed loop, not a formula | Curtailing changes the measurement that asked for it, so recomputing a target from each reading would oscillate: curtail hard, watch export collapse, release fully, breach again. The controller holds a total and nudges it — up by the overshoot, down by the headroom, both capped per tick — with a deadband so it stops hunting at the limit. The total is persisted, because a restart that released a whole site at once is exactly the failure this feature exists to prevent |
 | 9.2 | — which way "fail closed" runs here | A stale metering point HOLDS the curtailment rather than releasing it: releasing is the action that breaches the agreement, and there is no measurement saying it is safe. Curtailing further would be inventing a breach from no data and costing generation for nothing |
+| 9.4 | No way to say "stop touching this device" | Five things now command plant on their own — the grid limit, peak shaving, plans, schedules and the watchdog — and the only lever was disabling each feature one at a time and hoping none was missed, which is not what you want to be doing beside an inverter with the covers off. A per-device emergency stop refuses every write, enforced inside `executeControl`: the single chokepoint all five pass through, so a controller added later inherits it instead of having to remember it. Read from the database, not the cached meter row — a stop that takes effect in five minutes is not a stop |
+| 9.4 | — order is the whole feature | Engaging drives the device to zero FIRST and locks SECOND, because the lock refuses every write including that one. A safe-state write that fails does not prevent the lock: a device that cannot be reached is exactly when the stop matters most |
+| 9.4 | Setpoints could only be tried by sending them | A dry run reports what a write would do — whitelist, verification gate, clamped value, target register, and whether the device is stopped — through the same function as the real path, stopping before the bus. A rehearsal running different code from the performance would be worth less than none. Previews never reach the commands table: that is the record of what went to plant, and an incident review must not find rehearsals mixed into it |
 | 9.7 | Nothing detected a frozen register | A stuck sensor returns the SAME plausible number forever: the device stays online, every gt/lt rule sees a value inside its limits, nothing fires, and that number goes on feeding EMS decisions and billing. A new `stuck` rule operator reads `threshold` as seconds-unchanged and reuses the existing dedup, hysteresis, duration, maintenance-window and notification machinery. Exact equality, not a tolerance band — a live sensor jitters in its last digits, so a band would call a genuinely steady 50.00 Hz supply stuck |
 | 9.7 | Reports could not say how complete they were | Each day now carries `coverage`: its sample count over the median of the device's other days. A day the gateway spent mostly offline used to look like a normal day with a smaller total, and got invoiced. Calibrated from the report itself, so there is no nominal sample interval to configure and it works the same for a pushing MQTT device and a polled Modbus one |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
@@ -570,11 +573,13 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **§9, the recommended new functions.** Still a roadmap rather than a defect list. Four have
   landed: the setpoint deadman (§9.1), device-offline alarming (§9.6) and now data-quality
   monitoring (§9.7) in its two halves — frozen-register detection and per-day completeness.
-  Five have landed: the setpoint deadman (§9.1), the grid connection limit with curtailment
-  (§9.2), device-offline alarming (§9.6) and data-quality monitoring (§9.7) in both halves.
-  The next one worth building is OIDC single sign-on (§9.12) — a procurement blocker for
-  industrial customers rather than a feature. The remaining eight are real but none of them
-  blocks anything.
+  Six have landed: the setpoint deadman (§9.1), the grid connection limit with curtailment
+  (§9.2), the emergency stop and command dry-run (§9.4), device-offline alarming (§9.6) and
+  data-quality monitoring (§9.7) in both halves. The next one worth building is OIDC single
+  sign-on (§9.12) — a procurement blocker for industrial customers rather than a feature, and
+  the first item here that cannot be proved in CI: there is no identity provider on a runner,
+  so the flow can be unit-tested and shipped behind a flag but not demonstrated end to end
+  without a real tenant. The remaining seven are real but none of them blocks anything.
 
   **Not built in §9.7: gap detection as an alarm.** The largest gap inside an hour needs a
   window function, and a TimescaleDB continuous aggregate does not allow one — building it on

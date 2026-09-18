@@ -318,6 +318,18 @@ export const en = {
   control: {
     title: "Control",
     execute: "Execute",
+    stopped: "Emergency stop engaged",
+    stopNow: "Emergency stop",
+    stopRelease: "Release the stop",
+    stopEngaged: "Emergency stop engaged",
+    stopReleased: "Emergency stop released",
+    stopNoReason: "No reason recorded",
+    stopDefaultReason: "Engaged from the device screen",
+    stopConfirm: "Stop all control of this device?",
+    stopConfirmHint:
+      "Every write is refused until the stop is released — manual setpoints and all automatic control (grid limit, peak shaving, plans, schedules, watchdog). The device is first driven to zero where it has a setpoint that allows it.",
+    preview: "Dry run",
+    previewHint: "Check what this setpoint would do, without writing to the device.",
     confirmExecute: "Write setpoint",
     invalidValue: "Enter a numeric value",
     readonlyRole: "Read-only role — control requires operator or admin",

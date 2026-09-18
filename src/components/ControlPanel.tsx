@@ -7,6 +7,7 @@ import { useI18n } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtTime } from "@/components/shared";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,7 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Loader2, Send } from "lucide-react";
+import { AlertTriangle, FlaskConical, Loader2, OctagonX, Send } from "lucide-react";
 
 interface ControllableDef {
   address: number;
@@ -47,6 +48,22 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, setPending] = useState<{ key: string; def: ControllableDef; val: number } | null>(null);
+  // §9.4: rehearse a setpoint, and the emergency stop.
+  const preview = trpc.control.preview.useMutation({
+    onSuccess: (r) => setFeedback({ ok: r.status !== "failed", text: r.detail }),
+    onError: (e) => setFeedback({ ok: false, text: e.message }),
+  });
+  const setLock = trpc.control.setLock.useMutation({
+    onSuccess: (r) => {
+      void utils.control.controllableFor.invalidate({ meterId });
+      void utils.control.history.invalidate({ meterId });
+      setFeedback({
+        ok: true,
+        text: r.locked ? `${t.control.stopEngaged} (${r.safeState})` : t.control.stopReleased,
+      });
+    },
+    onError: (e) => setFeedback({ ok: false, text: e.message }),
+  });
 
   const entries = Object.entries(wl.data ?? {}) as [string, ControllableDef][];
   if (wl.isLoading || entries.length === 0) return null;
@@ -56,6 +73,8 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   // carry a persistent warning chip.
   const verification = profileStatus.data;
   const draftBlocked = verification?.verificationStatus === "draft" && !verification.allowUnverifiedControl;
+  // §9.4: an engaged emergency stop makes every setpoint below inert.
+  const locked = profileStatus.data?.lockedAt != null;
   const overrideActive = verification?.verificationStatus === "draft" && verification.allowUnverifiedControl === true;
 
   if (draftBlocked) {
@@ -109,6 +128,45 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         <CardTitle>{t.control.title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* §9.4: a stopped device says so before anything else on the card —
+            the state that makes every control below it inert must not be
+            something you discover by pressing a button and reading an error. */}
+        {locked ? (
+          <div className="space-y-2 rounded-md border border-red-300 bg-red-50 p-3 dark:bg-red-950/30">
+            <p className="flex items-center gap-2 text-sm font-semibold text-red-800 dark:text-red-300">
+              <OctagonX className="h-4 w-4" />
+              {t.control.stopped}
+            </p>
+            <p className="text-xs text-red-700 dark:text-red-300">
+              {profileStatus.data?.lockReason || t.control.stopNoReason} · {fmtTime(profileStatus.data?.lockedAt)}
+            </p>
+            {canWrite && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={setLock.isPending}
+                onClick={() => setLock.mutate({ meterId, locked: false })}
+              >
+                {t.control.stopRelease}
+              </Button>
+            )}
+          </div>
+        ) : (
+          canWrite && (
+            <ConfirmButton
+              title={t.control.stopConfirm}
+              description={t.control.stopConfirmHint}
+              confirmLabel={t.control.stopNow}
+              onConfirm={() => setLock.mutate({ meterId, locked: true, reason: t.control.stopDefaultReason })}
+            >
+              <Button size="sm" variant="outline" className="gap-1.5 border-red-300 text-red-700">
+                <OctagonX className="h-4 w-4" />
+                {t.control.stopNow}
+              </Button>
+            </ConfirmButton>
+          )
+        )}
+
         {overrideActive && (
           <p className="flex items-center gap-2 rounded-md bg-amber-100 p-2 text-sm font-semibold text-amber-800">
             <AlertTriangle className="h-4 w-4" />
@@ -137,7 +195,25 @@ export function ControlPanel({ meterId }: { meterId: number }) {
               />
               <Button
                 size="sm"
-                disabled={!canWrite || execute.isPending}
+                variant="outline"
+                disabled={!canWrite || preview.isPending}
+                onClick={() => {
+                  const raw = values[key];
+                  const val = Number(raw);
+                  if (!raw || !Number.isFinite(val)) {
+                    setFeedback({ ok: false, text: `${t.control.invalidValue}: ${raw ?? ""}` });
+                    return;
+                  }
+                  preview.mutate({ meterId, key, value: val });
+                }}
+                title={t.control.previewHint}
+              >
+                <FlaskConical className="h-3 w-3" />
+                {t.control.preview}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!canWrite || execute.isPending || locked}
                 onClick={() => ask(key, def)}
                 title={canWrite ? undefined : t.control.readonlyRole}
               >

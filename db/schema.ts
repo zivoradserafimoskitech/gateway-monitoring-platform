@@ -85,6 +85,14 @@ export const meters = mysqlTable(
     siteId: bigint("site_id", { mode: "number", unsigned: true }),
     name: varchar("name", { length: 255 }).notNull(),
     model: varchar("model", { length: 128 }).notNull(),
+    // §9.4 emergency stop: while set, EVERY write to this device is refused —
+    // manual control and all four automatic writers (grid limit, peak shaving,
+    // plans, schedules) plus the watchdog. Enforced at executeControl, the one
+    // chokepoint they all pass through, so a controller added later inherits
+    // the lock instead of having to remember it.
+    controlLockedAt: timestamp("control_locked_at"),
+    controlLockedBy: bigint("control_locked_by", { mode: "number", unsigned: true }),
+    controlLockReason: varchar("control_lock_reason", { length: 255 }),
     deviceType: varchar("device_type", { length: 32 }).notNull().default("meter"),
     brand: varchar("brand", { length: 64 }),
     phases: mysqlEnum("phases", ["single", "three"]).notNull().default("three"),
