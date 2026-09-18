@@ -546,6 +546,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.8 | Every channel was paged at every hour | An on-call rota: shifts bind a channel to days and hours in a named timezone, reusing the `ems_schedules` window shape (bit 0 = Sunday, equal start and end means all day, an end before the start is a night shift). A night shift belongs to the day it BEGINS, so Friday 22:00–06:00 is still on duty at 02:00 on Saturday rather than being two disjoint pieces of Friday |
 | 9.8 | — opt-in, and it fails open | An org with no enabled shifts keeps the previous behaviour exactly: every channel notified. And an hour the rota does not cover still delivers to everyone, with a warning on the screen and in the log — a duplicate page is recoverable, a missed one is not, and a rota that quietly pages nobody because somebody half-configured it is worse than no rota at all. Resolutions bypass the rota entirely: they go to whoever was actually woken, not to whoever is on duty now |
 | 9.8 | — one implementation of "who is on duty" | The shift-window decision lives in `contracts/`, so the dispatcher and the "on duty now" badge run the same function. `tzOffsetMs`/`localClock` moved there with it. A second copy on the browser side is how a rota that reads correct on screen pages the wrong person at 03:00 |
+| 9.15 | Webhooks were a chat hook, not an integration | `notification_channels` POST alarm JSON at a URL, which is enough for Slack and not enough for anyone building against this system. Nothing SIGNED the payload, so a receiver could not tell a genuine delivery from anyone who learned the URL; a failed delivery was logged and dropped, so a receiver restarting for thirty seconds lost every event in that window permanently; and the only event was "an alarm fired" — control actions, the ones an auditor asks about, were never published. Signed, queued subscriptions with a documented verification procedure now cover all three |
+| 9.15 | — the timestamp is inside the MAC | `t=<unix>,v1=<hmac>` over `` `${t}.${rawBody}` ``, not over the body alone. Signing the body alone leaves a captured request valid forever: an attacker replays it unchanged and it still verifies. With the timestamp bound in, moving it breaks the signature and keeping it lets the receiver reject anything past its tolerance. The verifier checks the MAC BEFORE the clock, so a receiver cannot be used to probe which timestamps it accepts without holding the secret |
+| 9.15 | — the queue IS the retry | The delivery row is written before anything is sent, so a process dying mid-send resumes instead of losing the event, and the body is frozen at emit time: a retry must re-send the event as it WAS, not as the database looks now — an alarm that has since resolved must never be re-delivered as "raised" carrying a resolved body. Backoff is jittered ±25%, because every delivery to one endpoint fails in the same instant when it goes down, and an unjittered schedule aims the whole backlog at a service that is already struggling |
+| 9.15 | — 4xx is not retried, and nothing auto-disables | A 5xx means "not now"; a 4xx means "not ever" — the receiver is telling us the request is wrong, and seven identical retries will not make it right (408 and 429 excepted: both are explicit asks to come back later). The subscription's consecutive-failure count is surfaced but never acted on: an integration that switches itself off is how a customer discovers weeks later that their ERP stopped receiving alarms |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -576,17 +580,18 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Seven have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Eight have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
-  monitoring (§9.7) in both halves, and now alarm suppression with an on-call rota (§9.8).
+  monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), and signed,
+  retried webhook subscriptions (§9.15).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining nine are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining eight are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but

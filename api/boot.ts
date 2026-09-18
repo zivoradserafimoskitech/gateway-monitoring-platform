@@ -70,6 +70,10 @@ try {
   // v8/D5: OTA job manager (dispatch + ack-timeout sweep).
   const { startOtaLoop } = await import("./ota/manager");
   startOtaLoop();
+  // §9.15: outbound webhook queue (sign, send, retry). Leased, so two replicas
+  // do not deliver every event twice with a valid signature on both copies.
+  const { startWebhookLoop } = await import("./webhooks/dispatch");
+  startWebhookLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }

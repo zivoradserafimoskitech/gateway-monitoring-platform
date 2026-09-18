@@ -909,3 +909,76 @@ export const otaJobs = mysqlTable(
 );
 export type OtaJob = typeof otaJobs.$inferSelect;
 export type InsertOtaJob = typeof otaJobs.$inferInsert;
+
+// ─── §9.15: outbound webhook subscriptions ───────────────────────────────────
+// notification_channels already POST alarm JSON at a URL, which is enough for a
+// Slack hook and not enough for an integration. Three things were missing, and
+// each of them is the reason an integrator refuses to build against a system:
+//
+//   1. Nothing SIGNED the payload, so a receiver had no way to tell a genuine
+//      delivery from anyone who learned the URL.
+//   2. A delivery that failed was recorded as failed and dropped. A receiver
+//      that was restarting for thirty seconds lost every event in that window,
+//      permanently, with no way to ask for them again.
+//   3. The only event was "an alarm fired". Control actions — the ones an
+//      auditor cares about — were not published at all.
+//
+// The secret is stored in plaintext rather than hashed, unlike api_keys: it has
+// to be REPRODUCED to sign each delivery, not merely compared. It is shown once
+// at creation and on rotation, and never returned by a list query.
+export const webhookSubscriptions = mysqlTable(
+  "webhook_subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    url: varchar("url", { length: 1000 }).notNull(),
+    secret: varchar("secret", { length: 128 }).notNull(),
+    // Which events this endpoint wants, as a JSON array of event names. An
+    // empty array would be a subscription to nothing, so the API refuses it.
+    events: json("events").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    // Deliberately NOT auto-disabled after repeated failures. An integration
+    // that silently switches itself off is how a customer discovers, weeks
+    // later, that their ERP has been missing alarms. The failure count is
+    // surfaced instead, and a human decides.
+    consecutiveFailures: int("consecutive_failures").notNull().default(0),
+    lastSuccessAt: timestamp("last_success_at"),
+    lastErrorAt: timestamp("last_error_at"),
+    lastError: varchar("last_error", { length: 500 }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("webhook_subs_org_idx").on(t.orgId)],
+);
+export type WebhookSubscription = typeof webhookSubscriptions.$inferSelect;
+
+// One row per (event, subscription). The queue IS the retry: a delivery is
+// persisted before anything is sent, so a process that dies mid-send resumes
+// instead of losing the event, and next_attempt_at holds the schedule so a
+// restart does not stampede every pending delivery at once.
+export const webhookDeliveries = mysqlTable(
+  "webhook_deliveries",
+  {
+    id: serial("id").primaryKey(),
+    subscriptionId: bigint("subscription_id", { mode: "number", unsigned: true }).notNull(),
+    event: varchar("event", { length: 64 }).notNull(),
+    // The exact body that is signed and sent. Stored so a retry re-sends the
+    // event as it was, not as the database looks now — an alarm that has since
+    // been resolved must not be re-delivered as "raised" with a resolved body.
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", ["pending", "delivered", "dead"]).notNull().default("pending"),
+    attempts: int("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
+    responseStatus: int("response_status"),
+    lastError: varchar("last_error", { length: 500 }),
+    deliveredAt: timestamp("delivered_at"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("webhook_deliv_due_idx").on(t.status, t.nextAttemptAt),
+    index("webhook_deliv_sub_idx").on(t.subscriptionId),
+    index("webhook_deliv_org_idx").on(t.orgId),
+  ],
+);
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;

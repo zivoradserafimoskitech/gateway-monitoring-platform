@@ -11,6 +11,8 @@ import { MaintenanceWindowsCard } from "@/components/MaintenanceWindowsCard";
 import { OnCallRotaCard } from "@/components/OnCallRotaCard";
 import { AlarmSuppressionCard } from "@/components/AlarmSuppressionCard";
 import { DeliveryHistoryCard } from "@/components/DeliveryHistoryCard";
+import { WebhooksCard } from "@/components/WebhooksCard";
+import { WebhookDeliveriesCard } from "@/components/WebhookDeliveriesCard";
 import { ChangePasswordCard } from "@/components/ChangePasswordCard";
 
 // Wave 8: Settings is split into tabs — Device profiles (default, the
@@ -57,6 +59,11 @@ export default function Settings() {
           {/* §9.8: and who is actually awake to receive what is left. */}
           <OnCallRotaCard />
           <DeliveryHistoryCard />
+          {/* §9.15: the same tab, because "who gets told" is the question —
+              but a webhook subscription tells a SYSTEM, which needs a
+              signature, a queue and control events as well as alarms. */}
+          <WebhooksCard />
+          <WebhookDeliveriesCard />
         </TabsContent>
         <TabsContent value="security" className="space-y-6 pt-4">
           {/* §8: the backend could change a password; nothing called it. */}

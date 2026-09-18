@@ -9,6 +9,7 @@ import { pollerRouter } from "./routers/poller";
 import { authRouter } from "./routers/auth";
 import { notificationsRouter } from "./routers/notifications";
 import { apiKeysRouter } from "./routers/api-keys";
+import { webhooksRouter } from "./routers/webhooks";
 import { controlRouter } from "./routers/control";
 import { emsRouter } from "./routers/ems";
 import { otaRouter } from "./routers/ota";
@@ -28,6 +29,7 @@ export const appRouter = createRouter({
   auth: authRouter,
   notifications: notificationsRouter,
   apiKeys: apiKeysRouter,
+  webhooks: webhooksRouter,
   control: controlRouter,
   ems: emsRouter,
   ota: otaRouter,

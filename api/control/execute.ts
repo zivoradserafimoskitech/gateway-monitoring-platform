@@ -32,6 +32,7 @@ import { commands, deviceProfiles, gateways, meters } from "@db/schema";
 import { crc16, buildReadRequest } from "../modbus";
 import { registerOutstanding, attachVerifyCommand } from "../mqtt/c30-outstanding";
 import type { Meter } from "@db/schema";
+import { emit } from "../webhooks/dispatch";
 
 export interface ControllableDef {
   address: number;
@@ -287,6 +288,35 @@ export async function executeControl(
  * left a row there would be indistinguishable from the real thing in the one
  * place an incident review looks. Previews go through executeControl directly.
  */
+// §9.15: one place that turns a control outcome into a webhook event, so the
+// success and rejection paths above cannot describe the same write
+// differently.
+async function emitControl(
+  meter: Meter,
+  key: string,
+  value: number,
+  userId: number | null,
+  status: LiveControlStatus,
+  detail: string,
+  commandId: number | null,
+): Promise<void> {
+  await emit(
+    "command.executed",
+    {
+      commandId,
+      meterId: meter.id,
+      meterName: meter.name,
+      gatewayId: meter.gatewayId,
+      key,
+      value,
+      status,
+      detail,
+      userId,
+    },
+    meter.orgId ?? null,
+  );
+}
+
 export async function executeAndLog(meter: Meter, key: string, value: number, userId: number | null): Promise<ControlResult> {
   const db = getDb();
   try {
@@ -319,6 +349,10 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
     if (result.verify && controlCommandId !== undefined) {
       attachVerifyCommand(result.verify.gatewayId, result.verify.slave, result.verify.fc, controlCommandId);
     }
+    // §9.15: publish what went to plant. This is the event an auditor asks
+    // for, and it is emitted from the same place the audit row is written so
+    // the two cannot disagree. Queue-only — nothing here waits on a receiver.
+    void emitControl(meter, key, value, userId, result.status, result.detail, controlCommandId ?? null);
     return result;
   } catch (err) {
     if (err instanceof ControlError) {
@@ -334,6 +368,10 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
         controlValue: value,
         result: `rejected: ${err.message}`,
       });
+      // A refused write is the interesting one for an integration: it is how
+      // an emergency stop, a failed verification gate or an out-of-range
+      // setpoint becomes visible outside this system.
+      void emitControl(meter, key, value, userId, "failed", `rejected: ${err.message}`, null);
     }
     throw err;
   }

@@ -228,11 +228,99 @@ local schedules / idle.
 Key roles mirror the RBAC roles (`admin`/`operator`/`viewer`). `lastUsedAt`
 is updated at most once per minute per key.
 
+## Outbound webhooks (§9.15)
+
+Push instead of poll, and a different thing from a webhook *notification
+channel*: a channel is a way to tell a person, a subscription is a way to tell
+a system. Three differences follow from that.
+
+**Signed.** Every delivery carries:
+
+```
+X-VoltTrade-Signature: t=<unix seconds>,v1=<hex hmac-sha256>
+X-VoltTrade-Delivery:  <delivery id>
+X-VoltTrade-Event:     <event name>
+```
+
+`v1` is HMAC-SHA256 over the exact string `` `${t}.${rawBody}` `` keyed with the
+subscription's signing secret. The timestamp is **inside** the MAC on purpose:
+signing the body alone would leave a captured request valid forever, because it
+could be replayed unchanged. Verify like this:
+
+1. Read the **raw body bytes**. Do not `JSON.parse` and re-serialize — key
+   order does not survive the round trip, and the signature is over the bytes.
+2. Recompute the MAC and compare in **constant time**.
+3. Only then check the clock, and reject anything more than **300 seconds**
+   away from now in either direction. Checking the clock first tells an
+   attacker which timestamps you accept without them ever holding the secret.
+
+**Queued.** A delivery row is written before anything is sent, so a process
+that dies mid-send resumes instead of losing the event. Failures are retried
+with exponential backoff and ±25% jitter — 10s, 20s, 40s … capped at an hour,
+8 attempts, a little over four hours in total — after which the delivery is
+marked `dead` and can be re-queued by hand once the receiver is fixed.
+
+`2xx` is success. `5xx`, a timeout, a connection error, `408` and `429` are
+retried. Every other `4xx` is treated as permanent: the receiver is saying the
+request is wrong, and sending the identical bytes seven more times will not
+make it right.
+
+Delivery is **at-least-once**. A response lost after you committed looks
+exactly like a failure from our side, so deduplicate on `X-VoltTrade-Delivery`,
+which is stable across retries of the same event.
+
+**Body.**
+
+```jsonc
+{
+  "id": 1234,                       // delivery id, == X-VoltTrade-Delivery
+  "event": "alarm.raised",
+  "at": "2026-03-10T09:00:00.000Z", // when the event happened, not when sent
+  "data": { /* per-event fields */ }
+}
+```
+
+The body is frozen when the event happens, not rebuilt at send time: an alarm
+that has since resolved is never re-delivered as `raised` carrying a resolved
+body.
+
+**Events.**
+
+| Event | When |
+|---|---|
+| `alarm.raised` | An alarm fired and is live (every rule kind, including gateway-offline and frozen-register) |
+| `alarm.suppressed` | An alarm fired but nobody was paged, because a §9.8 suppression was in force. Published deliberately — a human deciding not to be woken is not the condition failing to occur |
+| `alarm.resolved` | The condition cleared on its own |
+| `command.executed` | A setpoint was written to plant, with its outcome — including writes *rejected* by the whitelist, the verification gate, the range clamp or an emergency stop |
+
+**Management (admin, via tRPC).**
+
+| Procedure | Type | Notes |
+|---|---|---|
+| `webhooks.create` | mutation | `{ name, url, events[] }` → returns `{ id, secret }`; the secret is shown **once** |
+| `webhooks.list` | query | Everything except the secret, plus `consecutiveFailures`, `lastSuccessAt`, `lastError` |
+| `webhooks.update` | mutation | `{ id, url?, events?, enabled? }` |
+| `webhooks.rotateSecret` | mutation | `{ id }` → `{ secret }`, keeping the subscription's delivery history |
+| `webhooks.deliveries` | query | `{ subscriptionId?, status?, limit }` |
+| `webhooks.redeliver` | mutation | `{ ids[] }` — re-queue dead deliveries |
+
+A subscription is **never disabled automatically**, however long it has been
+failing. An integration that switches itself off is how a customer discovers,
+weeks later, that their system stopped receiving alarms; the failure count is
+surfaced instead and a human decides.
+
+The endpoint URL goes through the same SSRF checks as every other outbound
+target, re-checked at send time rather than only when the subscription was
+saved — a hostname that resolved publicly then can be re-pointed at an internal
+address afterwards, and these requests carry a signature that makes them look
+authentic to whatever receives them.
+
 ## Notes
 
-- Alarm **webhooks** (push instead of poll) are available via the notification
-  channels (v7/C2): register a webhook channel and alarms POST to it on
-  breach + escalation.
+- Alarm **webhooks**: prefer the signed, retried subscriptions above (§9.15).
+  The older notification channels (v7/C2) still exist and still POST alarm JSON
+  on breach and escalation, unsigned and without retry — they are the right
+  tool for a chat hook, not for an integration.
 - Rate limiting is not built in — front the API with your reverse proxy
   (Caddy/Nginx) if you expose it publicly; keys are per-integration so you can
   revoke a leaking client without touching others.

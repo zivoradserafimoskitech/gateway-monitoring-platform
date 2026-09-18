@@ -17,6 +17,7 @@ import {
 import type { Meter, NotificationChannel } from "@db/schema";
 import { assertEgressAllowed } from "../lib/egress";
 import { sendMail } from "../lib/mailer";
+import { emit } from "../webhooks/dispatch";
 import {
   activeSuppression,
   applyRota,
@@ -341,6 +342,43 @@ async function dispatchToChannels(
   return { sent, failed };
 }
 
+// §9.15: the body of an alarm webhook. One shape for raised, suppressed and
+// resolved, so a receiver parses the three the same way and can key on the
+// alarm id to follow one condition through its life.
+function alarmEventData(
+  alarm: {
+    id: number;
+    ruleId: number | null;
+    meterId: number | null;
+    gatewayId?: number | null;
+    metric: string;
+    value: number | null;
+    threshold: number | null;
+    severity: string;
+    message: string;
+    status: string;
+    triggeredAt: Date;
+    resolvedAt?: Date | null;
+  },
+  meterName: string | null,
+): Record<string, unknown> {
+  return {
+    alarmId: alarm.id,
+    ruleId: alarm.ruleId,
+    meterId: alarm.meterId,
+    meterName,
+    gatewayId: alarm.gatewayId ?? null,
+    metric: alarm.metric,
+    value: alarm.value,
+    threshold: alarm.threshold,
+    severity: alarm.severity,
+    message: alarm.message,
+    status: alarm.status,
+    triggeredAt: alarm.triggeredAt.toISOString(),
+    resolvedAt: alarm.resolvedAt ? alarm.resolvedAt.toISOString() : null,
+  };
+}
+
 // Called from the ingestion path right after a new alarm row is inserted.
 export async function notifyAlarmBreach(alarmId: number): Promise<void> {
   try {
@@ -363,8 +401,17 @@ export async function notifyAlarmBreach(alarmId: number): Promise<void> {
         .set({ suppressedReason: supp.reason })
         .where(eq(alarms.id, alarmId));
       console.log(`[notify] alarm ${alarmId}: suppressed (${supp.scope}) — ${supp.reason}`);
+      // §9.15: published even though nobody was paged. An integration that
+      // mirrors alarm state must not conclude the condition did not occur
+      // just because a human decided not to be woken for it.
+      void emit(
+        "alarm.suppressed",
+        { ...alarmEventData(alarm, meterName), suppressedReason: supp.reason, suppressionScope: supp.scope },
+        await alarmOrgId(alarm),
+      );
       return;
     }
+    void emit("alarm.raised", alarmEventData(alarm, meterName), await alarmOrgId(alarm));
     const r = await dispatchToChannels(alarm, meterName, "initial");
     if (r.sent || r.failed) console.log(`[notify] alarm ${alarmId}: initial sent=${r.sent} failed=${r.failed}`);
   } catch (e) {
@@ -390,6 +437,7 @@ export async function notifyAlarmResolved(alarmId: number): Promise<void> {
       const m = await db.select({ name: meters.name }).from(meters).where(eq(meters.id, alarm.meterId)).limit(1);
       meterName = m[0]?.name ?? null;
     }
+    void emit("alarm.resolved", alarmEventData(alarm, meterName), await alarmOrgId(alarm));
     const r = await dispatchToChannels(
       { ...alarm, message: `CLEARED — ${alarm.message}` },
       meterName,
