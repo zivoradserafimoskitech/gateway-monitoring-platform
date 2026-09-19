@@ -70,6 +70,18 @@ try {
   // v8/D5: OTA job manager (dispatch + ack-timeout sweep).
   const { startOtaLoop } = await import("./ota/manager");
   startOtaLoop();
+  // §9.15: outbound webhook queue (sign, send, retry). Leased, so two replicas
+  // do not deliver every event twice with a valid signature on both copies.
+  const { startWebhookLoop } = await import("./webhooks/dispatch");
+  startWebhookLoop();
+  // §9.14: per-org data export builder and the scheduled-deletion purge. Both
+  // leased — two replicas building one archive would publish a truncated file,
+  // and two purging one org would interleave deletes and mis-report what they
+  // removed.
+  const { startExportLoop } = await import("./orgs/export");
+  startExportLoop();
+  const { startDeletionLoop } = await import("./orgs/purge");
+  startDeletionLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }
@@ -160,6 +172,37 @@ app.use("/api/trpc/*", async (c) => {
 // v7/C11: public REST API (Bearer API-key auth — see api/rest/v1.ts).
 const { restV1 } = await import("./rest/v1");
 app.route("/api/v1", restV1);
+
+// §9.14: export download. A plain HTTP route rather than a tRPC procedure
+// because the archive is a file — tens of millions of rows for a year of
+// interval data — and it is streamed rather than serialized into a response
+// body. Authorization is the token itself: random, short-lived and re-issuable
+// by anyone who could have asked for the export in the first place (see
+// orgs.exportLink), which is why it does not need a session here.
+app.get("/api/exports/:token", async (c) => {
+  const { exportForToken } = await import("./orgs/export");
+  const row = await exportForToken(c.req.param("token"));
+  // One message for "wrong token", "expired token" and "archive already
+  // cleaned up": distinguishing them would tell someone holding a stale link
+  // which of those it is.
+  if (!row?.filePath) return c.json({ error: "Not Found" }, 404);
+  const fs = await import("node:fs");
+  const { Readable } = await import("node:stream");
+  const stat = fs.statSync(row.filePath);
+  // Readable.toWeb rather than handing the Node stream straight to Response:
+  // that only works because the server adapter happens to accept one, and an
+  // export is not the place to depend on an adapter's tolerance.
+  return new Response(Readable.toWeb(fs.createReadStream(row.filePath)) as unknown as ReadableStream, {
+    headers: {
+      "content-type": "application/x-ndjson",
+      "content-length": String(stat.size),
+      "content-disposition": `attachment; filename="org-${row.orgId}-export-${row.id}.ndjson"`,
+      // An export is a copy of a tenant's entire history; nothing in between
+      // should keep one.
+      "cache-control": "no-store",
+    },
+  });
+});
 
 app.all("/api/*", (c) => c.json({ error: "Not Found" }, 404));
 

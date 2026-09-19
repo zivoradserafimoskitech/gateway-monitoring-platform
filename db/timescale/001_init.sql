@@ -66,8 +66,17 @@ with no data;
 -- then re-run the create statement above and refresh:
 --   call refresh_continuous_aggregate('telemetry_daily', null, null);
 
+-- start_offset was '2 days' until the CI Timescale job first applied this file
+-- to a real database and got: "policy refresh window too small — the start and
+-- end offsets must cover at least two buckets". With 1-day buckets, 2 days
+-- minus the 1-hour end offset is 1.96 buckets, so the policy was REJECTED and
+-- telemetry_daily was never refreshed on any deployment that ran this file.
+-- An existing database that swallowed the error needs the policy added once:
+--   select add_continuous_aggregate_policy('telemetry_daily',
+--     start_offset => interval '3 days', end_offset => interval '1 hour',
+--     schedule_interval => interval '1 hour', if_not_exists => true);
 select add_continuous_aggregate_policy('telemetry_daily',
-  start_offset => interval '2 days',
+  start_offset => interval '3 days',
   end_offset   => interval '1 hour',
   schedule_interval => interval '1 hour',
   if_not_exists => true);

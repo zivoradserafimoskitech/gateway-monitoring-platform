@@ -7,7 +7,18 @@ import { useI18n } from "@/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtTime } from "@/components/shared";
-import { AlertTriangle, Loader2, Send } from "lucide-react";
+import { ConfirmButton } from "@/components/ConfirmButton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { AlertTriangle, FlaskConical, Loader2, OctagonX, Send } from "lucide-react";
 
 interface ControllableDef {
   address: number;
@@ -36,6 +47,23 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   });
   const [values, setValues] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, setPending] = useState<{ key: string; def: ControllableDef; val: number } | null>(null);
+  // §9.4: rehearse a setpoint, and the emergency stop.
+  const preview = trpc.control.preview.useMutation({
+    onSuccess: (r) => setFeedback({ ok: r.status !== "failed", text: r.detail }),
+    onError: (e) => setFeedback({ ok: false, text: e.message }),
+  });
+  const setLock = trpc.control.setLock.useMutation({
+    onSuccess: (r) => {
+      void utils.control.controllableFor.invalidate({ meterId });
+      void utils.control.history.invalidate({ meterId });
+      setFeedback({
+        ok: true,
+        text: r.locked ? `${t.control.stopEngaged} (${r.safeState})` : t.control.stopReleased,
+      });
+    },
+    onError: (e) => setFeedback({ ok: false, text: e.message }),
+  });
 
   const entries = Object.entries(wl.data ?? {}) as [string, ControllableDef][];
   if (wl.isLoading || entries.length === 0) return null;
@@ -45,6 +73,8 @@ export function ControlPanel({ meterId }: { meterId: number }) {
   // carry a persistent warning chip.
   const verification = profileStatus.data;
   const draftBlocked = verification?.verificationStatus === "draft" && !verification.allowUnverifiedControl;
+  // §9.4: an engaged emergency stop makes every setpoint below inert.
+  const locked = profileStatus.data?.lockedAt != null;
   const overrideActive = verification?.verificationStatus === "draft" && verification.allowUnverifiedControl === true;
 
   if (draftBlocked) {
@@ -60,20 +90,29 @@ export function ControlPanel({ meterId }: { meterId: number }) {
           <p className="rounded-md bg-amber-50 p-2 text-sm font-medium text-amber-800">
             {t.control.unavailableUnverified}
           </p>
-          <p className="text-xs text-slate-500">{t.control.unverifiedHint}</p>
+          <p className="text-xs text-muted-foreground">{t.control.unverifiedHint}</p>
         </CardContent>
       </Card>
     );
   }
 
-  const run = async (key: string, def: ControllableDef) => {
+  // The confirmation for a setpoint write used window.confirm. After the first
+  // one, browsers offer "prevent this page from creating more dialogs" — tick
+  // it and every later write goes straight to the device with no confirmation
+  // at all. A dialog the page owns cannot be switched off, and it is
+  // translated and styled like the rest of the product.
+  const ask = (key: string, def: ControllableDef) => {
     const raw = values[key];
     const val = Number(raw);
     if (!raw || !Number.isFinite(val)) {
       setFeedback({ ok: false, text: `${t.control.invalidValue}: ${raw ?? ""}` });
       return;
     }
-    if (!window.confirm(`${t.control.confirmExecute}: ${key} = ${val}${def.unit ? ` ${def.unit}` : ""}?`)) return;
+    setPending({ key, def, val });
+  };
+
+  const run = async (key: string, val: number) => {
+    setPending(null);
     setFeedback(null);
     try {
       const res = await execute.mutateAsync({ meterId, key, value: val });
@@ -89,6 +128,45 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         <CardTitle>{t.control.title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* §9.4: a stopped device says so before anything else on the card —
+            the state that makes every control below it inert must not be
+            something you discover by pressing a button and reading an error. */}
+        {locked ? (
+          <div className="space-y-2 rounded-md border border-red-300 bg-red-50 p-3 dark:bg-red-950/30">
+            <p className="flex items-center gap-2 text-sm font-semibold text-red-800 dark:text-red-300">
+              <OctagonX className="h-4 w-4" />
+              {t.control.stopped}
+            </p>
+            <p className="text-xs text-red-700 dark:text-red-300">
+              {profileStatus.data?.lockReason || t.control.stopNoReason} · {fmtTime(profileStatus.data?.lockedAt)}
+            </p>
+            {canWrite && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={setLock.isPending}
+                onClick={() => setLock.mutate({ meterId, locked: false })}
+              >
+                {t.control.stopRelease}
+              </Button>
+            )}
+          </div>
+        ) : (
+          canWrite && (
+            <ConfirmButton
+              title={t.control.stopConfirm}
+              description={t.control.stopConfirmHint}
+              confirmLabel={t.control.stopNow}
+              onConfirm={() => setLock.mutate({ meterId, locked: true, reason: t.control.stopDefaultReason })}
+            >
+              <Button size="sm" variant="outline" className="gap-1.5 border-red-300 text-red-700">
+                <OctagonX className="h-4 w-4" />
+                {t.control.stopNow}
+              </Button>
+            </ConfirmButton>
+          )
+        )}
+
         {overrideActive && (
           <p className="flex items-center gap-2 rounded-md bg-amber-100 p-2 text-sm font-semibold text-amber-800">
             <AlertTriangle className="h-4 w-4" />
@@ -97,16 +175,16 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         )}
         <div className="space-y-2">
           {entries.map(([key, def]) => (
-            <div key={key} className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 p-2">
+            <div key={key} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
               <div className="min-w-40">
                 <div className="text-sm font-medium">{def.description ?? key}</div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-muted-foreground">
                   {key} · reg {def.address} · [{def.min}..{def.max}]{def.unit ? ` ${def.unit}` : ""}
                 </div>
               </div>
               <input
                 type="number"
-                className="h-8 w-28 rounded-md border border-slate-300 px-2 text-sm disabled:bg-slate-50"
+                className="h-8 w-28 rounded-md border border-border px-2 text-sm disabled:bg-muted/40"
                 placeholder={`${def.min}..${def.max}`}
                 min={def.min}
                 max={def.max}
@@ -117,8 +195,26 @@ export function ControlPanel({ meterId }: { meterId: number }) {
               />
               <Button
                 size="sm"
-                disabled={!canWrite || execute.isPending}
-                onClick={() => void run(key, def)}
+                variant="outline"
+                disabled={!canWrite || preview.isPending}
+                onClick={() => {
+                  const raw = values[key];
+                  const val = Number(raw);
+                  if (!raw || !Number.isFinite(val)) {
+                    setFeedback({ ok: false, text: `${t.control.invalidValue}: ${raw ?? ""}` });
+                    return;
+                  }
+                  preview.mutate({ meterId, key, value: val });
+                }}
+                title={t.control.previewHint}
+              >
+                <FlaskConical className="h-3 w-3" />
+                {t.control.preview}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!canWrite || execute.isPending || locked}
+                onClick={() => ask(key, def)}
                 title={canWrite ? undefined : t.control.readonlyRole}
               >
                 {execute.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
@@ -126,7 +222,7 @@ export function ControlPanel({ meterId }: { meterId: number }) {
               </Button>
             </div>
           ))}
-          {!canWrite && <p className="text-xs text-slate-500">{t.control.readonlyRole}</p>}
+          {!canWrite && <p className="text-xs text-muted-foreground">{t.control.readonlyRole}</p>}
         </div>
         {feedback && (
           <p className={`rounded-md p-2 text-sm ${feedback.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
@@ -135,10 +231,10 @@ export function ControlPanel({ meterId }: { meterId: number }) {
         )}
         {(history.data ?? []).length > 0 && (
           <div>
-            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{t.control.history}</h3>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.control.history}</h3>
             <div className="space-y-1 text-sm">
               {(history.data ?? []).map((c) => (
-                <div key={c.id} className="flex items-center justify-between border-b border-slate-100 py-1">
+                <div key={c.id} className="flex items-center justify-between border-b border-border py-1">
                   <span className="font-mono text-xs">
                     {c.controlKey ?? c.kind}
                     {c.controlValue !== null && c.controlValue !== undefined ? ` = ${c.controlValue}` : ""}
@@ -150,13 +246,30 @@ export function ControlPanel({ meterId }: { meterId: number }) {
                   >
                     {c.status}
                   </span>
-                  <span className="text-xs text-slate-400">{fmtTime(c.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{fmtTime(c.createdAt)}</span>
                 </div>
               ))}
             </div>
           </div>
         )}
       </CardContent>
+
+      <AlertDialog open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.control.confirmExecute}</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-sm">
+              {pending ? `${pending.key} = ${pending.val}${pending.def.unit ? ` ${pending.def.unit}` : ""}` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => pending && void run(pending.key, pending.val)}>
+              {t.control.execute}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

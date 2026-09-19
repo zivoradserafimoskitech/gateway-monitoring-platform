@@ -14,6 +14,7 @@ import {
   text,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/mysql-core";
 
 // ─── Sites ───────────────────────────────────────────────────────────────────
@@ -84,6 +85,14 @@ export const meters = mysqlTable(
     siteId: bigint("site_id", { mode: "number", unsigned: true }),
     name: varchar("name", { length: 255 }).notNull(),
     model: varchar("model", { length: 128 }).notNull(),
+    // §9.4 emergency stop: while set, EVERY write to this device is refused —
+    // manual control and all four automatic writers (grid limit, peak shaving,
+    // plans, schedules) plus the watchdog. Enforced at executeControl, the one
+    // chokepoint they all pass through, so a controller added later inherits
+    // the lock instead of having to remember it.
+    controlLockedAt: timestamp("control_locked_at"),
+    controlLockedBy: bigint("control_locked_by", { mode: "number", unsigned: true }),
+    controlLockReason: varchar("control_lock_reason", { length: 255 }),
     deviceType: varchar("device_type", { length: 32 }).notNull().default("meter"),
     brand: varchar("brand", { length: 64 }),
     phases: mysqlEnum("phases", ["single", "three"]).notNull().default("three"),
@@ -167,6 +176,15 @@ export const telemetryHourly = mysqlTable(
     energyExportFirst: double("energy_export_first"),
     energyExportLast: double("energy_export_last"),
     counterReset: int("counter_reset").notNull().default(0),
+    // Chart series that survive the raw-retention cutoff. batteryPowerKw and
+    // irradianceWm2 live in values_json rather than in a telemetry column, but
+    // they are the PRIMARY_POWER_KEY for BESS and weather devices, so without
+    // them those charts go empty past the cutoff while a meter's does not.
+    avgVoltageL1: double("avg_voltage_l1"),
+    avgCurrentL1: double("avg_current_l1"),
+    avgFrequencyHz: double("avg_frequency_hz"),
+    avgBatteryPowerKw: double("avg_battery_power_kw"),
+    avgIrradianceWm2: double("avg_irradiance_wm2"),
   },
   (t) => [uniqueIndex("telemetry_hourly_meter_hour_idx").on(t.meterId, t.hourStart)],
 );
@@ -180,11 +198,20 @@ export const alarmRules = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     // metric key, e.g. voltageL1, activePowerKw, frequencyHz, powerFactor, gatewayOffline
     metric: varchar("metric", { length: 64 }).notNull(),
-    operator: mysqlEnum("operator", ["gt", "lt"]).notNull(),
+    // gt/lt compare the value against `threshold`. "stuck" is §9.7 data
+    // quality: the value has not CHANGED for `threshold` seconds, which is the
+    // failure the other two are blind to — a frozen register stays inside its
+    // limits forever while the device reports as perfectly healthy.
+    operator: mysqlEnum("operator", ["gt", "lt", "stuck"]).notNull(),
+    // For gt/lt a value in the metric's own unit; for "stuck", seconds.
     threshold: double("threshold").notNull(),
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     // null meterId => applies to all meters
     meterId: bigint("meter_id", { mode: "number", unsigned: true }),
+    // "breached for N seconds" before raising. 0 = raise on the first sample.
+    // A single noisy sample over the threshold is almost never worth waking
+    // somebody for; this is what makes a jittery signal usable.
+    durationSec: int("duration_sec").notNull().default(0),
     enabled: boolean("enabled").notNull().default(true),
     // v8/D2: owning org.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
@@ -194,6 +221,124 @@ export const alarmRules = mysqlTable(
 );
 export type AlarmRule = typeof alarmRules.$inferSelect;
 export type InsertAlarmRule = typeof alarmRules.$inferInsert;
+
+// §9.2: grid connection limit per site.
+//
+// A connection agreement caps import and, more often the binding one, export.
+// Breaching it is a contractual and often regulatory event, so the limit has
+// to hold without a human watching. One row per site; the controller reads it
+// on every EMS tick.
+export const gridLimits = mysqlTable(
+  "grid_limits",
+  {
+    id: serial("id").primaryKey(),
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).notNull(),
+    // Meter at the point of common coupling — the one that actually sees what
+    // crosses the boundary. Its activePowerKw is signed: + import, − export.
+    pccMeterId: bigint("pcc_meter_id", { mode: "number", unsigned: true }).notNull(),
+    maxImportKw: double("max_import_kw"),
+    // Positive magnitude, not a negative number: "export at most 100 kW".
+    maxExportKw: double("max_export_kw"),
+    // Release only this far inside the limit, so the loop does not hunt.
+    deadbandKw: double("deadband_kw").notNull().default(5),
+    // Ceiling on how far the total curtailment moves in one tick, so a single
+    // wild reading cannot take a whole array offline at once.
+    maxStepKw: double("max_step_kw").notNull().default(25),
+    // Durable total curtailment in kW. Curtailing changes the measurement that
+    // asked for it, so the controller holds this and nudges it rather than
+    // recomputing from each reading — and it must survive a restart, or the
+    // site un-curtails the moment the process bounces.
+    curtailKw: double("curtail_kw").notNull().default(0),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [uniqueIndex("grid_limits_site_unique").on(t.siteId), index("grid_limits_org_idx").on(t.orgId)],
+);
+export type GridLimitRow = typeof gridLimits.$inferSelect;
+
+// Which assets may be curtailed for that site, and in what order. Lower
+// priority curtails first — the column exists so an operator can put a leased
+// array ahead of an owned one and have that obeyed rather than averaged away.
+export const curtailmentAssets = mysqlTable(
+  "curtailment_assets",
+  {
+    id: serial("id").primaryKey(),
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).notNull(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    priority: int("priority").notNull().default(100),
+    // Nameplate kW: the denominator when the limit register is a percentage.
+    ratedKw: double("rated_kw").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("curtail_asset_site_meter_unique").on(t.siteId, t.meterId),
+    index("curtail_asset_site_idx").on(t.siteId),
+  ],
+);
+export type CurtailmentAsset = typeof curtailmentAssets.$inferSelect;
+
+// §9.8: targeted alarm suppression, with a reason.
+//
+// Maintenance windows already silence a whole SITE for a period. What was
+// missing is the narrow case that actually comes up: one rule, or one device,
+// is known to be misbehaving and should stop paging people while it is fixed —
+// without going dark on everything else at that site.
+//
+// Deliberately different from a maintenance window in one respect: a suppressed
+// alarm is still RAISED and still appears in history, carrying the reason it
+// was not sent. A maintenance window blocks the alarm outright, which loses the
+// record that the condition ever happened. Suppression means "do not wake
+// anyone", not "pretend it did not occur".
+export const alarmSuppressions = mysqlTable(
+  "alarm_suppressions",
+  {
+    id: serial("id").primaryKey(),
+    // What is silenced: one rule, one device, or one site.
+    scope: mysqlEnum("scope", ["rule", "meter", "site"]).notNull(),
+    refId: bigint("ref_id", { mode: "number", unsigned: true }).notNull(),
+    startsAt: timestamp("starts_at").notNull(),
+    endsAt: timestamp("ends_at").notNull(),
+    // NOT nullable: a suppression with no reason is how an installation ends
+    // up permanently quiet with nobody remembering why.
+    reason: varchar("reason", { length: 255 }).notNull(),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("alarm_supp_scope_idx").on(t.scope, t.refId), index("alarm_supp_org_idx").on(t.orgId)],
+);
+export type AlarmSuppression = typeof alarmSuppressions.$inferSelect;
+
+// §9.8: who is on duty. Without a rota every channel receives everything at
+// every hour, which is how a 3 a.m. page reaches six people who cannot act on
+// it and one who can.
+//
+// Opt-in by construction: when an org has NO shifts configured, dispatch is
+// unchanged and every channel is notified. A rota that quietly pages nobody
+// because it was half-configured is worse than no rota at all.
+export const onCallShifts = mysqlTable(
+  "on_call_shifts",
+  {
+    id: serial("id").primaryKey(),
+    channelId: bigint("channel_id", { mode: "number", unsigned: true }).notNull(),
+    // Same shape as ems_schedules: bit 0 = Sunday.
+    dayOfWeekMask: int("day_of_week_mask").notNull().default(127),
+    startMin: int("start_min").notNull().default(0),
+    // Equal start and end means all day; end < start wraps past midnight,
+    // which is what a night shift is.
+    endMin: int("end_min").notNull().default(0),
+    // The rota is read in a human's local time, not the server's.
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("on_call_channel_idx").on(t.channelId), index("on_call_org_idx").on(t.orgId)],
+);
+export type OnCallShift = typeof onCallShifts.$inferSelect;
 
 // ─── Alarm events ────────────────────────────────────────────────────────────
 export const alarms = mysqlTable(
@@ -209,6 +354,10 @@ export const alarms = mysqlTable(
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     message: varchar("message", { length: 500 }).notNull(),
     status: mysqlEnum("status", ["active", "acknowledged", "resolved"]).notNull().default("active"),
+    // §9.8: set when a suppression stopped this alarm being dispatched. The
+    // alarm is still here — the record of the condition is not the thing
+    // anyone wanted silenced.
+    suppressedReason: varchar("suppressed_reason", { length: 255 }),
     triggeredAt: timestamp("triggered_at").notNull().defaultNow(),
     acknowledgedAt: timestamp("acknowledged_at"),
     resolvedAt: timestamp("resolved_at"),
@@ -329,6 +478,59 @@ export type InsertCommand = typeof commands.$inferInsert;
 // ─── Multi-tenancy (v8 D2) ───────────────────────────────────────────────────
 // Every tenant-owned row carries org_id (backfilled to "Default Org"). The
 // superadmin (users.is_superadmin) sees all orgs; everyone else only their own.
+// Login throttling, shared across replicas. Per-process counters multiplied
+// the brute-force budget by the replica count: five attempts each, not five in
+// total. Keyed by identity ("id:<email>") AND source ("ip:<addr>"); a login is
+// rejected when either key is locked.
+export const loginAttempts = mysqlTable(
+  "login_attempts",
+  {
+    // "id:<email>" or "ip:<addr>".
+    attemptKey: varchar("attempt_key", { length: 160 }).primaryKey(),
+    // Epoch-millisecond timestamps of failures inside the rolling window.
+    failures: json("failures").notNull(),
+    lockedUntil: timestamp("locked_until"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("login_attempts_updated_idx").on(t.updatedAt)],
+);
+
+// Pending multi-factor challenges, shared across replicas. Per-process state
+// failed the second factor outright whenever the code was submitted to a
+// different replica than the one that issued the challenge.
+export const mfaPendingChallenges = mysqlTable(
+  "mfa_pending",
+  {
+    token: varchar("token", { length: 64 }).primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    attempts: int("attempts").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("mfa_pending_created_idx").on(t.createdAt)],
+);
+
+// Alarm hysteresis, shared across replicas. MQTT ingestion is deliberately NOT
+// leased — the shared subscription balances it on purpose — so two replicas
+// evaluate the same rules. With per-process state each kept its own view, so a
+// breach could be raised twice or a clear missed entirely.
+//
+// `since` is the instant the condition STARTED, which is also what a
+// "breached for N minutes" rule needs, and it has to survive a restart.
+export const alarmBreachState = mysqlTable(
+  "alarm_breach_state",
+  {
+    ruleId: bigint("rule_id", { mode: "number", unsigned: true }).notNull(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    breached: boolean("breached").notNull().default(false),
+    since: timestamp("since"),
+    // Set once the rule has actually fired, so a duration rule does not raise
+    // repeatedly while the condition persists.
+    raisedAt: timestamp("raised_at"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [primaryKey({ columns: [t.ruleId, t.meterId] })],
+);
+
 // Single-writer leases (api/lib/leader.ts). Exactly one replica at a time may
 // run a loop that commands plant; a replica that dies stops renewing and
 // another takes over once the lease lapses.
@@ -338,11 +540,56 @@ export const leaderLeases = mysqlTable("leader_leases", {
   expiresAt: timestamp("expires_at").notNull(),
 });
 
+// §1.4: which tenant a self-announcing device belongs to.
+//
+// MQTT ingestion is a shared subscription, so the broker's authenticated
+// publisher identity never reaches us — a device that speaks for the first
+// time is just a UID on a topic. Serial numbers are known before hardware
+// ships, so an admin registers the UID in advance and the gateway is stamped
+// with that org the moment it appears. Without a registration the device still
+// lands unclaimed (orgs.unclaimedDevices), which is the honest outcome:
+// guessing a tenant is worse than showing the device in a queue.
+export const deviceRegistrations = mysqlTable(
+  "device_registrations",
+  {
+    id: serial("id").primaryKey(),
+    // Gateway UID (IMEI for C30, Gateway ID for G30) — same width as gateways.uid.
+    uid: varchar("uid", { length: 64 }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    // Optional: also place the gateway at a site on arrival.
+    siteId: bigint("site_id", { mode: "number", unsigned: true }),
+    note: varchar("note", { length: 255 }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Stamped when the hardware actually turned up, so the list shows which
+    // registrations are still outstanding.
+    claimedAt: timestamp("claimed_at"),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }),
+  },
+  // One registration per UID: two rows claiming the same device for different
+  // tenants is the one state this table must not be able to reach.
+  (t) => [uniqueIndex("device_reg_uid_unique").on(t.uid), index("device_reg_org_idx").on(t.orgId)],
+);
+export type DeviceRegistration = typeof deviceRegistrations.$inferSelect;
+
 export const orgs = mysqlTable(
   "orgs",
   {
     id: serial("id").primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
+    // §9.14: per-tenant raw telemetry retention. NULL means "use the
+    // deployment default" (TELEMETRY_RAW_DAYS), which is what every existing
+    // org keeps. A tenant under a regulator that requires five years of
+    // interval data and one that wants nothing kept past a month cannot both
+    // be served by a single global number.
+    telemetryRawDays: int("telemetry_raw_days"),
+    // §9.14: the deletion path. Scheduled rather than immediate on purpose —
+    // an irreversible delete of a tenant's entire history, executed the
+    // instant somebody clicks, has no way back from a misclick. The grace
+    // period is the feature; cancelling during it is a supported action.
+    deletionRequestedAt: timestamp("deletion_requested_at"),
+    deletionRequestedBy: bigint("deletion_requested_by", { mode: "number", unsigned: true }),
+    deletionScheduledFor: timestamp("deletion_scheduled_for"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("orgs_name_unique").on(t.name)],
@@ -675,3 +922,298 @@ export const otaJobs = mysqlTable(
 );
 export type OtaJob = typeof otaJobs.$inferSelect;
 export type InsertOtaJob = typeof otaJobs.$inferInsert;
+
+// ─── §9.15: outbound webhook subscriptions ───────────────────────────────────
+// notification_channels already POST alarm JSON at a URL, which is enough for a
+// Slack hook and not enough for an integration. Three things were missing, and
+// each of them is the reason an integrator refuses to build against a system:
+//
+//   1. Nothing SIGNED the payload, so a receiver had no way to tell a genuine
+//      delivery from anyone who learned the URL.
+//   2. A delivery that failed was recorded as failed and dropped. A receiver
+//      that was restarting for thirty seconds lost every event in that window,
+//      permanently, with no way to ask for them again.
+//   3. The only event was "an alarm fired". Control actions — the ones an
+//      auditor cares about — were not published at all.
+//
+// The secret is stored in plaintext rather than hashed, unlike api_keys: it has
+// to be REPRODUCED to sign each delivery, not merely compared. It is shown once
+// at creation and on rotation, and never returned by a list query.
+export const webhookSubscriptions = mysqlTable(
+  "webhook_subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    url: varchar("url", { length: 1000 }).notNull(),
+    secret: varchar("secret", { length: 128 }).notNull(),
+    // Which events this endpoint wants, as a JSON array of event names. An
+    // empty array would be a subscription to nothing, so the API refuses it.
+    events: json("events").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    // Deliberately NOT auto-disabled after repeated failures. An integration
+    // that silently switches itself off is how a customer discovers, weeks
+    // later, that their ERP has been missing alarms. The failure count is
+    // surfaced instead, and a human decides.
+    consecutiveFailures: int("consecutive_failures").notNull().default(0),
+    lastSuccessAt: timestamp("last_success_at"),
+    lastErrorAt: timestamp("last_error_at"),
+    lastError: varchar("last_error", { length: 500 }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("webhook_subs_org_idx").on(t.orgId)],
+);
+export type WebhookSubscription = typeof webhookSubscriptions.$inferSelect;
+
+// One row per (event, subscription). The queue IS the retry: a delivery is
+// persisted before anything is sent, so a process that dies mid-send resumes
+// instead of losing the event, and next_attempt_at holds the schedule so a
+// restart does not stampede every pending delivery at once.
+export const webhookDeliveries = mysqlTable(
+  "webhook_deliveries",
+  {
+    id: serial("id").primaryKey(),
+    subscriptionId: bigint("subscription_id", { mode: "number", unsigned: true }).notNull(),
+    event: varchar("event", { length: 64 }).notNull(),
+    // The exact body that is signed and sent. Stored so a retry re-sends the
+    // event as it was, not as the database looks now — an alarm that has since
+    // been resolved must not be re-delivered as "raised" with a resolved body.
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", ["pending", "delivered", "dead"]).notNull().default("pending"),
+    attempts: int("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at").notNull().defaultNow(),
+    responseStatus: int("response_status"),
+    lastError: varchar("last_error", { length: 500 }),
+    deliveredAt: timestamp("delivered_at"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("webhook_deliv_due_idx").on(t.status, t.nextAttemptAt),
+    index("webhook_deliv_sub_idx").on(t.subscriptionId),
+    index("webhook_deliv_org_idx").on(t.orgId),
+  ],
+);
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+
+// ─── §9.13: REST API rate-limit buckets ──────────────────────────────────────
+// One token bucket per (api key, scope). In the DATABASE rather than in
+// process memory on purpose: an in-memory limiter multiplies the quota by the
+// number of replicas and resets on every deploy, so the published number stops
+// being the number. The same reasoning moved login lockout and alarm
+// hysteresis out of memory earlier in this branch.
+//
+// Written on every API request, so it is deliberately one narrow row: a
+// primary key lookup and an update, no indexes to maintain beyond the key.
+export const apiRateBuckets = mysqlTable(
+  "api_rate_buckets",
+  {
+    keyId: bigint("key_id", { mode: "number", unsigned: true }).notNull(),
+    scope: varchar("scope", { length: 32 }).notNull(),
+    // Fractional: refill is continuous, so a caller sitting exactly at the
+    // limit is spaced out evenly rather than let through in a clump each
+    // minute.
+    tokens: double("tokens").notNull(),
+    updatedAt: timestamp("updated_at", { fsp: 3 }).notNull().defaultNow(),
+    // Compare-and-set counter. The natural version would be updated_at, but
+    // an equality test on a fractional timestamp depends on the driver
+    // round-tripping milliseconds exactly, and a silent mismatch there would
+    // make every write lose its race and disable the limiter without anyone
+    // noticing. An integer cannot fail that way.
+    version: int("version").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.keyId, t.scope] })],
+);
+export type ApiRateBucket = typeof apiRateBuckets.$inferSelect;
+
+
+// ─── §9.14: per-org data export ──────────────────────────────────────────────
+// A tenant's data has to be able to LEAVE. Until now the only ways out were a
+// scheduled energy report (one metric, emailed) and direct database access
+// (everyone's data at once). Neither is an answer to "give us our data" —
+// which arrives as a contract clause, as a regulator's question, or on the day
+// a customer moves to another supplier and is entitled to take their history
+// with them.
+//
+// Built asynchronously because it is not a request-sized job: a year of
+// interval data for a site is tens of millions of rows, and a tRPC call that
+// tried to return it would time out long before it finished.
+export const dataExports = mysqlTable(
+  "data_exports",
+  {
+    id: serial("id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    requestedBy: bigint("requested_by", { mode: "number", unsigned: true }),
+    status: mysqlEnum("status", ["pending", "running", "ready", "failed", "expired"]).notNull().default("pending"),
+    // Telemetry is optional and bounded by a range: most requests are for
+    // configuration and alarms, and defaulting to "every sample ever" would
+    // make the common case unusably slow.
+    includeTelemetry: boolean("include_telemetry").notNull().default(false),
+    rangeFrom: timestamp("range_from"),
+    rangeTo: timestamp("range_to"),
+    filePath: varchar("file_path", { length: 500 }),
+    sizeBytes: bigint("size_bytes", { mode: "number", unsigned: true }),
+    // Per-table row counts, so the recipient can check they got everything
+    // rather than trusting that a file that opened is a file that is complete.
+    rowCounts: json("row_counts"),
+    // Random, expiring, and re-issuable. A URL token rather than a session
+    // because the file is streamed by a plain HTTP route — see the expiry
+    // note in api/orgs/export.ts.
+    downloadToken: varchar("download_token", { length: 64 }),
+    tokenExpiresAt: timestamp("token_expires_at"),
+    error: varchar("error", { length: 500 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    // The archive is deleted from disk after this. An export sitting on a
+    // server forever is a copy of a tenant's entire history that nobody is
+    // watching.
+    expiresAt: timestamp("expires_at"),
+  },
+  (t) => [index("data_exports_org_idx").on(t.orgId), index("data_exports_status_idx").on(t.status)],
+);
+export type DataExport = typeof dataExports.$inferSelect;
+
+// ─── §9.11: organization membership, invites and switching ───────────────────
+// A user belonged to exactly one org (users.org_id) with one global role. Two
+// things that come up constantly were therefore impossible: an engineer who
+// looks after three customer sites needs access to three tenants, and an
+// installer commissioning a new site needs to be brought in without somebody
+// typing a password on their behalf and sending it over chat.
+//
+// Membership is ADDITIVE rather than a rewrite of the scoping model.
+// users.org_id and users.role stay exactly what they were — the ACTIVE org and
+// the role in it — so every org-scoped query, every guard and every router is
+// untouched. Switching org means checking a membership and moving those two
+// fields. The invariant is one sentence: users.org_id/users.role mirror the
+// membership the user is currently acting under.
+export const orgMemberships = mysqlTable(
+  "org_memberships",
+  {
+    id: serial("id").primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    // The role IN THIS ORG. The same person can be an operator for one tenant
+    // and a viewer for another, which is the usual arrangement when a
+    // contractor looks after several customers.
+    role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("org_membership_unique").on(t.userId, t.orgId),
+    index("org_membership_user_idx").on(t.userId),
+    index("org_membership_org_idx").on(t.orgId),
+  ],
+);
+export type OrgMembership = typeof orgMemberships.$inferSelect;
+
+// Invites. The token is stored HASHED, like a session token and an API key: a
+// database dump should not hand somebody the ability to create accounts in
+// every tenant that has an invite outstanding.
+export const orgInvites = mysqlTable(
+  "org_invites",
+  {
+    id: serial("id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    email: varchar("email", { length: 255 }).notNull(),
+    role: mysqlEnum("role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    invitedBy: bigint("invited_by", { mode: "number", unsigned: true }),
+    // Invites expire. One that does not is a credential with no owner sitting
+    // in an inbox indefinitely.
+    expiresAt: timestamp("expires_at").notNull(),
+    acceptedAt: timestamp("accepted_at"),
+    acceptedUserId: bigint("accepted_user_id", { mode: "number", unsigned: true }),
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("org_invite_token_unique").on(t.tokenHash),
+    index("org_invite_org_idx").on(t.orgId),
+    index("org_invite_email_idx").on(t.email),
+  ],
+);
+export type OrgInvite = typeof orgInvites.$inferSelect;
+
+// ─── §9.9: firmware releases and staged rollouts ─────────────────────────────
+// Firmware could only be pushed one gateway at a time, from an ad-hoc payload
+// carrying whatever URL somebody typed. A fleet update was therefore a script
+// looping over every gateway — which is how an installation loses all of them
+// at the same moment to a bad image.
+//
+// A release registry means a rollout points at a KNOWN artifact with a
+// checksum, rather than at a URL that was correct in the ticket.
+export const firmwareReleases = mysqlTable(
+  "firmware_releases",
+  {
+    id: serial("id").primaryKey(),
+    model: varchar("model", { length: 128 }).notNull(),
+    version: varchar("version", { length: 64 }).notNull(),
+    url: varchar("url", { length: 1000 }).notNull(),
+    // sha256 of the image. The gateway is expected to verify it before
+    // flashing; recording it here means "which bytes did we ship" has an
+    // answer months later, when the question is asked by somebody holding a
+    // device that no longer boots.
+    sha256: varchar("sha256", { length: 64 }),
+    notes: varchar("notes", { length: 1000 }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("firmware_model_version_unique").on(t.model, t.version),
+    index("firmware_org_idx").on(t.orgId),
+  ],
+);
+export type FirmwareRelease = typeof firmwareReleases.$inferSelect;
+
+// A rollout is the staging policy: canary first, then fixed waves, halting the
+// moment the numbers look wrong. There is deliberately no automatic rollback —
+// firmware cannot be reliably rolled back over the air, and a gateway that
+// boots into an image which no longer reaches the broker is beyond anything
+// this system can do. Halting and telling somebody is the honest behaviour.
+export const otaRollouts = mysqlTable(
+  "ota_rollouts",
+  {
+    id: serial("id").primaryKey(),
+    releaseId: bigint("release_id", { mode: "number", unsigned: true }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Its own batch even when it is one device: a rollout that starts with ten
+    // is a rollout that can break ten.
+    canaryCount: int("canary_count").notNull().default(1),
+    batchSize: int("batch_size").notNull().default(10),
+    failureThresholdPct: int("failure_threshold_pct").notNull().default(10),
+    status: mysqlEnum("status", ["draft", "running", "paused", "halted", "completed"]).notNull().default("draft"),
+    haltReason: varchar("halt_reason", { length: 500 }),
+    createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    startedAt: timestamp("started_at"),
+    finishedAt: timestamp("finished_at"),
+  },
+  (t) => [index("ota_rollouts_org_idx").on(t.orgId), index("ota_rollouts_status_idx").on(t.status)],
+);
+export type OtaRollout = typeof otaRollouts.$inferSelect;
+
+// One row per gateway in the rollout, carrying its wave and the job that was
+// created for it. The membership is FROZEN when the rollout is created rather
+// than re-evaluated from a filter each sweep: a gateway that comes online
+// halfway through must not silently join a wave that has already been judged.
+export const otaRolloutTargets = mysqlTable(
+  "ota_rollout_targets",
+  {
+    id: serial("id").primaryKey(),
+    rolloutId: bigint("rollout_id", { mode: "number", unsigned: true }).notNull(),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }).notNull(),
+    batchIndex: int("batch_index").notNull(),
+    status: mysqlEnum("status", ["pending", "sent", "ack", "failed"]).notNull().default("pending"),
+    jobId: bigint("job_id", { mode: "number", unsigned: true }),
+    error: varchar("error", { length: 500 }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [
+    uniqueIndex("ota_rollout_target_unique").on(t.rolloutId, t.gatewayId),
+    index("ota_rollout_target_rollout_idx").on(t.rolloutId),
+  ],
+);
+export type OtaRolloutTarget = typeof otaRolloutTargets.$inferSelect;

@@ -75,7 +75,7 @@ export function OrganizationsCard() {
           </TableBody>
         </Table>
         <div>
-          <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{t.orgs.reassign}</h3>
+          <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.orgs.reassign}</h3>
           <div className="space-y-1">
             {(users.data ?? [])
               .filter((u) => !u.isSuperadmin)

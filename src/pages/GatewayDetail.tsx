@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { trpc } from "@/providers/trpc";
+import { ConfirmButton } from "@/components/ConfirmButton";
 import { useI18n } from "@/i18n";
 import { StatusBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,7 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { DeviceManagementCard } from "@/components/DeviceManagementCard";
 
@@ -85,7 +86,7 @@ export default function GatewayDetail() {
   });
   const c30Stats = c30Query.data ?? null;
 
-  if (!gw) return <p className="text-sm text-slate-500">{t.common.loading}</p>;
+  if (!gw) return <p className="text-sm text-muted-foreground">{t.common.loading}</p>;
 
   return (
     <div className="space-y-6">
@@ -94,7 +95,7 @@ export default function GatewayDetail() {
           <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight">
             {gw.name} <StatusBadge status={gw.status} />
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             {gw.model} · {t.gateways.uid}: <span className="font-mono">{gw.uid}</span>
           </p>
         </div>
@@ -135,7 +136,7 @@ export default function GatewayDetail() {
               <div>
                 <span className={c30Stats.total > 0 ? "font-semibold text-amber-600" : ""}>{c30Stats.total}</span>
               </div>
-              <div className="mt-1 text-xs text-slate-500" title={t.gateways.c30UndecodableHint}>
+              <div className="mt-1 text-xs text-muted-foreground" title={t.gateways.c30UndecodableHint}>
                 {(["ambiguous", "no_match", "span_too_wide"] as const)
                   .filter((r) => (c30Stats.byReason[r] ?? 0) > 0)
                   .map((r) => {
@@ -196,25 +197,20 @@ export default function GatewayDetail() {
                           disabled={readNow.isPending}
                           onClick={() => readNow.mutate({ gatewayId: gw.id, meterId: m.id })}
                         >
-                          <RefreshCw className="h-4 w-4 text-slate-500" />
+                          <RefreshCw className="h-4 w-4 text-muted-foreground" />
                         </Button>
                       )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => {
-                          if (confirm(t.meters.deleteConfirm)) removeMeter.mutate({ id: m.id });
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4 text-slate-400" />
-                      </Button>
+                      <ConfirmButton
+                        title={t.meters.deleteConfirm}
+                        onConfirm={() => removeMeter.mutate({ id: m.id })}
+                      />
                     </div>
                   </TableCell>
                 </TableRow>
               ))}
               {meters.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-sm text-slate-500">
+                  <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                     {t.common.noData}
                   </TableCell>
                 </TableRow>
@@ -254,7 +250,7 @@ export default function GatewayDetail() {
               ))}
               {commands.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-8 text-center text-sm text-slate-500">
+                  <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
                     {t.common.noData}
                   </TableCell>
                 </TableRow>
@@ -285,7 +281,7 @@ export default function GatewayDetail() {
                     {(profiles.data ?? []).map((p) => (
                       <SelectItem key={p.model} value={p.model}>
                         <span className="font-medium">{p.brand ?? ""}</span> {p.label}
-                        <span className="ml-2 text-xs text-slate-400">
+                        <span className="ml-2 text-xs text-muted-foreground">
                           {p.deviceType} · {p.protocol}
                         </span>
                       </SelectItem>

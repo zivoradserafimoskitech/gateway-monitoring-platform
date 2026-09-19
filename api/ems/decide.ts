@@ -4,7 +4,6 @@
 // already part of its public surface.
 import type { EmsSchedule } from "@db/schema";
 import type { ControllableDef, ControllableMap } from "../control/execute";
-import { tzOffsetMs } from "../lib/tz";
 
 // ─── Setpoint key selection ─────────────────────────────────────────────────
 // BESS profiles declare writable registers in device_profiles.controllable.
@@ -34,11 +33,10 @@ export function setpointValue(mode: EmsMode, def: ControllableDef, targetKw: num
 }
 
 // ─── Schedule windows ────────────────────────────────────────────────────────
-/** Local weekday (0=Sunday) and minutes-from-midnight for an instant in a zone. */
-export function localClock(tz: string, now: Date): { dow: number; min: number } {
-  const local = new Date(now.getTime() + tzOffsetMs(tz, now));
-  return { dow: local.getUTCDay(), min: local.getUTCHours() * 60 + local.getUTCMinutes() };
-}
+// localClock now lives in api/lib/tz.ts — the on-call rota reads the same
+// clock, and it is a timezone concern rather than an EMS one. Re-exported so
+// every existing caller (and its tests) keeps importing it from here.
+export { localClock } from "../lib/tz";
 
 export function scheduleDue(s: EmsSchedule, dow: number, min: number): boolean {
   if (((s.dayOfWeekMask >> dow) & 1) === 0) return false;

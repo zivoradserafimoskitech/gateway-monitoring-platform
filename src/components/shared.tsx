@@ -9,11 +9,11 @@ export function StatusBadge({ status }: { status: "online" | "offline" }) {
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-        status === "online" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600",
+        status === "online" ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground",
       )}
     >
       <span
-        className={cn("h-1.5 w-1.5 rounded-full", status === "online" ? "bg-emerald-500" : "bg-slate-400")}
+        className={cn("h-1.5 w-1.5 rounded-full", status === "online" ? "bg-emerald-500" : "bg-muted-foreground")}
       />
       {status === "online" ? t.common.online : t.common.offline}
     </span>
@@ -35,7 +35,7 @@ export function DeviceTypeBadge({ type }: { type: string }) {
     weather: t.devices.weather,
   };
   return (
-    <span className={cn("rounded-full px-2.5 py-0.5 text-xs font-medium", styles[type] ?? "bg-slate-200 text-slate-600")}>
+    <span className={cn("rounded-full px-2.5 py-0.5 text-xs font-medium", styles[type] ?? "bg-muted text-muted-foreground")}>
       {labels[type] ?? type}
     </span>
   );
@@ -91,15 +91,15 @@ export function StatCard({
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-slate-600">{title}</CardTitle>
-        <Icon className="h-4 w-4 text-slate-400" />
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-bold tracking-tight">
           {value}
-          {unit ? <span className="ml-1 text-sm font-normal text-slate-500">{unit}</span> : null}
+          {unit ? <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span> : null}
         </div>
-        {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+        {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
       </CardContent>
     </Card>
   );

@@ -192,22 +192,26 @@ export function looksLikeBackupCode(code: string): boolean {
 
 export type MfaPendingEntry = { userId: number; createdAt: number; attempts: number };
 
+// Every method is async because the production store lives in the database:
+// a challenge issued by one replica must be answerable on another. The
+// in-memory implementation below stays for unit tests and satisfies the same
+// contract.
 export type MfaPendingStore = {
   /** Start a challenge after the password step succeeds. */
-  create: (userId: number) => string;
+  create: (userId: number) => Promise<string>;
   /** Valid (unexpired) entry or null; expired entries are swept. */
-  peek: (token: string) => MfaPendingEntry | null;
+  peek: (token: string) => Promise<MfaPendingEntry | null>;
   /** Record a failed code attempt; destroys the challenge at maxAttempts. */
-  fail: (token: string) => { attempts: number; destroyed: boolean };
+  fail: (token: string) => Promise<{ attempts: number; destroyed: boolean }>;
   /** Single-use success path: returns and removes the entry. */
-  consume: (token: string) => MfaPendingEntry | null;
-  size: () => number;
+  consume: (token: string) => Promise<MfaPendingEntry | null>;
+  size: () => Promise<number>;
 };
 
 /**
- * Process-local pending store — same documented limitation as the login
- * limiter: per-replica state; move to Redis when running multi-instance.
- * `now` is injectable so TTL/attempt logic is unit-testable.
+ * Process-local pending store. Used by unit tests, and as the fallback when no
+ * database is reachable. `now` is injectable so TTL and attempt logic can be
+ * driven deterministically.
  */
 export function createMfaPendingStore(
   opts: { ttlMs?: number; maxAttempts?: number; now?: () => number } = {},
@@ -228,7 +232,7 @@ export function createMfaPendingStore(
   }
 
   return {
-    create(userId) {
+    async create(userId) {
       // Bound memory: sweep expired entries when the map grows large.
       if (map.size > 10_000) {
         for (const [k, v] of map) if (now() - v.createdAt > ttlMs) map.delete(k);
@@ -237,8 +241,10 @@ export function createMfaPendingStore(
       map.set(token, { userId, createdAt: now(), attempts: 0 });
       return token;
     },
-    peek: valid,
-    fail(token) {
+    async peek(token) {
+      return valid(token);
+    },
+    async fail(token) {
       const entry = valid(token);
       if (!entry) return { attempts: 0, destroyed: false };
       entry.attempts += 1;
@@ -248,15 +254,138 @@ export function createMfaPendingStore(
       }
       return { attempts: entry.attempts, destroyed: false };
     },
-    consume(token) {
+    async consume(token) {
       const entry = valid(token);
       if (!entry) return null;
       map.delete(token);
       return entry;
     },
-    size: () => map.size,
+    size: async () => map.size,
   };
 }
 
-/** Shared store used by the auth router. */
-export const mfaPending = createMfaPendingStore();
+/**
+ * Database-backed pending store.
+ *
+ * Falls back to a process-local map when the database is unreachable, so a
+ * database blip degrades multi-factor to the previous single-replica behaviour
+ * rather than locking everyone out of the platform.
+ */
+export function createDbMfaPendingStore(
+  opts: { ttlMs?: number; maxAttempts?: number } = {},
+): MfaPendingStore {
+  const ttlMs = opts.ttlMs ?? MFA_PENDING_TTL_MS;
+  const maxAttempts = opts.maxAttempts ?? MFA_PENDING_MAX_ATTEMPTS;
+  const fallback = createMfaPendingStore(opts);
+
+  const expired = (createdAt: Date) => Date.now() - createdAt.getTime() > ttlMs;
+
+  return {
+    async create(userId) {
+      const token = crypto.randomBytes(32).toString("hex");
+      try {
+        const { getDb } = await import("../queries/connection");
+        const { mfaPendingChallenges } = await import("@db/schema");
+        const { lt } = await import("drizzle-orm");
+        const db = getDb();
+        // Opportunistic sweep: expired challenges are dead weight.
+        await db
+          .delete(mfaPendingChallenges)
+          .where(lt(mfaPendingChallenges.createdAt, new Date(Date.now() - ttlMs)));
+        await db.insert(mfaPendingChallenges).values({ token, userId, attempts: 0 });
+        return token;
+      } catch (err) {
+        console.warn(
+          "[mfa] pending store unavailable, using process-local fallback:",
+          err instanceof Error ? err.message : err,
+        );
+        return fallback.create(userId);
+      }
+    },
+
+    async peek(token) {
+      try {
+        const { getDb } = await import("../queries/connection");
+        const { mfaPendingChallenges } = await import("@db/schema");
+        const { eq } = await import("drizzle-orm");
+        const rows = await getDb()
+          .select()
+          .from(mfaPendingChallenges)
+          .where(eq(mfaPendingChallenges.token, token))
+          .limit(1);
+        const row = rows[0];
+        if (!row) return fallback.peek(token);
+        if (expired(row.createdAt)) {
+          await getDb().delete(mfaPendingChallenges).where(eq(mfaPendingChallenges.token, token));
+          return null;
+        }
+        return { userId: row.userId, createdAt: row.createdAt.getTime(), attempts: row.attempts };
+      } catch {
+        return fallback.peek(token);
+      }
+    },
+
+    async fail(token) {
+      try {
+        const { getDb } = await import("../queries/connection");
+        const { mfaPendingChallenges } = await import("@db/schema");
+        const { eq, sql } = await import("drizzle-orm");
+        const db = getDb();
+        const current = await this.peek(token);
+        if (!current) return { attempts: 0, destroyed: false };
+        const attempts = current.attempts + 1;
+        if (attempts >= maxAttempts) {
+          // Challenge destroyed — the user must start again from the password.
+          await db.delete(mfaPendingChallenges).where(eq(mfaPendingChallenges.token, token));
+          return { attempts, destroyed: true };
+        }
+        await db
+          .update(mfaPendingChallenges)
+          .set({ attempts: sql`${mfaPendingChallenges.attempts} + 1` })
+          .where(eq(mfaPendingChallenges.token, token));
+        return { attempts, destroyed: false };
+      } catch {
+        return fallback.fail(token);
+      }
+    },
+
+    async consume(token) {
+      try {
+        const entry = await this.peek(token);
+        if (!entry) return null;
+        const { getDb } = await import("../queries/connection");
+        const { mfaPendingChallenges } = await import("@db/schema");
+        const { eq } = await import("drizzle-orm");
+        // Single use: the DELETE must be what authorises the login, so a
+        // replayed token cannot pass twice.
+        const res = await getDb()
+          .delete(mfaPendingChallenges)
+          .where(eq(mfaPendingChallenges.token, token));
+        const head = Array.isArray(res) ? res[0] : res;
+        const removed = Number((head as { affectedRows?: number } | undefined)?.affectedRows ?? 0);
+        if (removed !== 1) return fallback.consume(token);
+        return entry;
+      } catch {
+        return fallback.consume(token);
+      }
+    },
+
+    async size() {
+      try {
+        const { getDb } = await import("../queries/connection");
+        const { mfaPendingChallenges } = await import("@db/schema");
+        const rows = await getDb().select({ token: mfaPendingChallenges.token }).from(mfaPendingChallenges);
+        return rows.length;
+      } catch {
+        return fallback.size();
+      }
+    },
+  };
+}
+
+/**
+ * Store used by the auth router. Database-backed, so a challenge issued by one
+ * replica can be answered on another — the per-process map rejected a correct
+ * second factor whenever the load balancer moved the request.
+ */
+export const mfaPending: MfaPendingStore = createDbMfaPendingStore();

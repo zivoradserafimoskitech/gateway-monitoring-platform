@@ -125,7 +125,21 @@ function EventsTable({ status }: { status: "active" | "acknowledged" | "resolved
                 <TableCell>
                   <SeverityBadge severity={a.severity} />
                 </TableCell>
-                <TableCell className="max-w-md text-sm">{a.message}</TableCell>
+                <TableCell className="max-w-md text-sm">
+                  {a.message}
+                  {/* §9.8: a suppressed alarm is still raised and still shown —
+                      suppression means "do not wake anyone", not "pretend it
+                      did not occur". The reason is on the row so a review a
+                      week later can see who decided to sit on it and why. */}
+                  {a.suppressedReason && (
+                    <span
+                      className="ml-2 whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                      title={`${t.alarms.suppressedHint} ${a.suppressedReason}`}
+                    >
+                      {t.alarms.suppressed}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell className="text-sm">{a.meterName ?? a.gatewayName ?? "—"}</TableCell>
                 <TableCell className="text-sm">
                   {a.value !== null && a.value !== undefined
@@ -154,7 +168,7 @@ function EventsTable({ status }: { status: "active" | "acknowledged" | "resolved
             ))}
             {(events.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-sm text-slate-500">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   {t.alarms.noEvents}
                 </TableCell>
               </TableRow>
@@ -174,7 +188,7 @@ function RulesTable() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [metric, setMetric] = useState<string>("voltageL1");
-  const [operator, setOperator] = useState<"gt" | "lt">("gt");
+  const [operator, setOperator] = useState<"gt" | "lt" | "stuck">("gt");
   const [threshold, setThreshold] = useState("253");
   const [severity, setSeverity] = useState<"info" | "warning" | "critical">("warning");
   const [meterId, setMeterId] = useState<string>("all");
@@ -224,7 +238,7 @@ function RulesTable() {
                 <TableCell className="font-mono text-xs">
                   {r.metric === "gatewayOffline" ? t.alarms.gatewayOffline : r.metric}
                 </TableCell>
-                <TableCell>{r.operator === "gt" ? ">" : "<"}</TableCell>
+                <TableCell>{r.operator === "gt" ? ">" : r.operator === "lt" ? "<" : t.alarms.stuck}</TableCell>
                 <TableCell>
                   {r.threshold} {METRIC_UNITS[r.metric as MetricKey] ?? ""}
                 </TableCell>
@@ -240,14 +254,14 @@ function RulesTable() {
                 </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="icon" onClick={() => del.mutate({ id: r.id })}>
-                    <Trash2 className="h-4 w-4 text-slate-400" />
+                    <Trash2 className="h-4 w-4 text-muted-foreground" />
                   </Button>
                 </TableCell>
               </TableRow>
             ))}
             {(rules.data ?? []).length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-sm text-slate-500">
+                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                   {t.common.noData}
                 </TableCell>
               </TableRow>
@@ -283,21 +297,25 @@ function RulesTable() {
                 </div>
                 <div className="space-y-2">
                   <Label>{t.alarms.operator}</Label>
-                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt")}>
+                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt" | "stuck")}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="gt">&gt; {t.alarms.gt}</SelectItem>
                       <SelectItem value="lt">&lt; {t.alarms.lt}</SelectItem>
+                      <SelectItem value="stuck">{t.alarms.stuck}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{t.alarms.threshold}</Label>
+                  <Label>{operator === "stuck" ? t.alarms.stuckSeconds : t.alarms.threshold}</Label>
                   <Input type="number" value={threshold} onChange={(e) => setThreshold(e.target.value)} />
+                  {operator === "stuck" ? (
+                    <p className="text-xs text-muted-foreground">{t.alarms.stuckHint}</p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label>{t.alarms.severity}</Label>

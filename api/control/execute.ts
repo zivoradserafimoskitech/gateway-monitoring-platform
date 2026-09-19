@@ -28,10 +28,11 @@
 import ModbusRTU from "modbus-serial";
 import { eq } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { commands, deviceProfiles, gateways } from "@db/schema";
+import { commands, deviceProfiles, gateways, meters } from "@db/schema";
 import { crc16, buildReadRequest } from "../modbus";
 import { registerOutstanding, attachVerifyCommand } from "../mqtt/c30-outstanding";
 import type { Meter } from "@db/schema";
+import { emit } from "../webhooks/dispatch";
 
 export interface ControllableDef {
   address: number;
@@ -92,20 +93,82 @@ function buildWriteRequest(slave: number, address: number, value: number): Buffe
   return frame;
 }
 
+/** The statuses the commands audit table can hold — what actually reached plant. */
+export type LiveControlStatus = "ok" | "sent" | "failed";
+
 export interface ControlResult {
-  status: "ok" | "sent" | "failed";
+  // "preview" is a dry run: everything up to the bus write happened, nothing
+  // was written. It is a distinct status rather than an "ok" with a prefix so
+  // no caller can mistake a rehearsal for a command that reached the plant —
+  // and because it is OUTSIDE LiveControlStatus, the compiler refuses to let
+  // one be inserted into the commands table. The invariant is the type, not a
+  // comment asking people to remember it.
+  status: LiveControlStatus | "preview";
   detail: string;
   /** Wave 4 / T4: C30 writes carry the outstanding read-back registration so
    *  executeAndLog can link the control commands row once inserted. */
   verify?: { gatewayId: number; slave: number; fc: 3 | 4 };
 }
 
+export interface ExecuteOptions {
+  /**
+   * §9.4: validate everything and report what WOULD happen, without touching
+   * the bus. Deliberately the same function rather than a parallel "preview"
+   * implementation — a rehearsal that ran different code from the performance
+   * would be worth less than no rehearsal at all.
+   */
+  dryRun?: boolean;
+}
+
+/**
+ * §9.4 emergency stop. Read straight from the database rather than trusting
+ * the Meter row the caller is holding: those rows come from caches with
+ * multi-minute lifetimes, and a stop that takes effect in five minutes is not
+ * a stop. One small query on a path that is about to talk to plant anyway.
+ */
+async function controlLock(
+  meterId: number,
+): Promise<{ at: Date; by: number | null; reason: string | null } | null> {
+  const rows = await getDb()
+    .select({
+      at: meters.controlLockedAt,
+      by: meters.controlLockedBy,
+      reason: meters.controlLockReason,
+    })
+    .from(meters)
+    .where(eq(meters.id, meterId))
+    .limit(1);
+  const row = rows[0];
+  return row?.at ? { at: row.at, by: row.by ?? null, reason: row.reason ?? null } : null;
+}
+
 /**
  * Validate + execute a setpoint write. Throws ControlError for validation
  * failures (not whitelisted / out of range / unsupported transport) — those
  * are logged as failed commands by the caller path via executeAndLog.
+ *
+ * This is the one chokepoint every writer passes through: manual control, the
+ * grid connection limit, peak shaving, optimizer plans, schedules and the
+ * watchdog refresh. The §9.4 lock is enforced here for exactly that reason —
+ * a controller added later inherits it rather than having to remember it.
  */
-export async function executeControl(meter: Meter, key: string, value: number): Promise<ControlResult> {
+export async function executeControl(
+  meter: Meter,
+  key: string,
+  value: number,
+  opts: ExecuteOptions = {},
+): Promise<ControlResult> {
+  // The lock comes first and is absolute: a device someone has stopped is not
+  // written to, whatever the reason and whichever controller is asking. A dry
+  // run is allowed through to report on it — describing a write is not one.
+  const lock = opts.dryRun ? null : await controlLock(meter.id);
+  if (lock) {
+    throw new ControlError(
+      `${meter.name} is under an emergency stop since ${lock.at.toISOString()}` +
+        (lock.reason ? ` (${lock.reason})` : "") +
+        ". Release it before commanding this device.",
+    );
+  }
   const allowed = await controllableForModel(meter.model);
   const def = allowed[key];
   if (!def) {
@@ -139,6 +202,22 @@ export async function executeControl(meter: Meter, key: string, value: number): 
   const registerValue = Math.round(value * scale);
   if (registerValue < 0 || registerValue > 0xffff) {
     throw new ControlError(`scaled value ${registerValue} does not fit a 16-bit register`);
+  }
+
+  if (opts.dryRun) {
+    // Everything above this line is the real path: whitelist, verification
+    // gate, range check, FC support and scaling all ran exactly as they would
+    // have. Only the bus write is skipped.
+    const stopped = await controlLock(meter.id);
+    return withWarn({
+      status: "preview",
+      detail:
+        `would write ${value}${def.unit ? ` ${def.unit}` : ""} to register ${def.address} ` +
+        `(scaled ${registerValue}) on ${meter.name}` +
+        (stopped
+          ? ` — BUT the device is under an emergency stop${stopped.reason ? ` (${stopped.reason})` : ""}, so a real command would be refused`
+          : ""),
+    });
   }
 
   const db = getDb();
@@ -203,10 +282,52 @@ export async function executeControl(meter: Meter, key: string, value: number): 
 }
 
 /** Execute + ALWAYS log to commands (audit trail), rethrowing ControlError. */
+/**
+ * executeControl + an audit row. Deliberately has no dry-run parameter: the
+ * commands table is the record of what was sent to plant, and a rehearsal that
+ * left a row there would be indistinguishable from the real thing in the one
+ * place an incident review looks. Previews go through executeControl directly.
+ */
+// §9.15: one place that turns a control outcome into a webhook event, so the
+// success and rejection paths above cannot describe the same write
+// differently.
+async function emitControl(
+  meter: Meter,
+  key: string,
+  value: number,
+  userId: number | null,
+  status: LiveControlStatus,
+  detail: string,
+  commandId: number | null,
+): Promise<void> {
+  await emit(
+    "command.executed",
+    {
+      commandId,
+      meterId: meter.id,
+      meterName: meter.name,
+      gatewayId: meter.gatewayId,
+      key,
+      value,
+      status,
+      detail,
+      userId,
+    },
+    meter.orgId ?? null,
+  );
+}
+
 export async function executeAndLog(meter: Meter, key: string, value: number, userId: number | null): Promise<ControlResult> {
   const db = getDb();
   try {
     const result = await executeControl(meter, key, value);
+    if (result.status === "preview") {
+      // Unreachable: this function never asks for a dry run, and that is the
+      // point — the narrowing below is what lets the insert typecheck, so the
+      // day someone adds a dryRun parameter here they get a compile error
+      // rather than rehearsals quietly logged as real commands.
+      throw new Error("internal: preview result returned from a live control write");
+    }
     const inserted = await db
       .insert(commands)
       .values({
@@ -228,6 +349,10 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
     if (result.verify && controlCommandId !== undefined) {
       attachVerifyCommand(result.verify.gatewayId, result.verify.slave, result.verify.fc, controlCommandId);
     }
+    // §9.15: publish what went to plant. This is the event an auditor asks
+    // for, and it is emitted from the same place the audit row is written so
+    // the two cannot disagree. Queue-only — nothing here waits on a receiver.
+    void emitControl(meter, key, value, userId, result.status, result.detail, controlCommandId ?? null);
     return result;
   } catch (err) {
     if (err instanceof ControlError) {
@@ -243,6 +368,10 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
         controlValue: value,
         result: `rejected: ${err.message}`,
       });
+      // A refused write is the interesting one for an integration: it is how
+      // an emergency stop, a failed verification gate or an out-of-range
+      // setpoint becomes visible outside this system.
+      void emitControl(meter, key, value, userId, "failed", `rejected: ${err.message}`, null);
     }
     throw err;
   }

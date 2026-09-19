@@ -8,18 +8,15 @@
 //
 // TimescaleDB deployments use native continuous aggregates + retention policies
 // instead — this module is only wired up for the MySQL store (boot.ts).
-import { sql } from "drizzle-orm";
+import { isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
+import { orgs } from "@db/schema";
+import { retentionCutoff, TELEMETRY_RAW_DAYS } from "./retention";
+import { defaultNeedsOwnPass, retentionPlan, type RetentionPlan } from "../orgs/retention";
 
-const RAW_DAYS = parseInt(process.env.TELEMETRY_RAW_DAYS || "90", 10);
 const ROLLUP_INTERVAL_MIN = parseInt(process.env.ROLLUP_INTERVAL_MIN || "10", 10);
 
 const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
-
-/** Raw rows older than this are rolled up + purged. */
-export function retentionCutoff(now = new Date()): Date {
-  return new Date(now.getTime() - RAW_DAYS * 86_400_000);
-}
 
 /**
  * Aggregate one UTC hour [hourStart, +1h) for all meters; idempotent upsert.
@@ -37,7 +34,9 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
        demand_samples, avg_power_factor,
        energy_import_delta_kwh, energy_export_delta_kwh,
        energy_import_first, energy_import_last,
-       energy_export_first, energy_export_last, counter_reset)
+       energy_export_first, energy_export_last, counter_reset,
+       avg_voltage_l1, avg_current_l1, avg_frequency_hz,
+       avg_battery_power_kw, avg_irradiance_wm2)
     with ordered as (
       select
         meter_id,
@@ -48,6 +47,13 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
         active_power_kw as p,
         demand_kw as d,
         power_factor as pf,
+        voltage_l1 as v1,
+        current_l1 as c1,
+        frequency_hz as hz,
+        -- Fixed key set: one primary series per device type. Bounded and known,
+        -- so the rollup stays a plain aggregate with no join to meters.
+        cast(json_unquote(json_extract(values_json, '$.batteryPowerKw')) as double) as bkw,
+        cast(json_unquote(json_extract(values_json, '$.irradianceWm2')) as double) as irr,
         first_value(energy_import_kwh) over (partition by meter_id order by ts) as e_first,
         last_value(energy_import_kwh) over (
           partition by meter_id order by ts
@@ -74,7 +80,12 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
       max(e_last) as energy_import_last,
       max(x_first) as energy_export_first,
       max(x_last) as energy_export_last,
-      coalesce(max(e - e_prev < -0.001 or x - x_prev < -0.001), 0) as counter_reset
+      coalesce(max(e - e_prev < -0.001 or x - x_prev < -0.001), 0) as counter_reset,
+      avg(v1) as avg_voltage_l1,
+      avg(c1) as avg_current_l1,
+      avg(hz) as avg_frequency_hz,
+      avg(bkw) as avg_battery_power_kw,
+      avg(irr) as avg_irradiance_wm2
     from ordered
     group by meter_id
     on duplicate key update
@@ -90,7 +101,12 @@ export async function rollupHour(hourStartUtc: Date): Promise<number> {
       energy_import_last = values(energy_import_last),
       energy_export_first = values(energy_export_first),
       energy_export_last = values(energy_export_last),
-      counter_reset = values(counter_reset)`);
+      counter_reset = values(counter_reset),
+      avg_voltage_l1 = values(avg_voltage_l1),
+      avg_current_l1 = values(avg_current_l1),
+      avg_frequency_hz = values(avg_frequency_hz),
+      avg_battery_power_kw = values(avg_battery_power_kw),
+      avg_irradiance_wm2 = values(avg_irradiance_wm2)`);
   const affected = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
   // upsert counts an update as 2 — good enough for logging
   return affected;
@@ -135,6 +151,83 @@ export async function purgeRaw(cutoffUtc: Date): Promise<{ rolledHours: number; 
   return { rolledHours, deleted };
 }
 
+/**
+ * §9.14: purge with per-org retention.
+ *
+ * Reads the overrides, builds the plan (api/orgs/retention.ts), rolls up
+ * everything that is about to disappear, then deletes in three passes:
+ *
+ *  1. The global sweep, at the LONGEST retention anybody asked for. Running it
+ *     at the default instead would delete, at ninety days, the very rows a
+ *     tenant is paying to keep for five years.
+ *  2. The default, as a targeted delete — but only when somebody keeps longer,
+ *     since otherwise pass 1 already IS the default. A single-tenant
+ *     deployment therefore does exactly what it did before this existed.
+ *  3. Each org keeping less than the longest, at its own later cutoff.
+ *
+ * The same production guard as purgeRaw: this deletes data, and it refuses to
+ * do that against a remote database without ALLOW_UNSAFE_PROD=1.
+ */
+export async function purgeRawScoped(now: Date = new Date()): Promise<{
+  rolledHours: number;
+  deleted: number;
+  plan: RetentionPlan;
+}> {
+  const url = process.env.DATABASE_URL ?? "";
+  const local = /localhost|127\.0\.0\.1/.test(url);
+  if (!local && process.env.ALLOW_UNSAFE_PROD !== "1") {
+    throw new Error("purgeRawScoped refuses to run against a remote DB without ALLOW_UNSAFE_PROD=1");
+  }
+  const db = getDb();
+  const overrideRows = await db
+    .select({ orgId: orgs.id, days: orgs.telemetryRawDays })
+    .from(orgs)
+    .where(isNotNull(orgs.telemetryRawDays));
+  const plan = retentionPlan(
+    now,
+    TELEMETRY_RAW_DAYS,
+    overrideRows.map((r) => ({ orgId: r.orgId, days: r.days as number })),
+  );
+
+  // Roll up to the LATEST cutoff in the plan: a tenant with a short retention
+  // would otherwise lose hours that never reached an aggregate, and their
+  // reports would go blank rather than coarse.
+  const oldest = await db.execute(sql`
+    select unix_timestamp(min(ts)) as oldest_epoch from telemetry where ts < ${utcStr(plan.rollupUpTo)}`);
+  const oldestEpoch = (oldest as unknown as [Record<string, unknown>[]])[0][0]?.oldest_epoch;
+  let rolledHours = 0;
+  if (oldestEpoch !== null && oldestEpoch !== undefined) {
+    rolledHours = await rollupRange(new Date(Number(oldestEpoch) * 1000), plan.rollupUpTo);
+  }
+
+  let deleted = 0;
+  const del = await db.execute(sql`delete from telemetry where ts < ${utcStr(plan.globalCutoff)}`);
+  deleted += Number((del as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+
+  if (defaultNeedsOwnPass(plan, now, TELEMETRY_RAW_DAYS)) {
+    const defaultCutoff = retentionCutoff(now);
+    const overrideIds = overrideRows.map((r) => r.orgId);
+    // Devices with NO org are the deployment's own (auto-provisioned hardware
+    // still in the unclaimed queue), so they follow the deployment's rule.
+    const notOverridden =
+      overrideIds.length > 0
+        ? sql`(m.org_id is null or m.org_id not in (${sql.join(overrideIds.map((id) => sql`${id}`), sql`, `)}))`
+        : sql`1 = 1`;
+    const r = await db.execute(sql`
+      delete t from telemetry t join meters m on m.id = t.meter_id
+      where ${notOverridden} and t.ts < ${utcStr(defaultCutoff)}`);
+    deleted += Number((r as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+  }
+
+  for (const { orgId, cutoff } of plan.perOrg) {
+    const r = await db.execute(sql`
+      delete t from telemetry t join meters m on m.id = t.meter_id
+      where m.org_id = ${orgId} and t.ts < ${utcStr(cutoff)}`);
+    deleted += Number((r as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+  }
+  return { rolledHours, deleted, plan };
+}
+
 let timer: NodeJS.Timeout | null = null;
 
 /**
@@ -149,10 +242,14 @@ export function startRetentionLoop(): void {
       const now = Date.now();
       const lastClosedHour = new Date(Math.floor(now / 3_600_000) * 3_600_000 - 3_600_000);
       await rollupHour(lastClosedHour);
-      const cutoff = retentionCutoff();
-      const { rolledHours, deleted } = await purgeRaw(cutoff);
+      // §9.14: per-org retention. purgeRaw (one global cutoff) is kept for the
+      // probes and for anything that wants the old single-horizon behaviour.
+      const { rolledHours, deleted, plan } = await purgeRawScoped();
       if (deleted > 0) {
-        console.log(`[retention] purged ${deleted} raw rows older than ${cutoff.toISOString()} (${rolledHours} hours rolled up)`);
+        console.log(
+          `[retention] purged ${deleted} raw rows (global cutoff ${plan.globalCutoff.toISOString()}, ` +
+            `${plan.perOrg.length} org override(s), ${rolledHours} hours rolled up)`,
+        );
       }
     } catch (err) {
       console.error("[retention] tick failed:", err instanceof Error ? err.message : err);

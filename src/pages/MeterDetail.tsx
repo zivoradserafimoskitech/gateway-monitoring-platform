@@ -70,7 +70,7 @@ export default function MeterDetail() {
     { placeholderData: (prev) => prev },
   );
 
-  if (!meter) return <p className="text-sm text-slate-500">{t.common.loading}</p>;
+  if (!meter) return <p className="text-sm text-muted-foreground">{t.common.loading}</p>;
   const v = latest.data;
   const vals = (v?.values ?? {}) as Record<string, number>;
   const deviceType = (meter.deviceType ?? "meter") as string;
@@ -147,13 +147,13 @@ export default function MeterDetail() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <Link to="/meters" className="mb-1 inline-flex items-center gap-1 text-xs text-slate-500 hover:underline">
+          <Link to="/meters" className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">
             <ArrowLeft className="h-3 w-3" /> {t.meters.title}
           </Link>
           <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight">
             {meter.name} <StatusBadge status={meter.status} /> <DeviceTypeBadge type={deviceType} />
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted-foreground">
             {meter.brand ? `${meter.brand} · ` : ""}
             {meter.model} ·{" "}
             {meter.host
@@ -168,11 +168,11 @@ export default function MeterDetail() {
         {tiles.map((tile) => (
           <Card key={tile.label}>
             <CardHeader className="pb-1 pt-4">
-              <CardTitle className="text-xs font-medium text-slate-500">{tile.label}</CardTitle>
+              <CardTitle className="text-xs font-medium text-muted-foreground">{tile.label}</CardTitle>
             </CardHeader>
             <CardContent className="pb-4">
               <div className="text-xl font-semibold">
-                {tile.value} <span className="text-xs font-normal text-slate-400">{tile.unit}</span>
+                {tile.value} <span className="text-xs font-normal text-muted-foreground">{tile.unit}</span>
               </div>
             </CardContent>
           </Card>
@@ -186,7 +186,7 @@ export default function MeterDetail() {
           </CardHeader>
           <CardContent className="pb-4 text-sm" title={t.meters.rejectedValuesHint}>
             <span className="font-semibold text-amber-600">{rejected.total}</span>
-            <span className="ml-2 text-xs text-slate-500">
+            <span className="ml-2 text-xs text-muted-foreground">
               {Object.entries(rejected.byKey)
                 .sort(([, a], [, b]) => b - a)
                 .slice(0, 6)
@@ -214,10 +214,10 @@ export default function MeterDetail() {
           <CardContent>
             <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
               {allRows.map(([k, val]) => (
-                <div key={k} className="flex justify-between border-b border-slate-100 py-1">
-                  <span className="font-mono text-xs text-slate-500">{k}</span>
+                <div key={k} className="flex justify-between border-b border-border py-1">
+                  <span className="font-mono text-xs text-muted-foreground">{k}</span>
                   <span className="font-medium">
-                    {fmt(val)} <span className="text-xs font-normal text-slate-400">{allUnits[k] ?? ""}</span>
+                    {fmt(val)} <span className="text-xs font-normal text-muted-foreground">{allUnits[k] ?? ""}</span>
                   </span>
                 </div>
               ))}
@@ -245,16 +245,18 @@ export default function MeterDetail() {
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={history.data ?? []}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" />
                 <XAxis
                   dataKey="ts"
                   tickFormatter={(val: Date) =>
                     new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                   }
                   fontSize={12}
-                  stroke="#94a3b8"
+                  stroke="currentColor"
+                  className="text-muted-foreground"
                 />
-                <YAxis fontSize={12} stroke="#94a3b8" unit={` ${primaryUnit}`} width={80} />
+                <YAxis fontSize={12} stroke="currentColor"
+                  className="text-muted-foreground" unit={` ${primaryUnit}`} width={80} />
                 <Tooltip
                   labelFormatter={(val) => fmtTime(val as Date)}
                   formatter={(value) => [`${value} ${primaryUnit}`, primaryKeyLabel]}

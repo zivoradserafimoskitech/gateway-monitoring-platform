@@ -35,6 +35,21 @@ vi.mock("../queries/connection", () => ({ getDb: () => state.db }));
 
 vi.mock("../lib/api-keys", () => ({ lookupApiKey: async () => state.apiKey }));
 
+// §9.13: these tests are about scopes and payload shapes, not quotas. The real
+// limiter reads a bucket row through getDb(), which here is a stub shaped for
+// one device lookup — stubbing the limiter keeps the failure it would produce
+// out of tests that are asking a different question. Rate limiting has its own
+// tests in tests/rate-limit.test.ts and api/rest/v1-rate-limit.test.ts.
+vi.mock("./rate-limit-store", () => ({
+  consume: async () => ({
+    allowed: true,
+    next: { tokens: 119, updatedAt: new Date() },
+    remaining: 119,
+    retryAfterSec: 0,
+    limit: 120,
+  }),
+}));
+
 vi.mock("../telemetry", () => ({
   getTelemetryStore: () => ({
     metricSeries: async (meterId: number, from: Date, to: Date, bucketSec: number, keys: string[]) => {

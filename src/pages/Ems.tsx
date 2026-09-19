@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ExternalLink } from "lucide-react";
 import { EmsPanel } from "@/components/EmsPanel";
 import { EmsPlanCard } from "@/components/EmsPlanCard";
+import { GridLimitCard } from "@/components/GridLimitCard";
 
 /** Origin attribution from the commands.result prefix (see api/ems/controller.ts tagLastCommand). */
 function originBadge(result: string | null, t: ReturnType<typeof useI18n>["t"]): { label: string; cls: string } {
@@ -21,7 +22,7 @@ function originBadge(result: string | null, t: ReturnType<typeof useI18n>["t"]):
   if (r.startsWith("plan:")) return { label: t.emsPage.originPlan, cls: "bg-blue-100 text-blue-700" };
   if (r.startsWith("peak:")) return { label: t.emsPage.originPeak, cls: "bg-amber-100 text-amber-700" };
   if (r.startsWith("schedule:")) return { label: t.emsPage.originSchedule, cls: "bg-emerald-100 text-emerald-700" };
-  return { label: t.emsPage.originOther, cls: "bg-slate-100 text-slate-600" };
+  return { label: t.emsPage.originOther, cls: "bg-muted text-muted-foreground" };
 }
 
 export default function Ems() {
@@ -41,8 +42,12 @@ export default function Ems() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.emsPage.title}</h1>
-        <p className="text-sm text-slate-500">{t.emsPage.subtitle}</p>
+        <p className="text-sm text-muted-foreground">{t.emsPage.subtitle}</p>
       </div>
+
+      {/* §9.2: the connection limit outranks every other EMS decision, so it
+          sits above them on the page as well as in the controller. */}
+      <GridLimitCard />
 
       {/* ── Fleet commands (all org devices, live) ── */}
       <Card>
@@ -60,7 +65,7 @@ export default function Ems() {
         </CardHeader>
         <CardContent>
           {rows.length === 0 ? (
-            <p className="text-sm text-slate-400">{t.common.noData}</p>
+            <p className="text-sm text-muted-foreground">{t.common.noData}</p>
           ) : (
             <Table>
               <TableHeader>
@@ -78,11 +83,11 @@ export default function Ems() {
                   const origin = originBadge(c.result, t);
                   return (
                     <TableRow key={c.id}>
-                      <TableCell className="whitespace-nowrap text-xs text-slate-500">{fmtTime(c.createdAt)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTime(c.createdAt)}</TableCell>
                       <TableCell className="text-sm font-medium">{meterName(c.meterId)}</TableCell>
                       <TableCell className="font-mono text-xs">{c.controlKey}</TableCell>
                       <TableCell className="text-right font-mono text-xs">{fmt(c.controlValue, 1)}</TableCell>
-                      <TableCell className="max-w-64 truncate text-xs text-slate-500" title={c.result ?? undefined}>
+                      <TableCell className="max-w-64 truncate text-xs text-muted-foreground" title={c.result ?? undefined}>
                         {c.result ?? "—"}
                       </TableCell>
                       <TableCell>
@@ -101,14 +106,14 @@ export default function Ems() {
       {bessMeters.length === 0 ? (
         <Card>
           <CardContent className="py-6">
-            <p className="text-sm text-slate-500">{t.emsPage.noBess}</p>
+            <p className="text-sm text-muted-foreground">{t.emsPage.noBess}</p>
           </CardContent>
         </Card>
       ) : (
         meterId !== null && (
           <>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="text-sm font-medium text-slate-600">{t.emsPage.selectMeter}</span>
+              <span className="text-sm font-medium text-muted-foreground">{t.emsPage.selectMeter}</span>
               <Select value={String(meterId)} onValueChange={(v) => setSelected(Number(v))}>
                 <SelectTrigger className="w-64">
                   <SelectValue />

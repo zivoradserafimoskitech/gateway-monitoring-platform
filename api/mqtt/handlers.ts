@@ -2,14 +2,16 @@
 // into telemetry rows, and evaluate alarm rules.
 import { eq, and, inArray } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { meters, alarmRules, alarms, deviceProfiles } from "@db/schema";
-import { getTelemetryWriter } from "../telemetry";
+import { meters, alarmRules, alarms, alarmBreachState, deviceProfiles } from "@db/schema";
+import { getTelemetryWriter, getTelemetryStore } from "../telemetry";
 import { markMeterSeen } from "./liveness";
 import type { MetricKey, RegisterDef } from "@contracts/modbus";
 import { DEFAULT_REGISTER_MAPS, DEFAULT_METER_PHASES } from "@contracts/modbus";
 import { parseResponse, decodeRegisters, registerSpan, buildBlocks } from "../modbus";
 import { shiftedAddress } from "@contracts/modbus";
 import { isInMaintenance, notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
+import { alarmTransition } from "../alarms/hysteresis";
+import { confirmStuck, stuckStep, type StuckRecord } from "../alarms/stuck";
 import { telemetryValueRejected, telemetryValueDecoded, c30FrameUndecodable } from "../lib/observability";
 import { matchOutstanding, stampResponded, confirmVerifiedWrite } from "./c30-outstanding";
 import type { Gateway, Meter } from "@db/schema";
@@ -130,6 +132,12 @@ export async function ensureMeter(
         modbusAddress: slaveAddress,
         status: "online",
         lastSeenAt: new Date(),
+        // §1.4: inherit the gateway's tenant. A meter on a gateway that HAS an
+        // owner used to be created with org_id NULL anyway, so it was invisible
+        // to the very tenant that owns the gateway it hangs off — the device
+        // arrived on that tenant's own uplink, so there is nothing to guess.
+        orgId: gateway.orgId ?? null,
+        siteId: gateway.siteId ?? null,
       })
       .$returningId();
     const row = await db.select().from(meters).where(eq(meters.id, created[0].id)).limit(1);
@@ -200,30 +208,77 @@ export function isDuplicateKey(err: unknown): boolean {
   );
 }
 
-// Breach state per (ruleId, meterId), maintained in memory with hysteresis:
-// an alarm fires on the transition into breach and resolves on the transition out.
-// Re-alarming requires a new breach — resolving in the UI while the condition
-// persists does not spam fresh alarms. DB is consulted only on first sight of a pair.
-const breachState = new Map<string, boolean>();
+// Breach state per (ruleId, meterId): an alarm fires on the transition INTO
+// breach and resolves on the transition out. Re-alarming requires a new
+// breach, so resolving in the UI while the condition persists does not spam
+// fresh alarms.
+//
+// The authority is the alarm_breach_state table, because MQTT ingestion is
+// deliberately NOT leased — the shared subscription balances it across
+// replicas on purpose — so both replicas evaluate the same rules. With
+// per-process state each kept its own view: a breach could be raised twice, or
+// a clear missed entirely, and every restart forgot how long a condition had
+// been going.
+//
+// The map stays as a read-through cache so the hot path (unchanged state,
+// every sample) does not touch the database. Only TRANSITIONS are written.
+interface BreachRecord {
+  breached: boolean;
+  /** When the condition started. Null when not breached. */
+  since: number | null;
+  /** When the rule actually fired, for duration rules. Null until it does. */
+  raisedAt: number | null;
+}
+const breachState = new Map<string, BreachRecord>();
 
-// Hot path optimization: when the value is NOT in breach and we have no prior
-// state, we assume "not breached" without a DB query. The DB is only consulted
-// on the rare breach path (to avoid duplicate alarms after a server restart).
-async function isCurrentlyBreached(ruleId: number, meterId: number, breached: boolean): Promise<boolean> {
-  const key = `${ruleId}:${meterId}`;
+const breachKey = (ruleId: number, meterId: number) => `${ruleId}:${meterId}`;
+
+/** Current record, consulting the database on first sight of a pair. */
+async function loadBreachState(
+  ruleId: number,
+  meterId: number,
+  breachedNow: boolean,
+): Promise<BreachRecord> {
+  const key = breachKey(ruleId, meterId);
   const cached = breachState.get(key);
   if (cached !== undefined) return cached;
-  if (!breached) {
-    breachState.set(key, false);
-    return false;
-  }
+
   const db = getDb();
-  // #7: an ACKNOWLEDGED alarm is still an ongoing breach — counting only
-  // "active" here re-fired a fresh alarm for a condition the operator had
-  // already acked (and after restarts, breachState is empty so this DB check
-  // is the only duplicate guard).
+  try {
+    const rows = await db
+      .select()
+      .from(alarmBreachState)
+      .where(and(eq(alarmBreachState.ruleId, ruleId), eq(alarmBreachState.meterId, meterId)))
+      .limit(1);
+    const row = rows[0];
+    if (row) {
+      const rec: BreachRecord = {
+        breached: row.breached === true || (row.breached as unknown) === 1,
+        since: row.since ? row.since.getTime() : null,
+        raisedAt: row.raisedAt ? row.raisedAt.getTime() : null,
+      };
+      breachState.set(key, rec);
+      return rec;
+    }
+  } catch (err) {
+    console.warn(
+      "[alarms] breach state unavailable, falling back to alarm rows:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // No stored state. Not in breach means nothing to reconstruct.
+  if (!breachedNow) {
+    const rec: BreachRecord = { breached: false, since: null, raisedAt: null };
+    breachState.set(key, rec);
+    return rec;
+  }
+  // In breach with no stored state: an open alarm row means the condition was
+  // already known. #7: an ACKNOWLEDGED alarm is still an ongoing breach —
+  // counting only "active" re-fired a fresh alarm for a condition the operator
+  // had already acknowledged.
   const active = await db
-    .select({ id: alarms.id })
+    .select({ id: alarms.id, triggeredAt: alarms.triggeredAt })
     .from(alarms)
     .where(
       and(
@@ -233,9 +288,101 @@ async function isCurrentlyBreached(ruleId: number, meterId: number, breached: bo
       ),
     )
     .limit(1);
-  const was = !!active[0];
-  breachState.set(key, was);
-  return was;
+  const rec: BreachRecord = active[0]
+    ? {
+        breached: true,
+        since: active[0].triggeredAt ? new Date(active[0].triggeredAt).getTime() : Date.now(),
+        raisedAt: active[0].triggeredAt ? new Date(active[0].triggeredAt).getTime() : Date.now(),
+      }
+    : { breached: false, since: null, raisedAt: null };
+  breachState.set(key, rec);
+  return rec;
+}
+
+/** Persist a transition. Cache first so the hot path never waits on the write. */
+async function saveBreachState(ruleId: number, meterId: number, rec: BreachRecord): Promise<void> {
+  breachState.set(breachKey(ruleId, meterId), rec);
+  try {
+    const db = getDb();
+    const values = {
+      ruleId,
+      meterId,
+      breached: rec.breached,
+      since: rec.since === null ? null : new Date(rec.since),
+      raisedAt: rec.raisedAt === null ? null : new Date(rec.raisedAt),
+    };
+    await db
+      .insert(alarmBreachState)
+      .values(values)
+      .onDuplicateKeyUpdate({
+        set: { breached: values.breached, since: values.since, raisedAt: values.raisedAt },
+      });
+  } catch (err) {
+    console.warn(
+      "[alarms] breach state write failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/** Test seam: drop the cache so the next evaluation re-reads the database. */
+export function invalidateBreachCache(): void {
+  breachState.clear();
+}
+
+
+// ─── §9.7 data quality: frozen registers ─────────────────────────────────────
+// A stuck register is the failure every other rule is blind to: the device
+// stays online and the value stays inside its thresholds, so nothing fires
+// while that number feeds EMS decisions and billing reports.
+//
+// The run is tracked in memory so a healthy signal — which changes on almost
+// every sample — costs one comparison and no I/O. Only once a run reaches the
+// rule's window does it cost a query, and that query is what makes the answer
+// survive a restart: the in-memory run dies with the process, the telemetry
+// rows do not.
+const stuckRuns = new Map<string, StuckRecord>();
+
+/** Drop cached stuck runs (rule edits, tests). */
+export function invalidateStuckRuns(): void {
+  stuckRuns.clear();
+}
+
+async function isStuck(
+  ruleId: number,
+  meterId: number,
+  metric: string,
+  value: number,
+  thresholdSec: number,
+  now: number,
+): Promise<boolean> {
+  const key = `${ruleId}:${meterId}`;
+  const windowMs = Math.max(0, thresholdSec) * 1000;
+  const step = stuckStep(stuckRuns.get(key), value, now, windowMs);
+  stuckRuns.set(key, step.next);
+  if (step.kind !== "suspect") return false;
+
+  try {
+    const changedAt = await getTelemetryStore().lastChangeSince(
+      meterId,
+      metric,
+      value,
+      new Date(now - windowMs),
+    );
+    const { stuck, next } = confirmStuck(step.next, changedAt ? changedAt.getTime() : null, now, windowMs);
+    stuckRuns.set(key, next);
+    return stuck;
+  } catch (err) {
+    // A store that cannot answer must not invent an alarm about plant data.
+    // Failing closed here means "no alarm", which is the same state as before
+    // this rule existed — the opposite choice would page an operator because a
+    // query timed out.
+    console.warn(
+      `[alarms] stuck check unavailable for meter ${meterId} ${metric}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
 }
 
 async function evaluateAlarmRules(
@@ -254,12 +401,31 @@ async function evaluateAlarmRules(
     const value = values[rule.metric];
     if (value === undefined || value === null) continue;
 
-    const breached = rule.operator === "gt" ? value > rule.threshold : value < rule.threshold;
-    const key = `${rule.id}:${meter.id}`;
-    const was = await isCurrentlyBreached(rule.id, meter.id, breached);
+    const now = Date.now();
+    const breached =
+      rule.operator === "stuck"
+        ? await isStuck(rule.id, meter.id, rule.metric, value, rule.threshold, now)
+        : rule.operator === "gt"
+          ? value > rule.threshold
+          : value < rule.threshold;
+    const durationMs = (rule.durationSec ?? 0) * 1000;
+    const rec = await loadBreachState(rule.id, meter.id, breached);
+    const decision = alarmTransition(rec, breached, now, durationMs);
 
-    if (breached && !was) {
-      breachState.set(key, true);
+    if (decision.action === "none") {
+      // The clock may still have started or reset, which has to survive a
+      // restart for a duration rule to ever accumulate.
+      if (
+        decision.next.breached !== rec.breached ||
+        decision.next.since !== rec.since ||
+        decision.next.raisedAt !== rec.raisedAt
+      ) {
+        await saveBreachState(rule.id, meter.id, decision.next);
+      }
+      continue;
+    }
+
+    if (decision.action === "raise") {
       // v7/C2: maintenance windows suppress NEW activations (evaluation keeps
       // running — resolves still flow through below).
       if (await isInMaintenance(meter)) continue;
@@ -278,7 +444,14 @@ async function evaluateAlarmRules(
             value,
             threshold: rule.threshold,
             severity: rule.severity,
-            message: `${rule.name}: ${rule.metric} = ${value} (${rule.operator === "gt" ? ">" : "<"} ${rule.threshold})`,
+            message:
+              rule.operator === "stuck"
+                ? `${rule.name}: ${rule.metric} has not changed from ${value} for ` +
+                  `${Math.round(rule.threshold / 60)} min`
+                : `${rule.name}: ${rule.metric} = ${value} ` +
+                  `(${rule.operator === "gt" ? ">" : "<"} ${rule.threshold}` +
+                  (durationMs > 0 ? ` for ${Math.round(durationMs / 60_000)} min` : "") +
+                  ")",
             status: "active",
             triggeredAt: new Date(),
           })
@@ -286,12 +459,18 @@ async function evaluateAlarmRules(
         // v7/C2: fire-and-forget notification — never block ingestion on a
         // slow channel.
         if (inserted[0]?.id) void notifyAlarmBreach(inserted[0].id);
+        await saveBreachState(rule.id, meter.id, decision.next);
       } catch (err) {
-        if (isDuplicateKey(err)) continue;
+        if (isDuplicateKey(err)) {
+          // Another replica won the race; it owns the alarm row, and our state
+          // must agree or we would try to raise it again on the next sample.
+          await saveBreachState(rule.id, meter.id, decision.next);
+          continue;
+        }
         throw err;
       }
-    } else if (!breached && was) {
-      breachState.set(key, false);
+    } else {
+      await saveBreachState(rule.id, meter.id, decision.next);
       // Resolve acknowledged alarms too — the breach is over either way (#7).
       // Collect the ids first: the UPDATE nulls active_dedup_key, so after it
       // runs there is no way to find which rows were just closed, and whoever

@@ -242,54 +242,54 @@ describe("backup codes", () => {
 });
 
 describe("pending-login store (TTL + single-use + max attempts)", () => {
-  it("create → peek → consume is single-use", () => {
+  it("create → peek → consume is single-use", async () => {
     const store = createMfaPendingStore({ now: () => 1000 });
-    const token = store.create(42);
-    expect(store.peek(token)?.userId).toBe(42);
-    expect(store.consume(token)?.userId).toBe(42);
-    expect(store.consume(token)).toBeNull(); // second use rejected
-    expect(store.peek(token)).toBeNull();
-    expect(store.size()).toBe(0);
+    const token = await store.create(42);
+    expect((await store.peek(token))?.userId).toBe(42);
+    expect((await store.consume(token))?.userId).toBe(42);
+    expect(await store.consume(token)).toBeNull(); // second use rejected
+    expect(await store.peek(token)).toBeNull();
+    expect(await store.size()).toBe(0);
   });
 
-  it("expires entries after the TTL", () => {
+  it("expires entries after the TTL", async () => {
     let t = 1000;
     const store = createMfaPendingStore({ ttlMs: 5 * 60_000, now: () => t });
-    const token = store.create(7);
+    const token = await store.create(7);
     t += 5 * 60_000 - 1;
-    expect(store.peek(token)).not.toBeNull();
+    expect(await store.peek(token)).not.toBeNull();
     t += 2; // past TTL
-    expect(store.peek(token)).toBeNull();
-    expect(store.consume(token)).toBeNull();
-    expect(store.size()).toBe(0); // swept
+    expect(await store.peek(token)).toBeNull();
+    expect(await store.consume(token)).toBeNull();
+    expect(await store.size()).toBe(0); // swept
   });
 
-  it("destroys the challenge after maxAttempts failures", () => {
+  it("destroys the challenge after maxAttempts failures", async () => {
     const store = createMfaPendingStore({ maxAttempts: 5, now: () => 1000 });
-    const token = store.create(9);
+    const token = await store.create(9);
     for (let i = 1; i < 5; i++) {
-      const r = store.fail(token);
+      const r = await store.fail(token);
       expect(r.attempts).toBe(i);
       expect(r.destroyed).toBe(false);
     }
-    const last = store.fail(token);
+    const last = await store.fail(token);
     expect(last).toEqual({ attempts: 5, destroyed: true });
-    expect(store.peek(token)).toBeNull(); // must log in again
-    expect(store.consume(token)).toBeNull();
+    expect(await store.peek(token)).toBeNull(); // must log in again
+    expect(await store.consume(token)).toBeNull();
   });
 
-  it("fail on an unknown/expired token is a no-op", () => {
+  it("fail on an unknown/expired token is a no-op", async () => {
     const store = createMfaPendingStore({ now: () => 1000 });
-    expect(store.fail("nope")).toEqual({ attempts: 0, destroyed: false });
+    expect(await store.fail("nope")).toEqual({ attempts: 0, destroyed: false });
   });
 
-  it("tokens are unique and unpredictable-looking", () => {
+  it("tokens are unique and unpredictable-looking", async () => {
     const store = createMfaPendingStore({ now: () => 1000 });
-    const a = store.create(1);
-    const b = store.create(1);
+    const a = await store.create(1);
+    const b = await store.create(1);
     expect(a).not.toBe(b);
     expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(store.size()).toBe(2);
+    expect(await store.size()).toBe(2);
   });
 });
 

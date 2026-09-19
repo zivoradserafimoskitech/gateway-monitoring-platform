@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { trpc } from "@/providers/trpc";
+import { useSortable } from "@/hooks/use-sortable";
+import { SortHeader } from "@/components/SortHeader";
 import { useI18n } from "@/i18n";
 import { StatusBadge, DeviceTypeBadge, fmtTime } from "@/components/shared";
 import { Card, CardContent } from "@/components/ui/card";
@@ -40,10 +42,22 @@ export default function Meters() {
   const [typeFilter, setTypeFilter] = useState<(typeof TYPE_FILTERS)[number]>("all");
   const meters = trpc.meters.list.useQuery(undefined, { refetchInterval: 5000 });
 
-  const rows = useMemo(() => {
+  const filtered = useMemo(() => {
     const all = meters.data ?? [];
     return typeFilter === "all" ? all : all.filter((m) => (m.deviceType ?? "meter") === typeFilter);
   }, [meters.data, typeFilter]);
+
+  // §8: click-to-sort on top of the existing type filter.
+  const { sort, toggle, sorted } = useSortable();
+  const rows = sorted(filtered, {
+    status: (m) => m.status,
+    name: (m) => m.name,
+    type: (m) => m.deviceType ?? "meter",
+    brand: (m) => m.brand,
+    model: (m) => m.model,
+    site: (m) => m.siteName,
+    lastSeen: (m) => (m.lastSeenAt ? new Date(m.lastSeenAt) : null),
+  });
 
   const typeLabel = (ty: string) =>
     ty === "all"
@@ -55,7 +69,7 @@ export default function Meters() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t.meters.title}</h1>
-          <p className="text-sm text-slate-500">{t.meters.subtitle}</p>
+          <p className="text-sm text-muted-foreground">{t.meters.subtitle}</p>
         </div>
         <AddDeviceDialog />
       </div>
@@ -75,14 +89,14 @@ export default function Meters() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t.common.status}</TableHead>
-                <TableHead>{t.common.name}</TableHead>
-                <TableHead>{t.devices.type}</TableHead>
-                <TableHead>{t.devices.brand}</TableHead>
-                <TableHead>{t.common.model}</TableHead>
+                <SortHeader column="status" sort={sort} onToggle={toggle}>{t.common.status}</SortHeader>
+                <SortHeader column="name" sort={sort} onToggle={toggle}>{t.common.name}</SortHeader>
+                <SortHeader column="type" sort={sort} onToggle={toggle}>{t.devices.type}</SortHeader>
+                <SortHeader column="brand" sort={sort} onToggle={toggle}>{t.devices.brand}</SortHeader>
+                <SortHeader column="model" sort={sort} onToggle={toggle}>{t.common.model}</SortHeader>
                 <TableHead>{t.devices.connection}</TableHead>
-                <TableHead>{t.common.site}</TableHead>
-                <TableHead>{t.common.lastSeen}</TableHead>
+                <SortHeader column="site" sort={sort} onToggle={toggle}>{t.common.site}</SortHeader>
+                <SortHeader column="lastSeen" sort={sort} onToggle={toggle}>{t.common.lastSeen}</SortHeader>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -111,7 +125,7 @@ export default function Meters() {
                         <Link to={`/gateways/${m.gatewayId}`} className="text-emerald-700 hover:underline">
                           {m.gatewayName}
                         </Link>
-                        <span className="ml-1 font-mono text-slate-400">#{m.modbusAddress}</span>
+                        <span className="ml-1 font-mono text-muted-foreground">#{m.modbusAddress}</span>
                       </>
                     )}
                   </TableCell>
@@ -121,7 +135,7 @@ export default function Meters() {
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-slate-500">
+                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                     {t.common.noData}
                   </TableCell>
                 </TableRow>
@@ -231,7 +245,7 @@ function AddDeviceDialog() {
                 {(profiles.data ?? []).map((p) => (
                   <SelectItem key={p.model} value={p.model}>
                     <span className="font-medium">{p.brand ?? ""}</span> {p.label}
-                    <span className="ml-2 text-xs text-slate-400">
+                    <span className="ml-2 text-xs text-muted-foreground">
                       {p.deviceType} · {p.protocol}
                     </span>
                   </SelectItem>
@@ -270,7 +284,7 @@ function AddDeviceDialog() {
                 <TabsTrigger value="tcp" className="flex-1">{t.devices.directTcp}</TabsTrigger>
               </TabsList>
             </Tabs>
-            <p className="text-xs text-slate-500">{conn === "tcp" ? t.devices.tcpNote : t.devices.busNote}</p>
+            <p className="text-xs text-muted-foreground">{conn === "tcp" ? t.devices.tcpNote : t.devices.busNote}</p>
           </div>
 
           {conn === "bus" ? (

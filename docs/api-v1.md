@@ -44,6 +44,7 @@ curl -H "Authorization: Bearer etk_…" https://your-host/api/v1/devices
 | GET | `/api/v1/devices/:id/telemetry` | **audit wave 4: multi-metric bucketed series** (any telemetry keys, e.g. SoC trend) — see below. Requires `telemetry:read`. |
 | PUT | `/api/v1/devices/:id/ems-plan` | **v9 Contract A: push an EMS plan** (upsert/supersede) — see below. |
 | GET | `/api/v1/devices/:id/ems-plan` | **v9 Contract A:** the active plan covering now, else the next upcoming active plan, else `{ "plan": null }`. |
+| GET | `/api/v1/openapi.json` | **§9.13: the OpenAPI 3.1 document** for everything in this table — see below. |
 | GET | `/api/v1/alarms?status=` | Alarms, newest first (limit 500). `status`: `active` (default) \| `acknowledged` \| `resolved` \| `all`. |
 
 ## Energy intervals (ERP / billing)
@@ -209,11 +210,72 @@ local schedules / idle.
 | 403 | key scopes don't include `control` **and** `ems:write` (role alone is not enough — even an `admin`-role key needs the scopes) |
 | 404 | device unknown **or not in the key's org** |
 
+## Rate limits (§9.13)
+
+Per **key** and per **scope**, not per key alone: a telemetry range scan, a
+device listing and an EMS plan push do not cost the same, and one shared
+allowance would have to be priced at the dearest of them — throttling the cheap
+calls for no reason.
+
+| Scope charged | Default | Env override |
+|---|---|---|
+| `read` (every GET, and the fallback for anything unrecognised) | 120/min | `RATE_READ_PER_MIN` |
+| `telemetry:read` (`GET /devices/:id/telemetry`) | 60/min | `RATE_TELEMETRY_PER_MIN` |
+| `control` (every non-GET) | 30/min | `RATE_CONTROL_PER_MIN` |
+| `ems:write` (`PUT /devices/:id/ems-plan`) | 30/min | `RATE_EMS_WRITE_PER_MIN` |
+
+A route is charged against the **most specific** scope it requires, so a
+telemetry call is billed to `telemetry:read` and not also to `read`.
+
+Every response carries:
+
+```
+X-RateLimit-Limit:     120      # requests per minute for the charged scope
+X-RateLimit-Remaining: 117      # whole tokens left
+X-RateLimit-Scope:     read     # which budget this request was billed to
+```
+
+Over the limit is `429` with `Retry-After` in seconds and
+`{ "error": …, "retryAfter": N }`.
+
+It is a **token bucket**, not a fixed window: a fixed window lets a caller
+spend a full quota at 11:59:59 and another at 12:00:00 — twice the published
+rate, at the worst possible moment. Refill is continuous, and burst equals the
+per-minute rate, so a client that has been quiet may spend a minute's worth at
+once (which is what a batch job looks like) and no more.
+
+Two deliberate behaviours worth knowing:
+
+- Buckets live in the database, so the published number is the number across
+  every replica, and it survives a deploy.
+- The limiter **fails open**. If its own bookkeeping is unavailable, requests
+  are allowed. It exists to bound abuse, not to become a second thing that can
+  take the API down.
+
+Unauthenticated and scope-rejected requests are never charged, so nobody can
+drain a key's quota by guessing at its id.
+
+## OpenAPI (§9.13)
+
+`GET /api/v1/openapi.json` returns an OpenAPI 3.1 document for everything
+above. It sits behind the same Bearer key as every other route: an integrator
+has a key by the time they need the spec, and an open endpoint enumerating the
+surface is a gift to anyone probing.
+
+The document is hand-written (`api/rest/openapi.ts`) — nothing in this stack
+generates one, since the REST surface is Hono handlers rather than a
+schema-first framework. What keeps it honest is
+`api/rest/openapi-routes.test.ts`, which walks the routes Hono has actually
+registered and fails in **both** directions: a route with no spec entry, and a
+spec entry for a route that no longer exists. The second is the one that bites,
+because a client generated from it discovers the 404 in production.
+
 ## Responses & errors
 
 - `200` — JSON body with a single top-level collection key (`sites` / `devices` / `alarms`), `{ deviceId, ts, values, … }`, or the energy-intervals envelope.
 - `400` — bad parameter (e.g. invalid `status` value or non-numeric device id).
 - `401` — missing/garbage/revoked key, or key past its `expiresAt` (`API key expired`). Revocation takes effect immediately (30 s lookup cache is evicted on revoke).
+- `429` — rate limit exceeded for the scope this route charges against; see **Rate limits** above. `Retry-After` says when to come back.
 - `403` — the key's scopes don't cover the route's required scope (`read` for GET, `control` for PUT/POST/DELETE, plus `telemetry:read` for the telemetry endpoint and `ems:write` for plan pushes). Since audit wave 4, NULL-scopes legacy keys are **read-only** and therefore get 403 on every non-read route.
 - `404` — unknown device id.
 
@@ -228,12 +290,159 @@ local schedules / idle.
 Key roles mirror the RBAC roles (`admin`/`operator`/`viewer`). `lastUsedAt`
 is updated at most once per minute per key.
 
+## Outbound webhooks (§9.15)
+
+Push instead of poll, and a different thing from a webhook *notification
+channel*: a channel is a way to tell a person, a subscription is a way to tell
+a system. Three differences follow from that.
+
+**Signed.** Every delivery carries:
+
+```
+X-VoltTrade-Signature: t=<unix seconds>,v1=<hex hmac-sha256>
+X-VoltTrade-Delivery:  <delivery id>
+X-VoltTrade-Event:     <event name>
+```
+
+`v1` is HMAC-SHA256 over the exact string `` `${t}.${rawBody}` `` keyed with the
+subscription's signing secret. The timestamp is **inside** the MAC on purpose:
+signing the body alone would leave a captured request valid forever, because it
+could be replayed unchanged. Verify like this:
+
+1. Read the **raw body bytes**. Do not `JSON.parse` and re-serialize — key
+   order does not survive the round trip, and the signature is over the bytes.
+2. Recompute the MAC and compare in **constant time**.
+3. Only then check the clock, and reject anything more than **300 seconds**
+   away from now in either direction. Checking the clock first tells an
+   attacker which timestamps you accept without them ever holding the secret.
+
+**Queued.** A delivery row is written before anything is sent, so a process
+that dies mid-send resumes instead of losing the event. Failures are retried
+with exponential backoff and ±25% jitter — 10s, 20s, 40s … capped at an hour,
+8 attempts, a little over four hours in total — after which the delivery is
+marked `dead` and can be re-queued by hand once the receiver is fixed.
+
+`2xx` is success. `5xx`, a timeout, a connection error, `408` and `429` are
+retried. Every other `4xx` is treated as permanent: the receiver is saying the
+request is wrong, and sending the identical bytes seven more times will not
+make it right.
+
+Delivery is **at-least-once**. A response lost after you committed looks
+exactly like a failure from our side, so deduplicate on `X-VoltTrade-Delivery`,
+which is stable across retries of the same event.
+
+**Body.**
+
+```jsonc
+{
+  "id": 1234,                       // delivery id, == X-VoltTrade-Delivery
+  "event": "alarm.raised",
+  "at": "2026-03-10T09:00:00.000Z", // when the event happened, not when sent
+  "data": { /* per-event fields */ }
+}
+```
+
+The body is frozen when the event happens, not rebuilt at send time: an alarm
+that has since resolved is never re-delivered as `raised` carrying a resolved
+body.
+
+**Events.**
+
+| Event | When |
+|---|---|
+| `alarm.raised` | An alarm fired and is live (every rule kind, including gateway-offline and frozen-register) |
+| `alarm.suppressed` | An alarm fired but nobody was paged, because a §9.8 suppression was in force. Published deliberately — a human deciding not to be woken is not the condition failing to occur |
+| `alarm.resolved` | The condition cleared on its own |
+| `command.executed` | A setpoint was written to plant, with its outcome — including writes *rejected* by the whitelist, the verification gate, the range clamp or an emergency stop |
+
+**Management (admin, via tRPC).**
+
+| Procedure | Type | Notes |
+|---|---|---|
+| `webhooks.create` | mutation | `{ name, url, events[] }` → returns `{ id, secret }`; the secret is shown **once** |
+| `webhooks.list` | query | Everything except the secret, plus `consecutiveFailures`, `lastSuccessAt`, `lastError` |
+| `webhooks.update` | mutation | `{ id, url?, events?, enabled? }` |
+| `webhooks.rotateSecret` | mutation | `{ id }` → `{ secret }`, keeping the subscription's delivery history |
+| `webhooks.deliveries` | query | `{ subscriptionId?, status?, limit }` |
+| `webhooks.redeliver` | mutation | `{ ids[] }` — re-queue dead deliveries |
+
+A subscription is **never disabled automatically**, however long it has been
+failing. An integration that switches itself off is how a customer discovers,
+weeks later, that their system stopped receiving alarms; the failure count is
+surfaced instead and a human decides.
+
+The endpoint URL goes through the same SSRF checks as every other outbound
+target, re-checked at send time rather than only when the subscription was
+saved — a hostname that resolved publicly then can be re-pointed at an internal
+address afterwards, and these requests carry a signature that makes them look
+authentic to whatever receives them.
+
+## Data export, retention and deletion (§9.14)
+
+Not part of the REST API — these are tRPC procedures on `orgs` plus one plain
+HTTP download route — but an integrator asking "how do we get our data out" and
+"how long do you keep it" ends up here, so they are documented together.
+
+**Export.** `orgs.requestExport` queues a build; `orgs.exports` lists them;
+`orgs.exportLink` issues a short-lived URL, and `GET /api/exports/:token`
+streams the archive. Admin, not superadmin: making it superadmin-only would
+route every "give us our data" request through whoever holds the platform
+account.
+
+The archive is NDJSON — one JSON object per line, section headers of the form
+`{"_table": "devices", "_rows": 12}` between sections. A stream, not one JSON
+document, so a reader can process it incrementally and a truncated file is
+detectably truncated instead of an unparseable blob. It contains sites,
+gateways, devices, users, alarms and the command audit trail, plus raw
+telemetry when asked for with a date range.
+
+Password hashes, MFA secrets and API key hashes are **not** in it. An export is
+a copy of a tenant's data, not of the things protecting their accounts.
+
+Per-table row counts are stored with the export and shown beside it, so the
+recipient can check they received everything rather than trusting that a file
+which opened is a file that is whole. A build that fails deletes its
+half-written file: an incomplete archive looks like data and is not.
+
+Archives are removed from disk after `EXPORT_TTL_HOURS` (default 72), and the
+download token expires after `EXPORT_DOWNLOAD_TTL_MIN` (default 15) because it
+travels in a URL, and URLs end up in proxy logs and browser history. Ask for
+another link whenever you need one.
+
+**Retention.** `orgs.setRetention` sets `telemetryRawDays` per organization;
+NULL means the deployment default (`TELEMETRY_RAW_DAYS`, 90). Only RAW samples
+are purged — hourly rollups are kept, and charts and reports past the cutoff
+are served from them.
+
+The purge sweeps a shared table, so it runs at the **longest** retention anyone
+asked for and applies shorter ones as targeted deletes. Otherwise a global
+sweep at ninety days would delete the rows a tenant is paying to keep for five
+years. Everything about to be deleted is rolled up to the latest cutoff in the
+plan first, so a tenant on a short retention gets coarse history rather than a
+blank chart.
+
+**Deletion.** `orgs.scheduleDeletion` requires the organization's exact name
+and schedules the purge `ORG_DELETION_GRACE_DAYS` (default 7) ahead;
+`orgs.cancelDeletion` calls it off until then. It is scheduled rather than
+immediate because an irreversible delete of a tenant's entire history executed
+the instant somebody clicks has no way back from a misclick, and the grace
+period is the feature. Deleting the organization you belong to is refused: it
+would delete your own account mid-request and leave the purge half-done with
+nobody able to sign in and finish it.
+
+When it runs it removes children before parents — telemetry and rollups by
+device, then alarms, commands, EMS rows, channels, keys, devices, gateways,
+sites, users, export archives, and finally the organization — and logs the
+per-table counts. That log line is the only record afterwards, which is
+precisely why it exists.
+
 ## Notes
 
-- Alarm **webhooks** (push instead of poll) are available via the notification
-  channels (v7/C2): register a webhook channel and alarms POST to it on
-  breach + escalation.
-- Rate limiting is not built in — front the API with your reverse proxy
-  (Caddy/Nginx) if you expose it publicly; keys are per-integration so you can
-  revoke a leaking client without touching others.
+- Alarm **webhooks**: prefer the signed, retried subscriptions above (§9.15).
+  The older notification channels (v7/C2) still exist and still POST alarm JSON
+  on breach and escalation, unsigned and without retry — they are the right
+  tool for a chat hook, not for an integration.
+- Rate limiting is built in as of §9.13 (per key, per scope — see above). A
+  reverse proxy in front is still worth having for TLS and for bounding
+  unauthenticated traffic, which never reaches a bucket by design.
 - Verified by `scripts/probe-v7-rest-api.py` (10/10) and `scripts/probe-v8-rest-energy.ts` (energy intervals, 10/10).

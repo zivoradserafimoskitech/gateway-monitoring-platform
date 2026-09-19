@@ -1,18 +1,31 @@
 // v7/C2: alarm notification engine — webhook / telegram / email channels,
 // escalation for unacknowledged alarms, maintenance-window suppression.
+// §9.8 adds targeted suppression (rule / device / site, with a reason) and an
+// on-call rota; the decisions themselves are pure and live in contracts/oncall.
 import { and, eq, inArray, isNull, lte, gte, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import {
   alarmNotifications,
+  alarmSuppressions,
   alarms,
   gateways,
   maintenanceWindows,
   meters,
   notificationChannels,
+  onCallShifts,
 } from "@db/schema";
 import type { Meter, NotificationChannel } from "@db/schema";
 import { assertEgressAllowed } from "../lib/egress";
 import { sendMail } from "../lib/mailer";
+import { emit } from "../webhooks/dispatch";
+import {
+  activeSuppression,
+  applyRota,
+  onDutyChannelIds,
+  type AlarmSubject,
+  type ShiftRow,
+  type SuppressionRow,
+} from "@contracts/oncall";
 
 export type NotificationKind = "initial" | "escalation" | "resolved";
 
@@ -130,6 +143,90 @@ async function alarmOrgId(alarm: {
   return null;
 }
 
+// §9.8: what this alarm is attached to, for matching suppression scopes. The
+// effective site follows the same rule as everywhere else (v6/R7): the meter's
+// own binding, else its gateway's.
+async function alarmSubject(alarm: {
+  ruleId?: number | null;
+  meterId: number | null;
+  gatewayId?: number | null;
+}): Promise<AlarmSubject> {
+  const db = getDb();
+  let siteId: number | null = null;
+  if (alarm.meterId != null) {
+    const m = await db
+      .select({ siteId: meters.siteId, gatewayId: meters.gatewayId })
+      .from(meters)
+      .where(eq(meters.id, alarm.meterId))
+      .limit(1);
+    siteId = m[0]?.siteId ?? null;
+    if (siteId === null && m[0]?.gatewayId != null) {
+      const g = await db
+        .select({ siteId: gateways.siteId })
+        .from(gateways)
+        .where(eq(gateways.id, m[0].gatewayId))
+        .limit(1);
+      siteId = g[0]?.siteId ?? null;
+    }
+  }
+  if (siteId === null && alarm.gatewayId != null) {
+    const g = await db
+      .select({ siteId: gateways.siteId })
+      .from(gateways)
+      .where(eq(gateways.id, alarm.gatewayId))
+      .limit(1);
+    siteId = g[0]?.siteId ?? null;
+  }
+  return { ruleId: alarm.ruleId ?? null, meterId: alarm.meterId ?? null, siteId };
+}
+
+// §9.8: the suppression in force for an alarm, or null.
+//
+// Checked at DISPATCH time rather than at raise time, and re-checked on every
+// escalation: the ordinary sequence is that an alarm pages somebody, they see
+// it, they suppress it while they work on it. A check that only ran when the
+// alarm first fired would keep escalating the very thing they just silenced.
+async function suppressionFor(alarm: {
+  ruleId?: number | null;
+  meterId: number | null;
+  gatewayId?: number | null;
+}): Promise<SuppressionRow | null> {
+  const db = getDb();
+  const now = new Date();
+  const rows = await db
+    .select({
+      id: alarmSuppressions.id,
+      scope: alarmSuppressions.scope,
+      refId: alarmSuppressions.refId,
+      startsAt: alarmSuppressions.startsAt,
+      endsAt: alarmSuppressions.endsAt,
+      reason: alarmSuppressions.reason,
+    })
+    .from(alarmSuppressions)
+    .where(and(lte(alarmSuppressions.startsAt, now), gte(alarmSuppressions.endsAt, now)));
+  if (rows.length === 0) return null;
+  return activeSuppression(rows, await alarmSubject(alarm), now);
+}
+
+// §9.8: the on-call rota for an org — its own shifts plus any global
+// (NULL-org) shift, exactly as channels are scoped.
+async function rotaFor(orgId: number | null): Promise<ShiftRow[]> {
+  const db = getDb();
+  const cond =
+    orgId === null
+      ? isNull(onCallShifts.orgId)
+      : or(eq(onCallShifts.orgId, orgId), isNull(onCallShifts.orgId));
+  const rows = await db.select().from(onCallShifts).where(cond);
+  return rows.map((r) => ({
+    channelId: r.channelId,
+    dayOfWeekMask: r.dayOfWeekMask,
+    startMin: r.startMin,
+    endMin: r.endMin,
+    timezone: r.timezone,
+    enabled: r.enabled,
+  }));
+}
+
 async function dispatchToChannels(
   alarm: {
     id: number;
@@ -183,6 +280,25 @@ async function dispatchToChannels(
         ),
       );
   }
+
+  // §9.8: the on-call rota. A resolution is deliberately exempt — it goes to
+  // whoever was actually paged, whether or not their shift has since ended.
+  // Telling the person who got out of bed at 03:00 that the site recovered is
+  // not a page, and routing it to the morning shift instead tells the wrong
+  // person something they never needed.
+  if (kind !== "resolved") {
+    const r = applyRota(channels, onDutyChannelIds(await rotaFor(orgId), new Date()));
+    channels = r.channels;
+    if (r.gap) {
+      // Worth saying out loud: the rota exists but has a hole in it, and the
+      // page only went out because dispatch fails open. Silence here would
+      // make an uncovered hour indistinguishable from a covered one.
+      console.warn(
+        `[notify] alarm ${alarm.id}: no channel on duty — rota gap, notifying all ${channels.length}`,
+      );
+    }
+  }
+
   let sent = 0;
   let failed = 0;
   for (const ch of channels) {
@@ -226,6 +342,43 @@ async function dispatchToChannels(
   return { sent, failed };
 }
 
+// §9.15: the body of an alarm webhook. One shape for raised, suppressed and
+// resolved, so a receiver parses the three the same way and can key on the
+// alarm id to follow one condition through its life.
+function alarmEventData(
+  alarm: {
+    id: number;
+    ruleId: number | null;
+    meterId: number | null;
+    gatewayId?: number | null;
+    metric: string;
+    value: number | null;
+    threshold: number | null;
+    severity: string;
+    message: string;
+    status: string;
+    triggeredAt: Date;
+    resolvedAt?: Date | null;
+  },
+  meterName: string | null,
+): Record<string, unknown> {
+  return {
+    alarmId: alarm.id,
+    ruleId: alarm.ruleId,
+    meterId: alarm.meterId,
+    meterName,
+    gatewayId: alarm.gatewayId ?? null,
+    metric: alarm.metric,
+    value: alarm.value,
+    threshold: alarm.threshold,
+    severity: alarm.severity,
+    message: alarm.message,
+    status: alarm.status,
+    triggeredAt: alarm.triggeredAt.toISOString(),
+    resolvedAt: alarm.resolvedAt ? alarm.resolvedAt.toISOString() : null,
+  };
+}
+
 // Called from the ingestion path right after a new alarm row is inserted.
 export async function notifyAlarmBreach(alarmId: number): Promise<void> {
   try {
@@ -238,6 +391,27 @@ export async function notifyAlarmBreach(alarmId: number): Promise<void> {
       const m = await db.select({ name: meters.name }).from(meters).where(eq(meters.id, alarm.meterId)).limit(1);
       meterName = m[0]?.name ?? null;
     }
+    // §9.8: a suppression stops the page, not the alarm. The row stays, and
+    // records why nobody was called — so a post-mortem can still see that the
+    // condition occurred and that somebody had decided to sit on it.
+    const supp = await suppressionFor(alarm);
+    if (supp) {
+      await db
+        .update(alarms)
+        .set({ suppressedReason: supp.reason })
+        .where(eq(alarms.id, alarmId));
+      console.log(`[notify] alarm ${alarmId}: suppressed (${supp.scope}) — ${supp.reason}`);
+      // §9.15: published even though nobody was paged. An integration that
+      // mirrors alarm state must not conclude the condition did not occur
+      // just because a human decided not to be woken for it.
+      void emit(
+        "alarm.suppressed",
+        { ...alarmEventData(alarm, meterName), suppressedReason: supp.reason, suppressionScope: supp.scope },
+        await alarmOrgId(alarm),
+      );
+      return;
+    }
+    void emit("alarm.raised", alarmEventData(alarm, meterName), await alarmOrgId(alarm));
     const r = await dispatchToChannels(alarm, meterName, "initial");
     if (r.sent || r.failed) console.log(`[notify] alarm ${alarmId}: initial sent=${r.sent} failed=${r.failed}`);
   } catch (e) {
@@ -263,6 +437,7 @@ export async function notifyAlarmResolved(alarmId: number): Promise<void> {
       const m = await db.select({ name: meters.name }).from(meters).where(eq(meters.id, alarm.meterId)).limit(1);
       meterName = m[0]?.name ?? null;
     }
+    void emit("alarm.resolved", alarmEventData(alarm, meterName), await alarmOrgId(alarm));
     const r = await dispatchToChannels(
       { ...alarm, message: `CLEARED — ${alarm.message}` },
       meterName,
@@ -277,7 +452,7 @@ export async function notifyAlarmResolved(alarmId: number): Promise<void> {
 }
 
 // ─── Escalation sweep ────────────────────────────────────────────────────────
-export async function escalationSweep(): Promise<{ escalated: number }> {
+export async function escalationSweep(): Promise<{ escalated: number; suppressed: number }> {
   const db = getDb();
   const cutoff = new Date(Date.now() - ESCALATE_AFTER_MS);
   // Active (never acknowledged) alarms older than the escalation delay.
@@ -287,11 +462,25 @@ export async function escalationSweep(): Promise<{ escalated: number }> {
     .where(and(eq(alarms.status, "active"), lte(alarms.triggeredAt, cutoff)))
     .limit(100);
   let escalated = 0;
+  let suppressed = 0;
   for (const alarm of stale) {
+    // Re-checked every sweep, not read off the alarm row: the usual sequence
+    // is that the alarm pages somebody, they see it, and they suppress it
+    // while they work. Escalating it fifteen minutes later would page the next
+    // person up about the very thing that was just silenced.
+    const supp = await suppressionFor(alarm);
+    if (supp) {
+      suppressed++;
+      if (alarm.suppressedReason !== supp.reason) {
+        await db.update(alarms).set({ suppressedReason: supp.reason }).where(eq(alarms.id, alarm.id));
+      }
+      continue;
+    }
     const r = await dispatchToChannels(alarm, null, "escalation");
     if (r.sent > 0) escalated++;
   }
-  return { escalated };
+  if (suppressed > 0) console.log(`[notify] escalation sweep: ${suppressed} suppressed`);
+  return { escalated, suppressed };
 }
 
 let escalationTimer: NodeJS.Timeout | null = null;
