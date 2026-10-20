@@ -3,7 +3,9 @@ import { eq, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { deviceProfiles, sites, gateways, meters } from "@db/schema";
+import { commissioningSignoffs, deviceProfiles, sites, gateways, meters } from "@db/schema";
+import { siteChecklist, FRESHNESS_MS } from "../commissioning/evaluate";
+import { checklistSummary } from "@contracts/commissioning";
 import { type RegisterDef } from "@contracts/modbus";
 import { DEVICE_TYPES } from "@contracts/devices";
 import { invalidateProfileCache } from "../mqtt/handlers";
@@ -580,5 +582,83 @@ export const sitesRouter = createRouter({
       unboundGateways: (unboundGateways as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0,
       unboundMeters: (unboundMeters as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0,
     };
+  }),
+
+  // ─── §9.10: commissioning ──────────────────────────────────────────────────
+  // docs/commissioning.md described the procedure and that was the whole of
+  // it: a document. An installer on a roof could not see what the last visit
+  // had already done, and nobody at the office could tell which sites were
+  // half-finished.
+  //
+  // Every step that CAN be verified from the system's own data is re-verified
+  // on every call and cannot be ticked by hand. A checklist that only records
+  // opinions is a form; one that checks itself is a tool.
+  commissioning: authed.input(z.object({ siteId: z.number() })).query(async ({ ctx, input }) => {
+    assertOrgRead(ctx.user, await siteOrg(input.siteId), "Site");
+    const result = await siteChecklist(input.siteId);
+    if (!result) throw new TRPCError({ code: "NOT_FOUND", message: "Site not found" });
+    const signoff = await getDb()
+      .select()
+      .from(commissioningSignoffs)
+      .where(eq(commissioningSignoffs.siteId, input.siteId))
+      .limit(1);
+    return {
+      siteId: input.siteId,
+      siteName: result.facts.siteName,
+      steps: result.steps,
+      summary: checklistSummary(result.steps),
+      freshnessMs: FRESHNESS_MS,
+      signoff: signoff[0] ?? null,
+    };
+  }),
+
+  // The one step no query can establish. It does NOT override the derived
+  // steps: a site can be signed and still show failures, which is exactly what
+  // should happen when a gateway drops after handover — the signature records
+  // what somebody saw, not what is true now.
+  signCommissioning: operator
+    .input(
+      z.object({
+        siteId: z.number(),
+        signedByName: z.string().trim().min(1).max(255),
+        note: z.string().max(1000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const org = await siteOrg(input.siteId);
+      assertOrgWrite(ctx.user, org, "Site");
+      const result = await siteChecklist(input.siteId);
+      if (!result) throw new TRPCError({ code: "NOT_FOUND", message: "Site not found" });
+      const db = getDb();
+      await db
+        .insert(commissioningSignoffs)
+        .values({
+          siteId: input.siteId,
+          signedByName: input.signedByName,
+          recordedBy: ctx.user?.id ?? null,
+          note: input.note ?? null,
+          // Snapshot, because the derived steps keep re-evaluating: without it
+          // a site that was complete at handover and has since lost a gateway
+          // would read as though it had been signed off in that state.
+          stepsSnapshot: result.steps,
+          signedAt: new Date(),
+          orgId: org ?? null,
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            signedByName: input.signedByName,
+            recordedBy: ctx.user?.id ?? null,
+            note: input.note ?? null,
+            stepsSnapshot: result.steps,
+            signedAt: new Date(),
+          },
+        });
+      return { ok: true };
+    }),
+
+  unsignCommissioning: operator.input(z.object({ siteId: z.number() })).mutation(async ({ ctx, input }) => {
+    assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
+    await getDb().delete(commissioningSignoffs).where(eq(commissioningSignoffs.siteId, input.siteId));
+    return { ok: true };
   }),
 });

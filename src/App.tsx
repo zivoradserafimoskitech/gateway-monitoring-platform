@@ -14,6 +14,7 @@ import SiteDiagram from "@/pages/SiteDiagram";
 import Ems from "@/pages/Ems";
 import Ota from "@/pages/Ota";
 import Settings from "@/pages/Settings";
+import Commissioning from "@/pages/Commissioning";
 import Admin from "@/pages/Admin";
 import NotFound from "@/pages/NotFound";
 import Login from "@/pages/Login";
@@ -71,6 +72,9 @@ export default function App() {
             <Route path="/ota" element={<Ota />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/sites/:id/diagram" element={<SiteDiagram />} />
+            {/* §9.10: the installer's workflow, not a widget — it is how a
+                site gets from "hardware on a wall" to "handed over". */}
+            <Route path="/commissioning" element={<Commissioning />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/admin" element={<Admin />} />
             {/* An unknown path used to render the dashboard, which hid broken

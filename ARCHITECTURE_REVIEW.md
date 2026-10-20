@@ -572,6 +572,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.5 | — capacity only from a window worth measuring | SoH comes from a discharge of at least 30% SoC in one run: a 5% window divides by 0.05, so a 2% SoC error — well inside what a BMS reports — becomes a 40% error in the answer. Windows are never extended across a charge, a data gap abandons the window rather than reporting a partial integral as a whole one, and estimates are blended slowly because capacity does not jump. The first estimate is taken as-is rather than blended toward an assumed 100%, which would make a tired battery look healthy for weeks |
 | 9.5 | — throughput that cannot be invented | Trapezoidal integration (a battery on a peak-shaving setpoint is ramping most of the time, and a step assumption mis-books every ramp), intervals that cross zero split at the crossing instead of averaging to nothing, and a gap longer than fifteen minutes contributes NOTHING — six hours offline must not become six hours of the last power reading the gateway happened to send |
 | 9.5 | — the nameplate is the one human input, and readings over 100% are shown | Usable kWh is a fact about the hardware that telemetry cannot reveal, and every figure is a ratio against it, so a battery without one reports cycles and throughput and says health is unavailable rather than showing a percentage computed from a guess. Above 100% is displayed rather than clamped: it is normal early in a battery's life, and 130% is the signal that the nameplate is wrong or the power sign convention inverted — exactly what clamping would hide. Every accepted measurement is kept, because a warranty claim is an argument and a single blended percentage is not something to take to a supplier |
+| 9.10 | Commissioning was a document | `docs/commissioning.md` describes the end-to-end procedure well, and that was the whole of it. An installer on a roof had no way to see what the previous visit had already done, and nobody at the office could tell which of thirty sites were half-finished — "did anyone configure the alarms on that site?" was answered by opening four screens and guessing. Eleven steps now evaluate on every view: site timezone, gateway registered and ONLINE, devices present and reporting, register maps verified, alarm rules, a notification channel, battery nameplates, proven control, and the handover |
+| 9.10 | — the checks cannot be ticked by hand | Every step that can be verified from the system's own data IS, each time the page opens. A checklist that only records opinions is a form; one that checks itself is a tool. Freshness is "within fifteen minutes", not "has ever been seen": a device that spoke once during the install and has been silent since is precisely the failure commissioning exists to catch before anyone drives away. Control asks for a successful write on record, not a dry run — a rehearsal is not proof that the real thing works, which is why previews deliberately leave no audit row |
+| 9.10 | — "not applicable" is not "passed" | A site with no battery cannot demonstrate a nameplate, so that step reads n/a and is excluded from the denominator. Reporting it as passed would make a site that has shown nothing about battery configuration look finished; leaving it in the denominator would make it permanently 10/11 |
+| 9.10 | — the signature records what somebody saw, and overrides nothing | The handover is the one manual step, because nothing in a database can attest that a person walked the site, and the signer's name is free text since they are often a subcontractor with no account here. It does NOT flip the derived rows: a gateway that drops after handover shows a failure again, which is what should happen. The checklist as it stood at signing is snapshotted, so the signature is still legible later against a site that has since changed |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -602,21 +606,21 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Thirteen have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Fourteen have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
   monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
   retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
   document (§9.13), per-org export, retention and deletion (§9.14), and org membership with
   invites and switching (§9.11), staged fleet firmware rollouts (§9.9), and battery state of
-  health with cycle counting (§9.5).
+  health with cycle counting (§9.5), and the commissioning checklist (§9.10).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining three are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining two are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but

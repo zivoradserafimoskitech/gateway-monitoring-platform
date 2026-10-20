@@ -1283,3 +1283,34 @@ export const batteryCapacityEstimates = mysqlTable(
   (t) => [index("battery_cap_meter_idx").on(t.meterId), index("battery_cap_org_idx").on(t.orgId)],
 );
 export type BatteryCapacityEstimate = typeof batteryCapacityEstimates.$inferSelect;
+
+// ─── §9.10: commissioning sign-off ───────────────────────────────────────────
+// The commissioning checklist is almost entirely DERIVED — every step that can
+// be verified from the system's own data is re-checked on every view and
+// cannot be ticked by hand, because a checklist that only records opinions is
+// a form rather than a tool (see contracts/commissioning.ts).
+//
+// This table holds the one thing no query can establish: that a human walked
+// the site, saw it working, and put their name to it. One row per site, so a
+// re-sign replaces the previous one rather than accumulating a history nobody
+// reads — and `signedByName` is free text on purpose, since the person signing
+// is often a subcontractor who has no account here.
+export const commissioningSignoffs = mysqlTable(
+  "commissioning_signoffs",
+  {
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).primaryKey(),
+    signedByName: varchar("signed_by_name", { length: 255 }).notNull(),
+    // The account that recorded it, which is a different fact from who signed.
+    recordedBy: bigint("recorded_by", { mode: "number", unsigned: true }),
+    note: varchar("note", { length: 1000 }),
+    // What the checklist looked like at the moment of signing. Kept because
+    // the derived steps keep re-evaluating: without a snapshot, a site that
+    // was complete at handover and has since lost a gateway would read as
+    // though it was signed off in that state.
+    stepsSnapshot: json("steps_snapshot"),
+    signedAt: timestamp("signed_at").notNull().defaultNow(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+  },
+  (t) => [index("commissioning_signoff_org_idx").on(t.orgId)],
+);
+export type CommissioningSignoff = typeof commissioningSignoffs.$inferSelect;
