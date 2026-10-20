@@ -1409,3 +1409,70 @@ export const batteryEconomics = mysqlTable(
   (t) => [index("battery_econ_org_idx").on(t.orgId)],
 );
 export type BatteryEconomics = typeof batteryEconomics.$inferSelect;
+
+// ─── §9.12: OIDC single sign-on ──────────────────────────────────────────────
+// A procurement blocker rather than a feature: industrial customers hand over
+// their SSO requirements before they will discuss anything else, and "we have
+// our own login form" ends the conversation.
+//
+// Per-provider and disabled by default, and password login is never removed —
+// this is the one item in §9 that cannot be proved end to end in CI, because
+// there is no identity provider on a runner. What IS proved there is every
+// decision that makes a token trustworthy (api/auth/oidc.ts and its tests);
+// the untested part is the network round trip.
+export const oidcProviders = mysqlTable(
+  "oidc_providers",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Compared EXACTLY against the id_token's iss. A prefix or suffix test
+    // would let "https://issuer.example.evil.com" through.
+    issuer: varchar("issuer", { length: 500 }).notNull(),
+    clientId: varchar("client_id", { length: 255 }).notNull(),
+    // AES-256-GCM at rest, through the same helper as the TOTP secrets: the
+    // client secret authenticates this system to the IdP, so a database dump
+    // must not be enough to impersonate it.
+    clientSecretEnc: varchar("client_secret_enc", { length: 1000 }),
+    authorizationEndpoint: varchar("authorization_endpoint", { length: 500 }).notNull(),
+    tokenEndpoint: varchar("token_endpoint", { length: 500 }).notNull(),
+    jwksUri: varchar("jwks_uri", { length: 500 }).notNull(),
+    scopes: varchar("scopes", { length: 255 }).notNull().default("openid email profile"),
+    // Domains allowed to sign in. Auto-provisioning with an EMPTY list is
+    // refused rather than read as "any domain" — against a public IdP that
+    // would hand an account to the entire internet.
+    allowedDomains: json("allowed_domains"),
+    autoProvision: boolean("auto_provision").notNull().default(false),
+    // The role a provisioned account gets. Never taken from the token: group
+    // mapping depends on the customer's group hygiene being perfect, and the
+    // failure mode is somebody granting themselves administration of a system
+    // that controls plant.
+    defaultRole: mysqlEnum("default_role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    enabled: boolean("enabled").notNull().default(false),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("oidc_providers_org_idx").on(t.orgId)],
+);
+export type OidcProvider = typeof oidcProviders.$inferSelect;
+
+// In-flight logins. In the DATABASE rather than in process memory because the
+// callback can land on a different replica from the one that started the flow
+// — the same reason the login lockout and the pending MFA challenge moved out
+// of memory earlier in this branch.
+export const oidcLogins = mysqlTable(
+  "oidc_logins",
+  {
+    state: varchar("state", { length: 64 }).primaryKey(),
+    providerId: bigint("provider_id", { mode: "number", unsigned: true }).notNull(),
+    nonce: varchar("nonce", { length: 64 }).notNull(),
+    codeVerifier: varchar("code_verifier", { length: 128 }).notNull(),
+    // Where to send the browser afterwards. Validated as a local path before
+    // use: an open redirect on a login callback is how a phishing page borrows
+    // somebody else's domain.
+    redirectTo: varchar("redirect_to", { length: 500 }),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("oidc_logins_expiry_idx").on(t.expiresAt)],
+);
+export type OidcLogin = typeof oidcLogins.$inferSelect;

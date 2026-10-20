@@ -580,6 +580,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.3 | — a missing price is not zero | An hour nothing prices is OMITTED from the curve, and the planner refuses to plan against it. Zero or "average" would have it cheerfully schedule a cycle on a number nobody supplied, and the whole value of the feature rests on the numbers being real. Periods are read in the tariff's own zone, because a contract's "peak 17:00–21:00" is local time and reading it as UTC is wrong twice a year |
 | 9.3 | — it refuses trades that look profitable | The spread a pair must clear includes round-trip losses AND wear: `cycleCost` spread over capacity. A battery has a finite number of cycles in it, and spending one to capture a spread smaller than the wear it costs loses money while every chart calls the plan a success — 0.05 to 0.10 looks like a doubling and is a loss. Zero wear is legitimate for a leased asset but has to be chosen rather than defaulted into. Discharge hours must also come AFTER their charge hour, which a naive "charge in the cheap hours, discharge in the dear ones" ranking happily ignores |
 | 9.3 | — it plans, it does not command | Output goes through the existing ems_plans path (v9 Contract A), so the controller, the fail-closed SoC guard, the controllable whitelist, the verification gate and the command audit trail are all unchanged — this adds a planner, not a second thing that writes to plant, which is the only reason it is safe to add. The plan carries the SoC envelope its arithmetic assumed, capacity comes from the MEASURED nameplate and state of health (§9.5) rather than a second copy, and the optimiser is off per battery until somebody turns it on. The preview an operator approves runs the same function as the real plan |
+| 9.12 | No single sign-on | A procurement blocker rather than a feature: industrial customers hand over their SSO requirements before they will discuss anything else, and "we have our own login form" ends the conversation. OIDC Authorization Code with PKCE, per provider, disabled until somebody enables it — and password login is never removed, because a misconfigured identity provider must not become an outage of a system that controls plant |
+| 9.12 | — the algorithm allowlist is the security boundary | `none` is excluded for the obvious reason and HS256 for the less obvious one: an HMAC id_token is verified with the CLIENT SECRET, so a verifier that accepts both asymmetric and symmetric algorithms can be handed a token signed with a secret the attacker already holds. Only keys published in the IdP's JWKS are accepted, matched by `kid` — falling back to "the only RSA key in the set" would let any key in it sign for any other. Issuer is compared exactly, so `https://issuer.example.evil.com` fails where a `startsWith` would pass, and the nonce binds the token to one login attempt |
+| 9.12 | — SSO proves who you are, it does not grant anything | The role NEVER comes from the token: group-to-admin mapping depends on the customer's group hygiene being perfect, and the failure mode is somebody granting themselves administration of a plant controller. An unverified email is refused, since accounts here are keyed by email and anyone who can register an unverified address at the IdP could otherwise claim the matching account. Auto-provisioning with an empty domain list is refused rather than read as "any domain". A disabled account stays disabled. The callback redirects to a generic failure instead of echoing the reason, which would be an account-existence oracle on an unauthenticated endpoint, and only local paths are accepted as a post-login redirect |
+| 9.12 | — and the honest caveat | This is the ONE item on the §9 list that cannot be proved end to end in CI: there is no identity provider on a build runner. What is proved there is every decision that makes a token trustworthy — the tests generate their own RSA and EC keys, sign their own tokens, and assert that each tampering is refused. The untested part is the network round trip, which is why the feature ships behind a per-provider flag, the UI prints the caveat where whoever enables it will read it, and the password form stays on the screen |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -610,22 +614,26 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Fifteen have
-  landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
-  emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
-  monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
-  retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
-  document (§9.13), per-org export, retention and deletion (§9.14), and org membership with
-  invites and switching (§9.11), staged fleet firmware rollouts (§9.9), and battery state of
-  health with cycle counting (§9.5), the commissioning checklist (§9.10), and tariff-aware
-  optimisation (§9.3).
+- **§9, the recommended new functions — all of them are built.** In the order they landed:
+  the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the emergency
+  stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality monitoring in
+  both halves (§9.7), alarm suppression with an on-call rota (§9.8), signed and retried webhook
+  subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI document (§9.13),
+  per-org export, retention and deletion (§9.14), org membership with invites and switching
+  (§9.11), staged fleet firmware rollouts (§9.9), battery state of health with cycle counting
+  (§9.5), the commissioning checklist (§9.10), tariff-aware optimisation (§9.3) and OIDC single
+  sign-on (§9.12).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining one is OIDC single sign-on (§9.12). OIDC single sign-on (§9.12) is
+  Nothing is left on the §9 list. The one item that could not be finished the way the others
+  were is §9.12: SSO cannot be demonstrated end to end in CI because a build runner has no
+  identity provider, so the token verification and provisioning rules are unit-tested against
+  locally generated keys, the feature ships disabled per provider, and the caveat is printed on
+  the screen where somebody enables it rather than buried in a commit message. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but

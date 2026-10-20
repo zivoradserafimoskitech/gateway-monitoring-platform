@@ -7,7 +7,7 @@ import { TRPCError } from "@trpc/server";
 import QRCode from "qrcode";
 import { createRouter, publicQuery, authed, admin } from "../middleware";
 import { getDb } from "../queries/connection";
-import { sessions, users, auditLog, mfaBackupCodes, orgMemberships,
+import { sessions, users, auditLog, mfaBackupCodes, oidcProviders, orgMemberships,
   loginAttempts as loginAttemptsTable,
 } from "@db/schema";
 import {
@@ -35,6 +35,9 @@ import {
   verifyTotp,
 } from "../lib/totp";
 import { assertOrgWrite, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
+import { parseEgressUrl, BlockedEgressError } from "../lib/egress";
+import { parseDomains } from "../auth/oidc";
+import { invalidateJwksCache } from "../auth/oidc-flow";
 
 // When the app is served embedded (platform preview iframe) over HTTPS, the
 // session cookie is third-party: SameSite=Lax is never sent on fetch, so the
@@ -629,6 +632,137 @@ export const authRouter = createRouter({
         .orderBy(desc(auditLog.createdAt))
         .limit(input.limit);
     }),
+
+  // ─── §9.12: single sign-on providers ───────────────────────────────────────
+  // The list is PUBLIC and deliberately thin: the login screen has to draw the
+  // buttons before anyone is signed in, so it gets ids and names and nothing
+  // else. Issuers, client ids and endpoints stay behind the admin procedures.
+  ssoProviders: publicQuery.query(async () => {
+    return getDb()
+      .select({ id: oidcProviders.id, name: oidcProviders.name })
+      .from(oidcProviders)
+      .where(eq(oidcProviders.enabled, true))
+      .orderBy(oidcProviders.name);
+  }),
+
+  ssoProviderList: admin.query(async ({ ctx }) => {
+    // The client secret is never returned — not even to an admin, not even
+    // encrypted. No screen needs it back.
+    return getDb()
+      .select({
+        id: oidcProviders.id,
+        name: oidcProviders.name,
+        issuer: oidcProviders.issuer,
+        clientId: oidcProviders.clientId,
+        authorizationEndpoint: oidcProviders.authorizationEndpoint,
+        tokenEndpoint: oidcProviders.tokenEndpoint,
+        jwksUri: oidcProviders.jwksUri,
+        scopes: oidcProviders.scopes,
+        allowedDomains: oidcProviders.allowedDomains,
+        autoProvision: oidcProviders.autoProvision,
+        defaultRole: oidcProviders.defaultRole,
+        enabled: oidcProviders.enabled,
+        orgId: oidcProviders.orgId,
+        createdAt: oidcProviders.createdAt,
+      })
+      .from(oidcProviders)
+      .where(orgWhere(ctx.user, oidcProviders.orgId))
+      .orderBy(desc(oidcProviders.createdAt));
+  }),
+
+  ssoProviderSave: admin
+    .input(
+      z.object({
+        id: z.number().optional(),
+        name: z.string().min(1).max(255),
+        issuer: z.string().url().max(500),
+        clientId: z.string().min(1).max(255),
+        // Omitted on an update = keep the stored one. The secret cannot be
+        // read back, so a form that round-tripped a blank would silently erase
+        // the thing the integration depends on.
+        clientSecret: z.string().min(1).max(500).optional(),
+        authorizationEndpoint: z.string().url().max(500),
+        tokenEndpoint: z.string().url().max(500),
+        jwksUri: z.string().url().max(500),
+        scopes: z.string().min(1).max(255).default("openid email profile"),
+        allowedDomains: z.array(z.string().max(255)).max(100).default([]),
+        autoProvision: z.boolean().default(false),
+        defaultRole: z.enum(["admin", "operator", "viewer"]).default("viewer"),
+        // Created disabled: a half-configured provider on the login screen is
+        // a button that fails in front of a customer.
+        enabled: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // This server fetches these endpoints, so they go through the same SSRF
+      // checks as every other outbound target.
+      for (const url of [input.authorizationEndpoint, input.tokenEndpoint, input.jwksUri]) {
+        try {
+          parseEgressUrl(url);
+        } catch (e) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: e instanceof BlockedEgressError ? e.message : `Not a usable URL: ${url}`,
+          });
+        }
+      }
+      if (input.autoProvision && parseDomains(input.allowedDomains).length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Automatic provisioning needs an allowed-domain list — an empty list would admit any address the provider returns",
+        });
+      }
+      const db = getDb();
+      const values = {
+        name: input.name,
+        issuer: input.issuer,
+        clientId: input.clientId,
+        authorizationEndpoint: input.authorizationEndpoint,
+        tokenEndpoint: input.tokenEndpoint,
+        jwksUri: input.jwksUri,
+        scopes: input.scopes,
+        allowedDomains: parseDomains(input.allowedDomains),
+        autoProvision: input.autoProvision,
+        defaultRole: input.defaultRole,
+        enabled: input.enabled,
+      };
+      const secretEnc = input.clientSecret ? encryptSecret(input.clientSecret) : undefined;
+      if (input.id) {
+        const rows = await db
+          .select({ orgId: oidcProviders.orgId })
+          .from(oidcProviders)
+          .where(eq(oidcProviders.id, input.id))
+          .limit(1);
+        if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Provider not found" });
+        assertOrgWrite(ctx.user, rows[0].orgId, "Provider");
+        await db
+          .update(oidcProviders)
+          .set({ ...values, ...(secretEnc ? { clientSecretEnc: secretEnc } : {}) })
+          .where(eq(oidcProviders.id, input.id));
+        invalidateJwksCache();
+        return { id: input.id };
+      }
+      const inserted = await db
+        .insert(oidcProviders)
+        .values({ ...values, clientSecretEnc: secretEnc ?? null, orgId: stampOrg(ctx.user, null) })
+        .$returningId();
+      return { id: inserted[0].id };
+    }),
+
+  ssoProviderRemove: admin.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db
+      .select({ orgId: oidcProviders.orgId })
+      .from(oidcProviders)
+      .where(eq(oidcProviders.id, input.id))
+      .limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Provider not found" });
+    assertOrgWrite(ctx.user, rows[0].orgId, "Provider");
+    await db.delete(oidcProviders).where(eq(oidcProviders.id, input.id));
+    invalidateJwksCache();
+    return { ok: true };
+  }),
 });
 
 // keep TTL referenced (docs) — avoids lint noise for the constant export

@@ -8,6 +8,7 @@ import { OrgLifecycleCard } from "@/components/OrgLifecycleCard";
 import { OrgMembersCard } from "@/components/OrgMembersCard";
 import { DataExportCard } from "@/components/DataExportCard";
 import { ApiKeysCard } from "@/components/ApiKeysCard";
+import { SsoProvidersCard } from "@/components/SsoProvidersCard";
 import { MfaCard } from "@/components/MfaCard";
 import { NotificationChannelsCard } from "@/components/NotificationChannelsCard";
 import { MaintenanceWindowsCard } from "@/components/MaintenanceWindowsCard";
@@ -85,6 +86,10 @@ export default function Settings() {
           <MfaCard />
           {/* v9.1: API keys (admin only) */}
           <ApiKeysCard />
+          {/* §9.12: single sign-on, beside the other credentials — and below
+              them, because password login is what still works if a provider
+              is misconfigured. */}
+          <SsoProvidersCard />
         </TabsContent>
       </Tabs>
     </div>

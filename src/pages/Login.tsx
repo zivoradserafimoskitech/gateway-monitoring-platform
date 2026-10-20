@@ -15,6 +15,15 @@ import { ShieldCheck, Zap } from "lucide-react";
 export default function Login() {
   const { t } = useI18n();
   const utils = trpc.useUtils();
+  // §9.12: the enabled providers. Public and thin (ids and names only) —
+  // the login screen has to draw its buttons before anyone is signed in.
+  const sso = trpc.auth.ssoProviders.useQuery(undefined, { retry: false, staleTime: 60_000 });
+  // The callback redirects here with ?sso=failed rather than echoing the
+  // identity provider's own message: its text is attacker-influenced, and the
+  // real reason ("no account exists for this address") is an
+  // account-existence oracle on an unauthenticated page. The log has the
+  // detail; the user gets a way forward.
+  const ssoFailed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("sso") === "failed";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // Step 2 state (only set when the server demands an MFA code).
@@ -170,6 +179,30 @@ export default function Login() {
         >
           {t.auth.signIn}
         </Button>
+        {/* §9.12: single sign-on. Rendered only when a provider is enabled, and
+            always BELOW the password form rather than instead of it — removing
+            password login would turn a misconfigured identity provider into an
+            outage of a system that controls plant. */}
+        {ssoFailed && <p className="text-center text-sm text-red-600">{t.auth.ssoFailed}</p>}
+        {(sso.data ?? []).length > 0 && (
+          <div className="space-y-2 pt-2">
+            <p className="text-center text-xs text-muted-foreground">{t.auth.ssoOr}</p>
+            {(sso.data ?? []).map((p) => (
+              <Button
+                key={p.id}
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  // A full navigation, not a fetch: the identity provider
+                  // redirects the BROWSER, so the flow has to leave the SPA.
+                  window.location.href = `/api/auth/oidc/${p.id}/start`;
+                }}
+              >
+                {t.auth.ssoWith.replace("{name}", p.name)}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
