@@ -212,6 +212,9 @@ export async function completeLogin(
     sessionToken: session.token,
     expiresAt: session.expiresAt,
     redirectTo: safeRedirect(login.redirectTo),
-    email: decision.kind === "reject" ? "" : decision.email,
+    // No "reject" check here: the throw above narrowed it away, and the
+    // compiler says so. A guard the types already prove is dead code that
+    // reads like a safety net.
+    email: decision.email,
   };
 }
