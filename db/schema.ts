@@ -1217,3 +1217,69 @@ export const otaRolloutTargets = mysqlTable(
   ],
 );
 export type OtaRolloutTarget = typeof otaRolloutTargets.$inferSelect;
+
+// ─── §9.5: battery state of health and cycle counting ────────────────────────
+// A BESS is the most expensive thing on most of these sites and the only one
+// that wears out by being used. Nothing measured that: the platform knew a
+// battery's SoC at any instant and nothing about how much life had been taken
+// out of it. Warranties are written in equivalent full cycles and in retained
+// capacity, so an installation could not answer the two questions its own
+// contract is about.
+//
+// One row per battery, updated by a sweep over ordinary telemetry — SoC and
+// battery power — because that is all these devices report.
+export const batteryHealth = mysqlTable(
+  "battery_health",
+  {
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).primaryKey(),
+    // Usable nameplate energy. Set by a human: it is a fact about the hardware,
+    // not something telemetry can reveal, and every figure below is a ratio
+    // against it.
+    nameplateKwh: double("nameplate_kwh"),
+    // Equivalent full cycles: total SoC travelled ÷ 200, the unit warranties
+    // are written in. Counting "times it reached 100%" would score a battery
+    // cycling between 40% and 60% all day as having done nothing.
+    efc: double("efc").notNull().default(0),
+    throughputDischargedKwh: double("throughput_discharged_kwh").notNull().default(0),
+    throughputChargedKwh: double("throughput_charged_kwh").notNull().default(0),
+    // Exponentially blended across accepted measurement windows. Capacity does
+    // not jump, so one odd window nudges this rather than redefining it.
+    sohPct: double("soh_pct"),
+    sohSamples: int("soh_samples").notNull().default(0),
+    lastEstimateAt: timestamp("last_estimate_at"),
+    // Sweep cursor and the previous sample, so an accumulation resumes across
+    // restarts instead of re-counting or skipping a stretch.
+    lastTs: timestamp("last_ts"),
+    lastSocPct: double("last_soc_pct"),
+    lastPowerKw: double("last_power_kw"),
+    // The discharge window currently being followed, if any.
+    windowSocStart: double("window_soc_start"),
+    windowKwh: double("window_kwh"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("battery_health_org_idx").on(t.orgId)],
+);
+export type BatteryHealth = typeof batteryHealth.$inferSelect;
+
+// Every accepted capacity measurement, kept rather than folded away. A single
+// SoH number with no working behind it is not something an operator can argue
+// with a supplier about, and a warranty claim is exactly an argument.
+export const batteryCapacityEstimates = mysqlTable(
+  "battery_capacity_estimates",
+  {
+    id: serial("id").primaryKey(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at").notNull(),
+    socStart: double("soc_start").notNull(),
+    socEnd: double("soc_end").notNull(),
+    dischargedKwh: double("discharged_kwh").notNull(),
+    estimatedKwh: double("estimated_kwh").notNull(),
+    sohPct: double("soh_pct"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("battery_cap_meter_idx").on(t.meterId), index("battery_cap_org_idx").on(t.orgId)],
+);
+export type BatteryCapacityEstimate = typeof batteryCapacityEstimates.$inferSelect;

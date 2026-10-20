@@ -82,6 +82,11 @@ try {
   startExportLoop();
   const { startDeletionLoop } = await import("./orgs/purge");
   startDeletionLoop();
+  // §9.5: battery state of health and cycle counting. Leased — two replicas
+  // walking the same cursor would each book part of the throughput, and the
+  // fleet would quietly under-count how hard its batteries had been worked.
+  const { startSohLoop } = await import("./ems/soh-tracker");
+  startSohLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }

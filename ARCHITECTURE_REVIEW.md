@@ -567,6 +567,11 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.9 | — any canary failure halts, whatever the threshold says | One device out of one is a 100% failure rate however it is phrased, and the canary's whole job is to answer "does this image work at all". Later waves use the configured percentage. A wave is judged when it SETTLES rather than when the next one is considered, so a rollout whose last wave failed cannot report itself complete |
 | 9.9 | — membership is frozen, and delivery is not reimplemented | Targets are written when the rollout is created rather than re-derived from a filter each sweep: a gateway that comes online halfway through must not silently join a wave that has already been judged. Each target carries an ordinary OTA job id, so the existing manager still does the publishing, ack timeouts and retries, and the rollout reads their status back — one delivery path, not two that can disagree. Rollouts advance inside the OTA sweep for the same reason: a separate timer would decide the next wave from a view of the previous one that was already stale |
 | 9.9 | Firmware was a URL somebody typed | A release registry with model, version, URL and sha256. "Which bytes did we ship" now has an answer months later, when the question is asked by somebody holding a device that no longer boots |
+| 9.5 | Nothing measured battery wear | A BESS is the most expensive thing on most of these sites and the only one that wears out by being used. The platform knew a battery's SoC at any instant and nothing at all about how much life had been taken out of it — so an installation could not answer the two questions its own warranty is written in: equivalent full cycles, and retained capacity. Both are now derived from ordinary SoC and power telemetry, with no extra instrumentation and no manufacturer API |
+| 9.5 | — EFC, not "times it hit 100%" | Total SoC travelled ÷ 200, which is the unit the warranty uses. Counting full charges would score a battery cycling between 40% and 60% all day as having done nothing, when that is a battery being worked hard in a narrow band. Rainflow counting was considered and rejected: it needs the whole history in memory to close half-cycles and answers a question nobody here is asking |
+| 9.5 | — capacity only from a window worth measuring | SoH comes from a discharge of at least 30% SoC in one run: a 5% window divides by 0.05, so a 2% SoC error — well inside what a BMS reports — becomes a 40% error in the answer. Windows are never extended across a charge, a data gap abandons the window rather than reporting a partial integral as a whole one, and estimates are blended slowly because capacity does not jump. The first estimate is taken as-is rather than blended toward an assumed 100%, which would make a tired battery look healthy for weeks |
+| 9.5 | — throughput that cannot be invented | Trapezoidal integration (a battery on a peak-shaving setpoint is ramping most of the time, and a step assumption mis-books every ramp), intervals that cross zero split at the crossing instead of averaging to nothing, and a gap longer than fifteen minutes contributes NOTHING — six hours offline must not become six hours of the last power reading the gateway happened to send |
+| 9.5 | — the nameplate is the one human input, and readings over 100% are shown | Usable kWh is a fact about the hardware that telemetry cannot reveal, and every figure is a ratio against it, so a battery without one reports cycles and throughput and says health is unavailable rather than showing a percentage computed from a guess. Above 100% is displayed rather than clamped: it is normal early in a battery's life, and 130% is the signal that the nameplate is wrong or the power sign convention inverted — exactly what clamping would hide. Every accepted measurement is kept, because a warranty claim is an argument and a single blended percentage is not something to take to a supplier |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -597,20 +602,21 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Twelve have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Thirteen have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
   monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
   retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
   document (§9.13), per-org export, retention and deletion (§9.14), and org membership with
-  invites and switching (§9.11), and staged fleet firmware rollouts (§9.9).
+  invites and switching (§9.11), staged fleet firmware rollouts (§9.9), and battery state of
+  health with cycle counting (§9.5).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining four are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining three are real but none of them blocks anything. OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but

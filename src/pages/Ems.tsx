@@ -15,6 +15,7 @@ import { ExternalLink } from "lucide-react";
 import { EmsPanel } from "@/components/EmsPanel";
 import { EmsPlanCard } from "@/components/EmsPlanCard";
 import { GridLimitCard } from "@/components/GridLimitCard";
+import { BatteryHealthCard } from "@/components/BatteryHealthCard";
 
 /** Origin attribution from the commands.result prefix (see api/ems/controller.ts tagLastCommand). */
 function originBadge(result: string | null, t: ReturnType<typeof useI18n>["t"]): { label: string; cls: string } {
@@ -48,6 +49,9 @@ export default function Ems() {
       {/* §9.2: the connection limit outranks every other EMS decision, so it
           sits above them on the page as well as in the controller. */}
       <GridLimitCard />
+      {/* §9.5: fleet-wide, above the per-device panels — wear is a property of
+          the asset register, not of whichever battery happens to be selected. */}
+      <BatteryHealthCard />
 
       {/* ── Fleet commands (all org devices, live) ── */}
       <Card>

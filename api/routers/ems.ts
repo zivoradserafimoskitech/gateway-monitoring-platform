@@ -7,7 +7,18 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { commands, curtailmentAssets, emsPeakShaving, emsPlans, emsSchedules, gridLimits, meters, sites } from "@db/schema";
+import {
+  batteryCapacityEstimates,
+  batteryHealth,
+  commands,
+  curtailmentAssets,
+  emsPeakShaving,
+  emsPlans,
+  emsSchedules,
+  gridLimits,
+  meters,
+  sites,
+} from "@db/schema";
 import { assertOrgRead, assertOrgWrite, isSuper, meterOrg, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
 import type { User } from "@db/schema";
 
@@ -320,5 +331,65 @@ export const emsRouter = createRouter({
       .where(and(eq(emsPlans.meterId, input.meterId), orgWhere(ctx.user, emsPlans.orgId)))
       .orderBy(desc(emsPlans.validFrom))
       .limit(input.limit);
+  }),
+
+  // ─── §9.5: battery state of health ─────────────────────────────────────────
+  // A BESS is the most expensive thing on most of these sites and the only one
+  // that wears out by being used. Warranties are written in equivalent full
+  // cycles and retained capacity; before this the platform could report
+  // neither.
+  health: createRouter({
+    list: authed.query(async ({ ctx }) => {
+      const db = getDb();
+      const rows = await db
+        .select({ health: batteryHealth, meterName: meters.name })
+        .from(batteryHealth)
+        .innerJoin(meters, eq(batteryHealth.meterId, meters.id))
+        .where(orgWhere(ctx.user, batteryHealth.orgId))
+        .orderBy(meters.name);
+      return rows.map((r) => ({ ...r.health, meterName: r.meterName }));
+    }),
+
+    // The nameplate is a fact about the hardware, not something telemetry can
+    // reveal, and every derived figure is a ratio against it — so it is the one
+    // input a human must supply.
+    setNameplate: operator
+      .input(z.object({ meterId: z.number(), nameplateKwh: z.number().finite().positive().max(100_000).nullable() }))
+      .mutation(async ({ ctx, input }) => {
+        const org = await meterOrg(input.meterId);
+        assertOrgWrite(ctx.user, org, "Device");
+        const db = getDb();
+        const existing = await db
+          .select({ meterId: batteryHealth.meterId })
+          .from(batteryHealth)
+          .where(eq(batteryHealth.meterId, input.meterId))
+          .limit(1);
+        if (existing[0]) {
+          await db
+            .update(batteryHealth)
+            .set({ nameplateKwh: input.nameplateKwh })
+            .where(eq(batteryHealth.meterId, input.meterId));
+        } else {
+          await db
+            .insert(batteryHealth)
+            .values({ meterId: input.meterId, nameplateKwh: input.nameplateKwh, orgId: org ?? null });
+        }
+        return { ok: true };
+      }),
+
+    // The measurements behind the number. A single SoH figure with no working
+    // behind it is not something an operator can take to a supplier, and a
+    // warranty claim is exactly that argument.
+    estimates: authed
+      .input(z.object({ meterId: z.number(), limit: z.number().int().min(1).max(200).default(50) }))
+      .query(async ({ ctx, input }) => {
+        assertOrgRead(ctx.user, await meterOrg(input.meterId), "Device");
+        return getDb()
+          .select()
+          .from(batteryCapacityEstimates)
+          .where(eq(batteryCapacityEstimates.meterId, input.meterId))
+          .orderBy(desc(batteryCapacityEstimates.endedAt))
+          .limit(input.limit);
+      }),
   }),
 });
