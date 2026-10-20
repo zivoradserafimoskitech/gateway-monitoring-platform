@@ -623,21 +623,21 @@ still open, and the phased plan in §10 remains the intended order of work.
   (§9.11), staged fleet firmware rollouts (§9.9), battery state of health with cycle counting
   (§9.5), the commissioning checklist (§9.10), tariff-aware optimisation (§9.3) and OIDC single
   sign-on (§9.12).
-  §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
-  alarms — a frozen register and a silent gateway both page now where neither did before — and
-  the machinery for deciding which of them is worth waking a person for had not moved since
-  maintenance windows. Adding detection without adding judgement is how an installation learns
-  to ignore its own alarms.
 
-  Nothing is left on the §9 list. The one item that could not be finished the way the others
-  were is §9.12: SSO cannot be demonstrated end to end in CI because a build runner has no
-  identity provider, so the token verification and provisioning rules are unit-tested against
-  locally generated keys, the feature ships disabled per provider, and the caveat is printed on
-  the screen where somebody enables it rather than buried in a commit message. OIDC single sign-on (§9.12) is
-  the one with the most commercial weight — a procurement blocker for industrial customers
-  rather than a feature — and is also the first item here that cannot be proved in CI: there is
-  no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but
-  not demonstrated end to end without a real tenant.
+  The order was not arbitrary. §9.8 followed §9.6 and §9.7 because those two made the system
+  fire MORE alarms — a frozen register and a silent gateway both page now where neither did
+  before — while the machinery for deciding which of them is worth waking a person for had not
+  moved since maintenance windows; adding detection without adding judgement is how an
+  installation learns to ignore its own alarms. §9.5 came before §9.3 for the same kind of
+  reason: a tariff optimiser needs to know how much energy the battery still holds, and
+  planning against nameplate after years of fade schedules energy that is not there.
+
+  One item could not be finished the way the rest were. §9.12 cannot be demonstrated end to end
+  in CI, because a build runner has no identity provider. So the parts that decide whether a
+  token is trusted are unit-tested against locally generated keys, the feature ships disabled
+  per provider with password login untouched, and the caveat is printed on the screen where
+  somebody enables it rather than buried in a commit message. Everything else here is covered
+  by tests that run on every push.
 
   **Not built in §9.7: gap detection as an alarm.** The largest gap inside an hour needs a
   window function, and a TimescaleDB continuous aggregate does not allow one — building it on
