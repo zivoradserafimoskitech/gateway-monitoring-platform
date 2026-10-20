@@ -87,6 +87,12 @@ try {
   // fleet would quietly under-count how hard its batteries had been worked.
   const { startSohLoop } = await import("./ems/soh-tracker");
   startSohLoop();
+  // §9.3: tariff-aware planning. Writes ems_plans through the existing
+  // Contract A path, so the controller, the SoC guard, the whitelist and the
+  // audit trail are unchanged — and leased, because two replicas each writing
+  // a plan would leave the controller executing whichever landed last.
+  const { startOptimizerLoop } = await import("./ems/optimizer");
+  startOptimizerLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }

@@ -16,6 +16,7 @@ import { EmsPanel } from "@/components/EmsPanel";
 import { EmsPlanCard } from "@/components/EmsPlanCard";
 import { GridLimitCard } from "@/components/GridLimitCard";
 import { BatteryHealthCard } from "@/components/BatteryHealthCard";
+import { TariffCard } from "@/components/TariffCard";
 
 /** Origin attribution from the commands.result prefix (see api/ems/controller.ts tagLastCommand). */
 function originBadge(result: string | null, t: ReturnType<typeof useI18n>["t"]): { label: string; cls: string } {
@@ -52,6 +53,10 @@ export default function Ems() {
       {/* §9.5: fleet-wide, above the per-device panels — wear is a property of
           the asset register, not of whichever battery happens to be selected. */}
       <BatteryHealthCard />
+      {/* §9.3: prices and the planner that uses them. Fleet-wide like the
+          health card — a tariff is a property of the contract, not of whichever
+          battery happens to be selected below. */}
+      <TariffCard />
 
       {/* ── Fleet commands (all org devices, live) ── */}
       <Card>

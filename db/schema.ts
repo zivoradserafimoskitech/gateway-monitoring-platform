@@ -1314,3 +1314,98 @@ export const commissioningSignoffs = mysqlTable(
   (t) => [index("commissioning_signoff_org_idx").on(t.orgId)],
 );
 export type CommissioningSignoff = typeof commissioningSignoffs.$inferSelect;
+
+// ─── §9.3: tariffs and tariff-aware optimisation ─────────────────────────────
+// The EMS could discharge on a schedule and shave a peak. Neither knows what
+// electricity costs, so the thing a battery is actually bought for on a
+// commercial site — buy cheap, use dear — had to be approximated by a human
+// writing time windows by hand and editing them whenever the contract changed.
+export const tariffs = mysqlTable(
+  "tariffs",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Null = the org's default tariff; a site-bound tariff wins over it.
+    siteId: bigint("site_id", { mode: "number", unsigned: true }),
+    currency: varchar("currency", { length: 8 }).notNull().default("EUR"),
+    // Periods are read in the site's local clock, because a contract's
+    // "peak 17:00–21:00" is local time, not UTC, and gets it wrong twice a
+    // year otherwise.
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("tariffs_org_idx").on(t.orgId), index("tariffs_site_idx").on(t.siteId)],
+);
+export type Tariff = typeof tariffs.$inferSelect;
+
+// Time-of-use periods: what most industrial supply contracts are. Same window
+// shape as ems_schedules so an operator learns one convention, not three.
+export const tariffPeriods = mysqlTable(
+  "tariff_periods",
+  {
+    id: serial("id").primaryKey(),
+    tariffId: bigint("tariff_id", { mode: "number", unsigned: true }).notNull(),
+    label: varchar("label", { length: 64 }),
+    dayOfWeekMask: int("day_of_week_mask").notNull().default(127),
+    startMin: int("start_min").notNull().default(0),
+    endMin: int("end_min").notNull().default(0),
+    // Per kWh, in the tariff's currency.
+    importPrice: double("import_price").notNull(),
+    // What export earns. NULL means export is not paid, which is NOT the same
+    // as zero in the optimiser's arithmetic.
+    exportPrice: double("export_price"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("tariff_periods_tariff_idx").on(t.tariffId)],
+);
+export type TariffPeriod = typeof tariffPeriods.$inferSelect;
+
+// An imported hourly curve: what a market-exposed site needs. An explicit
+// price for an hour always beats the time-of-use schedule for that hour — the
+// schedule is the contract's shape, this is what the market actually did.
+export const tariffPrices = mysqlTable(
+  "tariff_prices",
+  {
+    id: serial("id").primaryKey(),
+    tariffId: bigint("tariff_id", { mode: "number", unsigned: true }).notNull(),
+    hourStart: timestamp("hour_start").notNull(),
+    importPrice: double("import_price").notNull(),
+    exportPrice: double("export_price"),
+    // Where the number came from, so a surprising plan can be traced back to
+    // the feed that justified it.
+    source: varchar("source", { length: 64 }).notNull().default("manual"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("tariff_price_hour_unique").on(t.tariffId, t.hourStart)],
+);
+export type TariffPrice = typeof tariffPrices.$inferSelect;
+
+// Per-battery economics. Separate from battery_health because that table is
+// measured and this one is configured — mixing what the system observed with
+// what a human asserted is how a figure nobody can source ends up in a
+// contract conversation.
+export const batteryEconomics = mysqlTable(
+  "battery_economics",
+  {
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).primaryKey(),
+    maxPowerKw: double("max_power_kw").notNull(),
+    roundTripEfficiency: double("round_trip_efficiency").notNull().default(0.9),
+    minSocPct: double("min_soc_pct").notNull().default(20),
+    maxSocPct: double("max_soc_pct").notNull().default(90),
+    // What one equivalent full cycle costs in wear. The number that decides
+    // whether arbitrage is worth doing at all: a battery has a finite number
+    // of cycles in it, and spending one to capture a spread smaller than the
+    // wear it costs loses money while every chart calls the plan a success.
+    // Zero is legitimate for a leased asset but has to be chosen.
+    cycleCost: double("cycle_cost").notNull().default(0),
+    // Off by default. A planner that starts commanding a battery because
+    // somebody filled in a price table is not a planner anybody asked for.
+    optimizerEnabled: boolean("optimizer_enabled").notNull().default(false),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("battery_econ_org_idx").on(t.orgId)],
+);
+export type BatteryEconomics = typeof batteryEconomics.$inferSelect;

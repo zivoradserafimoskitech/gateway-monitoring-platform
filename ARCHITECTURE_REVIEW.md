@@ -576,6 +576,10 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.10 | — the checks cannot be ticked by hand | Every step that can be verified from the system's own data IS, each time the page opens. A checklist that only records opinions is a form; one that checks itself is a tool. Freshness is "within fifteen minutes", not "has ever been seen": a device that spoke once during the install and has been silent since is precisely the failure commissioning exists to catch before anyone drives away. Control asks for a successful write on record, not a dry run — a rehearsal is not proof that the real thing works, which is why previews deliberately leave no audit row |
 | 9.10 | — "not applicable" is not "passed" | A site with no battery cannot demonstrate a nameplate, so that step reads n/a and is excluded from the denominator. Reporting it as passed would make a site that has shown nothing about battery configuration look finished; leaving it in the denominator would make it permanently 10/11 |
 | 9.10 | — the signature records what somebody saw, and overrides nothing | The handover is the one manual step, because nothing in a database can attest that a person walked the site, and the signer's name is free text since they are often a subcontractor with no account here. It does NOT flip the derived rows: a gateway that drops after handover shows a failure again, which is what should happen. The checklist as it stood at signing is snapshotted, so the signature is still legible later against a site that has since changed |
+| 9.3 | The EMS did not know what electricity costs | It could discharge on a schedule and shave a peak; neither knows a price, so the thing a battery is actually bought for on a commercial site — buy cheap, use dear — had to be approximated by a human writing time windows by hand and re-editing them whenever the contract changed. Tariffs now carry both shapes that exist in the field: a time-of-use schedule (what most industrial supply contracts are) and an imported hourly curve (what a market-exposed site needs), with an explicit hourly price beating the schedule for that hour |
+| 9.3 | — a missing price is not zero | An hour nothing prices is OMITTED from the curve, and the planner refuses to plan against it. Zero or "average" would have it cheerfully schedule a cycle on a number nobody supplied, and the whole value of the feature rests on the numbers being real. Periods are read in the tariff's own zone, because a contract's "peak 17:00–21:00" is local time and reading it as UTC is wrong twice a year |
+| 9.3 | — it refuses trades that look profitable | The spread a pair must clear includes round-trip losses AND wear: `cycleCost` spread over capacity. A battery has a finite number of cycles in it, and spending one to capture a spread smaller than the wear it costs loses money while every chart calls the plan a success — 0.05 to 0.10 looks like a doubling and is a loss. Zero wear is legitimate for a leased asset but has to be chosen rather than defaulted into. Discharge hours must also come AFTER their charge hour, which a naive "charge in the cheap hours, discharge in the dear ones" ranking happily ignores |
+| 9.3 | — it plans, it does not command | Output goes through the existing ems_plans path (v9 Contract A), so the controller, the fail-closed SoC guard, the controllable whitelist, the verification gate and the command audit trail are all unchanged — this adds a planner, not a second thing that writes to plant, which is the only reason it is safe to add. The plan carries the SoC envelope its arithmetic assumed, capacity comes from the MEASURED nameplate and state of health (§9.5) rather than a second copy, and the optimiser is off per battery until somebody turns it on. The preview an operator approves runs the same function as the real plan |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
 ### Deliberately not changed
@@ -606,21 +610,22 @@ still open, and the phased plan in §10 remains the intended order of work.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
-- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Fourteen have
+- **§9, the recommended new functions.** Still a roadmap rather than a defect list. Fifteen have
   landed: the setpoint deadman (§9.1), the grid connection limit with curtailment (§9.2), the
   emergency stop and command dry-run (§9.4), device-offline alarming (§9.6), data-quality
   monitoring (§9.7) in both halves, alarm suppression with an on-call rota (§9.8), signed,
   retried webhook subscriptions (§9.15), per-scope REST rate limits with a published OpenAPI
   document (§9.13), per-org export, retention and deletion (§9.14), and org membership with
   invites and switching (§9.11), staged fleet firmware rollouts (§9.9), and battery state of
-  health with cycle counting (§9.5), and the commissioning checklist (§9.10).
+  health with cycle counting (§9.5), the commissioning checklist (§9.10), and tariff-aware
+  optimisation (§9.3).
   §9.8 was the right one to take after §9.6 and §9.7: those two made the system fire MORE
   alarms — a frozen register and a silent gateway both page now where neither did before — and
   the machinery for deciding which of them is worth waking a person for had not moved since
   maintenance windows. Adding detection without adding judgement is how an installation learns
   to ignore its own alarms.
 
-  The remaining two are real but none of them blocks anything. OIDC single sign-on (§9.12) is
+  The remaining one is OIDC single sign-on (§9.12). OIDC single sign-on (§9.12) is
   the one with the most commercial weight — a procurement blocker for industrial customers
   rather than a feature — and is also the first item here that cannot be proved in CI: there is
   no identity provider on a runner, so the flow can be unit-tested and shipped behind a flag but
