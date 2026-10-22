@@ -89,6 +89,15 @@ d("TimescaleDB continuous aggregates", () => {
     await applyFile(pool, "db/timescale/001_init.sql");
     await applyFile(pool, "db/timescale/002_hourly_energy_rollup.sql");
     await applyFile(pool, "db/timescale/003_hourly_chart_columns.sql");
+    // The fixture day is far in the past on purpose, which is exactly what the
+    // retention and compression policies act on — and they are background
+    // jobs that start within moments of being created: a CI log showed the
+    // compression policy at work on these chunks while the suite was still
+    // reading them, and retention would drop the fixture outright. What is
+    // under test is the SQL and the aggregate math, not the job scheduler, so
+    // the two policies are removed once the files have been applied.
+    await pool.query("select remove_retention_policy('telemetry', if_exists => true)");
+    await pool.query("select remove_compression_policy('telemetry', if_exists => true)");
 
     for (const s of fixture()) {
       await pool.query(
