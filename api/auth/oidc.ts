@@ -208,6 +208,8 @@ export interface ProvisionPolicy {
   autoProvision: boolean;
   /** Role given to an account created this way. */
   defaultRole: "admin" | "operator" | "viewer";
+  /** The org the provider belongs to; null for a global (superadmin) provider. */
+  providerOrgId: number | null;
 }
 
 export type LoginDecision =
@@ -267,6 +269,11 @@ export function decideLogin(
   if (!policy.autoProvision) {
     return { kind: "reject", reason: "no account exists for this address and automatic provisioning is off" };
   }
+  // A global provider has no org to put a new account in, and an account with
+  // no tenant is not a state anything downstream expects.
+  if (policy.providerOrgId === null) {
+    return { kind: "reject", reason: "a global provider cannot create accounts; it has no organization to put them in" };
+  }
   if (policy.allowedDomains.length === 0) {
     return {
       kind: "reject",
@@ -283,4 +290,48 @@ export function decideLogin(
 export function parseDomains(raw: unknown): string[] {
   const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,]+/) : [];
   return [...new Set(list.map((d) => String(d).trim().replace(/^@/, "").toLowerCase()).filter(Boolean))];
+}
+
+// ─── Who a provider may vouch for ────────────────────────────────────────────
+export interface LinkTarget {
+  isSuperadmin: boolean;
+  disabled: boolean;
+  /** Every org the account can act under: its home org plus its memberships. */
+  orgIds: number[];
+}
+
+export type LinkGate = { ok: true } | { ok: false; reason: string };
+
+/**
+ * May this provider sign this EXISTING account in?
+ *
+ * The rule that keeps one tenant out of another. An identity provider is
+ * something its org's admin controls end to end — they choose the issuer, and
+ * through it they can mint any claim they like, including someone else's
+ * verified email. Every signature check passes on such a token, because it
+ * really is that provider's token. So the provider's word is only good for
+ * accounts that belong to its own org:
+ *
+ *  - an org-scoped provider may link an account only if the account is a
+ *    member of that org;
+ *  - it may NEVER link a superadmin. The platform account is not any single
+ *    tenant's to vouch for, and it is the most valuable account to steal;
+ *  - a global provider (no org) can only be configured by a superadmin, so it
+ *    may link any account.
+ *
+ * Without this, any org admin could configure a provider pointed at an IdP
+ * they control and sign in as anyone in the installation.
+ */
+export function mayLinkAccount(providerOrgId: number | null, target: LinkTarget): LinkGate {
+  // Checked first: SSO proves who somebody is, it is not a way around having
+  // been switched off.
+  if (target.disabled) return { ok: false, reason: "this account is disabled" };
+  if (providerOrgId === null) return { ok: true };
+  if (target.isSuperadmin) {
+    return { ok: false, reason: "an organization's provider cannot sign in a platform administrator" };
+  }
+  if (!target.orgIds.includes(providerOrgId)) {
+    return { ok: false, reason: "this account does not belong to the provider's organization" };
+  }
+  return { ok: true };
 }

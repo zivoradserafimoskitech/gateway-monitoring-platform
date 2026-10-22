@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import {
   buildAuthUrl,
   decideLogin,
+  mayLinkAccount,
   emailDomain,
   parseDomains,
   pkcePair,
@@ -210,6 +211,7 @@ describe("decideLogin", () => {
     allowedDomains: ["customer.example"],
     autoProvision: true,
     defaultRole: "viewer" as const,
+    providerOrgId: 7 as number | null,
   };
 
   it("links an existing account", () => {
@@ -268,6 +270,12 @@ describe("decideLogin", () => {
     expect(d).toEqual({ kind: "provision", email: "person@customer.example", name: "A Person", role: "viewer" });
   });
 
+  it("refuses to provision through a global provider", () => {
+    // A global provider has no org to put the account in.
+    const d = decideLogin(claims(), { ...policy, providerOrgId: null }, new Set());
+    expect(d).toEqual({ kind: "reject", reason: expect.stringContaining("global provider") });
+  });
+
   it("matches email case-insensitively", () => {
     const d = decideLogin(claims({ email: "Person@Customer.Example" }), policy, new Set(["person@customer.example"]));
     expect(d.kind).toBe("link");
@@ -303,5 +311,50 @@ describe("safeRedirect", () => {
     expect(safeRedirect("/\\evil.example")).toBe("/");
     expect(safeRedirect(null)).toBe("/");
     expect(safeRedirect("")).toBe("/");
+  });
+});
+
+describe("mayLinkAccount — the tenant boundary", () => {
+  // The attack this exists for: an org admin configures a provider pointed at
+  // an IdP they control and mints a token carrying someone else's verified
+  // email. Every signature, issuer, audience and nonce check PASSES on that
+  // token, because it really is that provider's token. This gate is the only
+  // thing standing between one tenant and every other account.
+  const member = { isSuperadmin: false, disabled: false, orgIds: [7] };
+
+  it("links an account that belongs to the provider's org", () => {
+    expect(mayLinkAccount(7, member)).toEqual({ ok: true });
+  });
+
+  it("links through a membership, not only the home org", () => {
+    // A contractor whose home org is 3 but who is also a member of 7.
+    expect(mayLinkAccount(7, { ...member, orgIds: [3, 7] })).toEqual({ ok: true });
+  });
+
+  it("refuses an account from another organization", () => {
+    const r = mayLinkAccount(7, { ...member, orgIds: [3] });
+    expect(r.ok).toBe(false);
+  });
+
+  it("refuses an account that belongs to no organization", () => {
+    expect(mayLinkAccount(7, { ...member, orgIds: [] }).ok).toBe(false);
+  });
+
+  it("never lets an org's provider sign in a superadmin — even one who is a member", () => {
+    // The platform account is not any single tenant's to vouch for, and it is
+    // the most valuable account in the system to take.
+    const r = mayLinkAccount(7, { isSuperadmin: true, disabled: false, orgIds: [7] });
+    expect(r).toEqual({ ok: false, reason: expect.stringContaining("platform administrator") });
+  });
+
+  it("lets a global provider link any account, including a superadmin", () => {
+    // Only a superadmin can configure one (ssoProviderSave enforces it).
+    expect(mayLinkAccount(null, { isSuperadmin: true, disabled: false, orgIds: [] })).toEqual({ ok: true });
+    expect(mayLinkAccount(null, { ...member, orgIds: [3] })).toEqual({ ok: true });
+  });
+
+  it("refuses a disabled account whatever the provider", () => {
+    expect(mayLinkAccount(7, { ...member, disabled: true }).ok).toBe(false);
+    expect(mayLinkAccount(null, { ...member, disabled: true }).ok).toBe(false);
   });
 });
