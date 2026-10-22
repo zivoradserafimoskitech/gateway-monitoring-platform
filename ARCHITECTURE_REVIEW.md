@@ -586,6 +586,56 @@ still open, and the phased plan in §10 remains the intended order of work.
 | 9.12 | — and the honest caveat | This is the ONE item on the §9 list that cannot be proved end to end in CI: there is no identity provider on a build runner. What is proved there is every decision that makes a token trustworthy — the tests generate their own RSA and EC keys, sign their own tokens, and assert that each tampering is refused. The untested part is the network round trip, which is why the feature ships behind a per-provider flag, the UI prints the caveat where whoever enables it will read it, and the password form stays on the screen |
 | 8 | No global search, no column sorting | Ctrl/Cmd-K over gateways, devices and sites, matching a gateway on its UID as well as its name; the lists load only while the palette is open. Click-to-sort on the two long tables, cycling back to the server's own ordering, with nulls last in both directions |
 
+### After the roadmap: a review of the §9 code itself
+
+Once §9 was merged, its code was reviewed again for correctness. The review found defects that
+every CI gate had passed. "Green" had meant that the tests which existed passed, and none of them
+reached these paths: no job runs the battery-health tracker, the purge or the export against the
+Timescale store; no test had two tenants share a sign-on flow; no fixture holds more batteries
+than one page. Each fix below has a regression test wherever the logic can be tested without a
+database, and the Timescale parts run against the real TimescaleDB in CI. The rest is noted.
+
+| § | What was wrong | How it was fixed |
+| --- | --- | --- |
+| 9.12 | **An org's identity provider could sign in as any account.** An org admin configures their own IdP, so it can assert any verified email. Login looked that email up across the whole installation and linked whatever matched, which included another tenant's users and superadmins. Every signature check passed. The gap was in what a valid token was allowed to mean | `mayLinkAccount`: an org's provider links only accounts in that org (home org or membership) and never a superadmin. Only a superadmin may create a global provider, and a global provider cannot auto-provision because it has no org to put the account in. Provisioned accounts get their membership row. The lookup is one indexed row instead of a scan of every user on every login |
+| 9.12 | `redirect_uri` was built from the internal URL | Behind the TLS proxy the app sees `http://`, and an IdP compares `redirect_uri` exactly against the registered `https://` one, so SSO could not work in the production topology at all. `publicOrigin()` uses `PUBLIC_URL` when it is set, and otherwise X-Forwarded-Proto plus Host. The cookie helpers are shared, so the callback no longer has its own copy of the session cookie string |
+| 9.12 | IdP key rotation broke SSO for up to five minutes | A token signed with a key that the cached JWKS did not have failed every login until the cache expired. Now an unknown `kid` forces one refresh, at most once every 30 s per IdP |
+| 9.5 | **Battery health read the MySQL telemetry table, which is empty in production.** Production keeps telemetry in TimescaleDB, so no battery ever got a cycle count or a health figure, and nothing reported the failure | The tracker reads one-minute buckets through `TelemetryStore.metricSeries`. It reads only closed buckets, held back by a grace period, one page per sweep, and never older than raw retention. A battery that has been offline longer than a page no longer re-reads the same empty page forever |
+| 9.5 | One NaN reading wedged a battery for good | A NaN added to lifetime throughput made the row unwritable, so the cursor never moved. Non-finite readings now count as missing |
+| 9.5 | A data hole followed by rest closed as a valid window | If the battery discharged through a hole in the data and was at rest when data came back, the window closed normally. The whole SoC drop was then divided by only the energy seen before the hole, which reads as a battery that has lost most of its capacity. The hole check now comes first |
+| 9.5 | Capacity estimates recorded the wrong start | A window spanning several sweeps was stamped as starting at the previous sweep's cursor. The start is now stored (`battery_health.window_started_at`, migration `0041`) |
+| 9.5, 9.3 | Sweeps covered only the first page of the fleet | SoH read 200 unordered rows and the optimiser 100: on a larger fleet that was the same batteries every sweep, and the rest never. SoH now takes the furthest-behind batteries first, and the optimiser pages through all of them. Both loops tick less often than the 90 s default lease lasts, so the lease lapsed between ticks. It now outlives the interval |
+| 9.3 | One cheap late hour emptied the whole plan | The planner stopped at the first buy hour that had no later sell hour. The cheapest hour of a day-ahead curve is often the last one, so one such hour discarded every profitable pair and the plan came back empty with a false reason. Such hours are now skipped |
+| 9.3 | Discharge asked for energy that was never stored | Setpoints commanded the full charge power P, so each hour ran into the SoC guard. They now command what the charge actually stored (P × round-trip efficiency), which matches the margin arithmetic |
+| 9.3 | The tariff in effect depended on row order | `pickTariff`: the site's own tariff first, then the org default, then a global one; the newest wins within a tier, and another site's or org's tariff never applies. A tariff a superadmin created for a customer's site was filed under the superadmin's own org, where the optimiser never looked. It now takes the site's org. The tariff list made one query per tariff and price import made one upsert per hour; both are batched now |
+| 9.14 | **Purge and export used the MySQL telemetry table.** A purge reported success and left the tenant's measurement history in place, and an export carried no telemetry | `TelemetryStore.deleteMeterData` and `exportRaw`, in both stores. Timescale deletes raw rows, compressed chunks included, and deletes each continuous aggregate's materialized rows by meter. It deliberately does not refresh the aggregates: refreshing a range whose raw chunks retention has dropped wipes that range for every meter. The export reads through one cursor snapshot, because that table has no id column and can hold duplicate samples, so keyset pages could skip rows. Integration tests cover both, including deletion from compressed chunks |
+| 9.14 | The purge covered too little and deleted too much | Battery health, capacity estimates, economics, tariffs, commissioning sign-offs, peak shaving, OTA rollouts and releases, and SSO providers were left behind. Accounts were deleted by home org, which predates memberships, so an account another org still had was deleted, and so was a superadmin. Now such an account moves to an org it still belongs to, a superadmin is never deleted (`planUserRemoval`), and the ingest caches are evicted |
+| 9.10 | Commissioning counted other tenants' rules and other sites' devices | The alarm step counted another tenant's fleet-wide rules. The device query also counted devices on this site's gateways that are bound to a different site. Both now follow the same rules as the alarm engine and the effective-site lookup |
+| — | Device and gateway deletes, and gateway diagnostics, used the MySQL table | Deletes now go through the store. Diagnostics showed 0 messages per minute for every gateway under Timescale; it now reads `sampleCount` |
+
+Checked and left as they are:
+
+- **The optimiser stores `orgId ?? 0` for a device that has no org.** `ems_plans.org_id` is NOT NULL
+  and unsigned, so 0 means owned by no tenant and visible to superadmins only, the same as the
+  device itself. The `-1` that org-scoped reads use to match nothing would be rejected by the
+  column.
+- **The commissioning screen reads the sign-off a second time.** That read returns the full row
+  (snapshot, signer, time), which the checklist facts deliberately do not carry. It is one indexed
+  lookup.
+
+Still open after this review:
+
+- **Per-org retention has no effect under TimescaleDB.** The retention loop runs only for the MySQL
+  store, and Timescale's own policy drops raw rows at 90 days for every org. Fixing this means
+  choosing between an app-side per-org delete and per-org hypertables, which is a design decision,
+  not a bug fix.
+- **Other replicas keep a purged tenant in their ingest caches for 5–10 minutes.** The replica that
+  runs the purge evicts its own caches. Samples that reach another replica in that window are
+  written under the deleted ids.
+- **CI still builds its schema from `db/schema.ts` and never runs `scripts/apply-migrations.ts`.**
+  Migration `0041` and the schema therefore agree only because they were written together.
+- **§9.12 still has no end-to-end test against a real identity provider.**
+
 ### Deliberately not changed
 
 - **§1.2, high-availability state — mostly closed, without Redis.** The loops that command plant
@@ -606,11 +656,16 @@ still open, and the phased plan in §10 remains the intended order of work.
   property), which this repository cannot make on its own.
 - **`powerTrend` past the cutoff.** Unchanged and deliberately so: its input is capped at 168
   hours, so it cannot reach the 90-day cutoff in the first place.
-- **Advisories: 16 down to 9, none reaching a shipping package.** Measured on the runner: 16
-  (1 low, 13 moderate, 2 high) became 9 (1 low, 8 moderate, 0 high). The `uuid` advisory, the
-  only one that reached a runtime dependency, is closed by the override above. The rest are
-  build tooling (vitest, esbuild via drizzle-kit, postcss): reported every run, not blocking,
-  and not reachable by an attacker against a deployed gateway.
+- **Advisories: none in a shipping package, of any severity.** The totals keep moving, because
+  new advisories are published against packages that have not changed. This section once read
+  "16 down to 9, 0 high", measured in September. On 22 October the runner reported 18 (10
+  moderate, 8 high). One of them, hono's `serveStatic` path decoding (GHSA-5r4p-p66f-jhc7,
+  moderate), was in a runtime package. The blocking gate only stops on high, so CI stayed green
+  — but the package ships, so it was fixed by moving to 4.13.13. What remains is 17 (9 moderate,
+  8 high), and `npm audit --omit=dev` reports zero. All of it is build tooling: vite,
+  source-map-js, braces through tailwind's file watcher, vitest, and esbuild via drizzle-kit. It
+  is reported on every run without blocking, and none of it can be reached through a deployed
+  gateway. The `uuid` override above is still what keeps exceljs clean.
 - **Offset pagination in the UI.** The REST API is keyset-paginated and the lists the UI shows
   are org-scoped and now sortable and searchable; paging the tables themselves is UX work
   nobody has asked for rather than a defect.
