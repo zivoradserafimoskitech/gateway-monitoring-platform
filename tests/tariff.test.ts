@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   minProfitableSpread,
+  pickTariff,
   planArbitrage,
   priceAt,
   priceCurve,
@@ -252,5 +253,43 @@ describe("sellPrice", () => {
 
   it("handles an unpaid export", () => {
     expect(sellPrice(hour(18, 0.4, null))).toBe(0.4);
+  });
+});
+
+describe("pickTariff", () => {
+  const t = (id: number, siteId: number | null, orgId: number | null) => ({ id, siteId, orgId });
+
+  it("prefers the site's own tariff, then the org default, then a global one", () => {
+    const rows = [t(1, null, null), t(2, null, 7), t(3, 40, 7)];
+    expect(pickTariff(rows, 40, 7)?.id).toBe(3);
+    expect(pickTariff(rows.slice(0, 2), 40, 7)?.id).toBe(2);
+    expect(pickTariff(rows.slice(0, 1), 40, 7)?.id).toBe(1);
+  });
+
+  it("does not depend on the order the rows came back in", () => {
+    // The first version took the first org-or-global row it met, so the org
+    // default and a global one swapped places with the database's row order.
+    const a = [t(1, null, null), t(2, null, 7)];
+    expect(pickTariff(a, 40, 7)?.id).toBe(2);
+    expect(pickTariff([...a].reverse(), 40, 7)?.id).toBe(2);
+  });
+
+  it("takes the most recent of several at the same level", () => {
+    expect(pickTariff([t(5, 40, 7), t(9, 40, 7), t(6, 40, 7)], 40, 7)?.id).toBe(9);
+  });
+
+  it("never applies another site's or another org's tariff", () => {
+    expect(pickTariff([t(1, 41, 7)], 40, 7)).toBeNull();
+    expect(pickTariff([t(1, null, 8)], 40, 7)).toBeNull();
+    expect(pickTariff([t(1, 40, 8)], 40, 7)).toBeNull();
+  });
+
+  it("gives a device with no site or org only the global default", () => {
+    expect(pickTariff([t(1, null, 7), t(2, null, null)], null, null)?.id).toBe(2);
+    expect(pickTariff([t(1, 40, null)], null, null)).toBeNull();
+  });
+
+  it("returns null when nothing applies", () => {
+    expect(pickTariff([], 40, 7)).toBeNull();
   });
 });

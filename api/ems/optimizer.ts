@@ -5,7 +5,7 @@
 // controllable whitelist, the verification gate and the command audit trail
 // are all unchanged. This adds a planner, not a second thing that commands
 // plant — and that is the whole reason it is safe to add at all.
-import { and, asc, eq, gte, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, gte, isNull, lte, or } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import {
   batteryEconomics,
@@ -17,14 +17,15 @@ import {
   tariffs,
 } from "@db/schema";
 import { withLease } from "../lib/leader";
-import { planArbitrage, priceCurve, type BatteryLimits, type PlanResult } from "./tariff";
+import { pickTariff, planArbitrage, priceCurve, type BatteryLimits, type PlanResult } from "./tariff";
 
 /** How far ahead to plan. A day-ahead market publishes a day; a time-of-use
  *  contract repeats, so more horizon adds nothing but churn. */
 const HORIZON_H = parseInt(process.env.OPTIMIZER_HORIZON_HOURS || "24", 10);
 const SWEEP_MS = 15 * 60_000;
 
-/** The tariff that applies to a battery: its site's, else the org default. */
+/** The tariff that applies to a battery: its site's, else the org default,
+ *  else a global one — see pickTariff for the rule. */
 async function tariffFor(siteId: number | null, orgId: number | null) {
   const db = getDb();
   const rows = await db
@@ -37,9 +38,7 @@ async function tariffFor(siteId: number | null, orgId: number | null) {
         siteId === null ? isNull(tariffs.siteId) : or(eq(tariffs.siteId, siteId), isNull(tariffs.siteId)),
       ),
     );
-  if (rows.length === 0) return null;
-  // A site-bound tariff beats the org default — the specific contract wins.
-  return rows.find((r) => r.siteId === siteId && siteId !== null) ?? rows.find((r) => r.siteId === null) ?? rows[0];
+  return pickTariff(rows, siteId, orgId);
 }
 
 export interface OptimizeOutcome {
@@ -151,6 +150,10 @@ export async function optimizeBattery(meterId: number, dryRun = false, now = new
 
   await db.insert(emsPlans).values({
     meterId,
+    // ems_plans.org_id is NOT NULL and unsigned, so a device with no org gets
+    // 0: owned by no tenant and visible to superadmins only, like the device
+    // itself. The -1 that org-scoped reads use to match nothing would be
+    // rejected by the column.
     orgId: meter.orgId ?? 0,
     source: "tariff-optimizer",
     validFrom: new Date(fromMs),
@@ -166,27 +169,39 @@ export async function optimizeBattery(meterId: number, dryRun = false, now = new
   return { meterId, plan, skipped: null };
 }
 
+/** Batteries read per query while sweeping. */
+const SWEEP_PAGE = 100;
+
 export async function optimizerSweep(now = new Date()): Promise<{ planned: number; skipped: number }> {
   const db = getDb();
-  const rows = await db
-    .select({ meterId: batteryEconomics.meterId })
-    .from(batteryEconomics)
-    .where(eq(batteryEconomics.optimizerEnabled, true))
-    .limit(100);
   let planned = 0;
   let skipped = 0;
-  for (const r of rows) {
-    try {
-      const out = await optimizeBattery(r.meterId, false, now);
-      if (out.skipped === null) planned++;
-      else {
+  // Every enabled battery, a page at a time in id order. The first version
+  // read one unordered page of 100 and stopped, so on a larger fleet the same
+  // hundred were planned every sweep and the rest never were.
+  let after = 0;
+  for (;;) {
+    const rows = await db
+      .select({ meterId: batteryEconomics.meterId })
+      .from(batteryEconomics)
+      .where(and(eq(batteryEconomics.optimizerEnabled, true), gt(batteryEconomics.meterId, after)))
+      .orderBy(asc(batteryEconomics.meterId))
+      .limit(SWEEP_PAGE);
+    for (const r of rows) {
+      try {
+        const out = await optimizeBattery(r.meterId, false, now);
+        if (out.skipped === null) planned++;
+        else {
+          skipped++;
+          console.log(`[optimizer] meter ${r.meterId}: ${out.skipped}`);
+        }
+      } catch (e) {
         skipped++;
-        console.log(`[optimizer] meter ${r.meterId}: ${out.skipped}`);
+        console.warn(`[optimizer] meter ${r.meterId} failed:`, e instanceof Error ? e.message : e);
       }
-    } catch (e) {
-      skipped++;
-      console.warn(`[optimizer] meter ${r.meterId} failed:`, e instanceof Error ? e.message : e);
     }
+    if (rows.length < SWEEP_PAGE) break;
+    after = rows[rows.length - 1].meterId;
   }
   return { planned, skipped };
 }
@@ -198,7 +213,7 @@ export function startOptimizerLoop(): void {
     // Leased: two replicas would each write a plan, and the controller would
     // execute whichever landed last — a coin toss between two plans built from
     // the same prices is still a coin toss.
-    withLease("tariff-optimizer", () => optimizerSweep()).catch((e) =>
+    withLease("tariff-optimizer", () => optimizerSweep(), 2 * SWEEP_MS).catch((e) =>
       console.warn("[optimizer] sweep failed:", e instanceof Error ? e.message : e),
     );
   }, SWEEP_MS);

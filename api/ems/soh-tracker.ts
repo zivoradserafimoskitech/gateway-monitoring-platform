@@ -14,7 +14,7 @@
 // keeps its telemetry in TimescaleDB, where that table is empty: every sweep
 // found nothing, so no battery ever got a cycle count or a health figure, and
 // nothing anywhere said so.
-import { eq, inArray, sql } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { batteryCapacityEstimates, batteryHealth, meters } from "@db/schema";
 import { withLease } from "../lib/leader";
@@ -53,6 +53,7 @@ interface HealthRow {
   lastPowerKw: number | null;
   windowSocStart: number | null;
   windowKwh: number | null;
+  windowStartedAt: Date | null;
   orgId: number | null;
 }
 
@@ -78,7 +79,14 @@ export async function trackBattery(row: HealthRow): Promise<void> {
     // can survive it, so both are dropped along with the last reading.
     await db
       .update(batteryHealth)
-      .set({ lastTs: new Date(moveTo), lastSocPct: null, lastPowerKw: null, windowSocStart: null, windowKwh: null })
+      .set({
+        lastTs: new Date(moveTo),
+        lastSocPct: null,
+        lastPowerKw: null,
+        windowSocStart: null,
+        windowKwh: null,
+        windowStartedAt: null,
+      })
       .where(eq(batteryHealth.meterId, row.meterId));
     return;
   }
@@ -89,7 +97,10 @@ export async function trackBattery(row: HealthRow): Promise<void> {
       : null;
   let window: WindowState | null =
     row.windowSocStart !== null ? { socStart: row.windowSocStart, dischargedKwh: row.windowKwh ?? 0 } : null;
-  let windowStartedAt: Date | null = row.windowSocStart !== null ? (row.lastTs ?? samples[0].ts) : null;
+  // A window opened before window_started_at existed has no stored start; the
+  // previous cursor is the best that row can offer.
+  let windowStartedAt: Date | null =
+    row.windowSocStart !== null ? (row.windowStartedAt ?? row.lastTs ?? samples[0].ts) : null;
 
   let efc = row.efc;
   let discharged = row.throughputDischargedKwh;
@@ -161,6 +172,7 @@ export async function trackBattery(row: HealthRow): Promise<void> {
       lastPowerKw: last.batteryPowerKw,
       windowSocStart: window?.socStart ?? null,
       windowKwh: window?.dischargedKwh ?? null,
+      windowStartedAt: window ? windowStartedAt : null,
     })
     .where(eq(batteryHealth.meterId, row.meterId));
 }
@@ -195,7 +207,12 @@ async function ensureRows(): Promise<void> {
 export async function sohSweep(): Promise<{ tracked: number }> {
   await ensureRows();
   const db = getDb();
-  const rows = await db.select().from(batteryHealth).limit(200);
+  // Furthest-behind first. A bare limit with no order is whatever 200 rows the
+  // database hands back first — on a fleet of more than 200 batteries, the
+  // same 200 every sweep, and the rest never tracked at all. Ordered by
+  // cursor, every battery that is processed moves to the back of the queue,
+  // and a new one (no cursor yet; NULL sorts first) starts on the next sweep.
+  const rows = await db.select().from(batteryHealth).orderBy(asc(batteryHealth.lastTs)).limit(200);
   let tracked = 0;
   for (const r of rows) {
     try {
@@ -212,6 +229,7 @@ export async function sohSweep(): Promise<{ tracked: number }> {
         lastPowerKw: r.lastPowerKw,
         windowSocStart: r.windowSocStart,
         windowKwh: r.windowKwh,
+        windowStartedAt: r.windowStartedAt,
         orgId: r.orgId,
       });
       tracked++;
@@ -228,8 +246,11 @@ export function startSohLoop(): void {
   timer = setInterval(() => {
     // Leased: two replicas walking the same cursor would both advance it and
     // each would book part of the throughput, so the fleet would quietly
-    // under-count how hard its batteries had been worked.
-    withLease("battery-soh", () => sohSweep()).catch((e) =>
+    // under-count how hard its batteries had been worked. The lease outlives
+    // the interval: at the 90 s default it lapsed between five-minute ticks,
+    // so whichever replica ticked next took it, and a sweep that ran past
+    // 90 s could be joined halfway through by another.
+    withLease("battery-soh", () => sohSweep(), 2 * SWEEP_MS).catch((e) =>
       console.warn("[soh] sweep failed:", e instanceof Error ? e.message : e),
     );
   }, SWEEP_MS);

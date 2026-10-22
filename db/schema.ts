@@ -1255,6 +1255,9 @@ export const batteryHealth = mysqlTable(
     // The discharge window currently being followed, if any.
     windowSocStart: double("window_soc_start"),
     windowKwh: double("window_kwh"),
+    // When that window began (0041). Without it, a window spanning several
+    // sweeps was recorded as starting at the previous sweep's cursor.
+    windowStartedAt: timestamp("window_started_at"),
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },

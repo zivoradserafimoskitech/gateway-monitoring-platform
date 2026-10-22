@@ -268,3 +268,43 @@ export function sellPrice(h: PriceHour): number {
     ? h.price.exportPrice
     : h.price.importPrice;
 }
+
+// ─── Which tariff applies ────────────────────────────────────────────────────
+export interface TariffCandidate {
+  id: number;
+  siteId: number | null;
+  orgId: number | null;
+}
+
+/**
+ * The tariff that applies to a battery, from the enabled candidates.
+ *
+ * Most specific first: one bound to the battery's site, then its org's
+ * default (no site), then a global default (no site, no org). Among several
+ * at the same level the most recently created wins — a new contract
+ * supersedes an old one nobody switched off. The first version took whichever
+ * row the database returned first, so with two candidates the price a
+ * battery was planned against could change between sweeps without anyone
+ * touching anything.
+ *
+ * Rows bound to another site or another org never apply, whatever the query
+ * that fetched them let through.
+ */
+export function pickTariff<T extends TariffCandidate>(rows: T[], siteId: number | null, orgId: number | null): T | null {
+  const tier = (r: T): number => {
+    if (r.siteId !== null) return siteId !== null && r.siteId === siteId && (r.orgId === null || r.orgId === orgId) ? 0 : -1;
+    if (r.orgId !== null) return orgId !== null && r.orgId === orgId ? 1 : -1;
+    return 2;
+  };
+  let best: T | null = null;
+  let bestTier = Infinity;
+  for (const r of rows) {
+    const t = tier(r);
+    if (t < 0) continue;
+    if (t < bestTier || (t === bestTier && best !== null && r.id > best.id)) {
+      best = r;
+      bestTier = t;
+    }
+  }
+  return best;
+}

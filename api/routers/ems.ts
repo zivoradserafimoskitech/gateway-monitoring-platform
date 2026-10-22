@@ -3,7 +3,7 @@
 // (system commands: kind=control, userId null). Mutation audit rows come free
 // via the RBAC middleware.
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
@@ -412,18 +412,14 @@ export const emsRouter = createRouter({
         .leftJoin(sites, eq(tariffs.siteId, sites.id))
         .where(orgWhere(ctx.user, tariffs.orgId))
         .orderBy(desc(tariffs.createdAt));
-      const withPeriods = await Promise.all(
-        rows.map(async (r) => ({
-          ...r.tariff,
-          siteName: r.siteName,
-          periods: await db
-            .select()
-            .from(tariffPeriods)
-            .where(eq(tariffPeriods.tariffId, r.tariff.id))
-            .orderBy(asc(tariffPeriods.id)),
-        })),
-      );
-      return withPeriods;
+      // One query for every tariff's periods, not one per tariff.
+      const ids = rows.map((r) => r.tariff.id);
+      const periods = ids.length
+        ? await db.select().from(tariffPeriods).where(inArray(tariffPeriods.tariffId, ids)).orderBy(asc(tariffPeriods.id))
+        : [];
+      const byTariff = new Map<number, typeof periods>();
+      for (const p of periods) byTariff.set(p.tariffId, [...(byTariff.get(p.tariffId) ?? []), p]);
+      return rows.map((r) => ({ ...r.tariff, siteName: r.siteName, periods: byTariff.get(r.tariff.id) ?? [] }));
     }),
 
     create: operator
@@ -436,7 +432,10 @@ export const emsRouter = createRouter({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        if (input.siteId != null) assertOrgWrite(ctx.user, await siteOrg(input.siteId), "Site");
+        const siteGiven = input.siteId != null;
+        const siteOrgId = input.siteId != null ? await siteOrg(input.siteId) : null;
+        // undefined = no such site, which assertOrgWrite turns into a 404.
+        if (siteGiven) assertOrgWrite(ctx.user, siteOrgId, "Site");
         try {
           new Intl.DateTimeFormat("en-US", { timeZone: input.timezone });
         } catch {
@@ -449,7 +448,11 @@ export const emsRouter = createRouter({
             siteId: input.siteId ?? null,
             currency: input.currency,
             timezone: input.timezone,
-            orgId: stampOrg(ctx.user, null),
+            // A site's tariff belongs to the site's org. Stamped from the
+            // caller instead, a superadmin creating one for a customer's site
+            // filed it under their own org, and the optimiser — which only
+            // reads the battery's org and global tariffs — never applied it.
+            orgId: siteGiven ? (siteOrgId ?? null) : stampOrg(ctx.user, null),
           })
           .$returningId();
         return { id: inserted[0].id };
@@ -540,23 +543,38 @@ export const emsRouter = createRouter({
         const rows = await db.select({ orgId: tariffs.orgId }).from(tariffs).where(eq(tariffs.id, input.tariffId)).limit(1);
         if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Tariff not found" });
         assertOrgWrite(ctx.user, rows[0].orgId, "Tariff");
+        // Floored to the hour: a curve with prices at 13:07 would never match
+        // the hourly lookup and would silently do nothing. Two prices for the
+        // same hour keep the later one, as importing them in turn would.
+        const byHour = new Map<number, { importPrice: number; exportPrice: number | null }>();
         for (const p of input.prices) {
+          byHour.set(Math.floor(p.hourStart.getTime() / 3_600_000) * 3_600_000, {
+            importPrice: p.importPrice,
+            exportPrice: p.exportPrice ?? null,
+          });
+        }
+        const values = [...byHour].map(([hourMs, p]) => ({
+          tariffId: input.tariffId,
+          hourStart: new Date(hourMs),
+          importPrice: p.importPrice,
+          exportPrice: p.exportPrice,
+          source: input.source,
+        }));
+        // Multi-row upserts rather than one round trip per hour: a year of
+        // hourly prices was 2,000 sequential statements inside one request.
+        for (let i = 0; i < values.length; i += 500) {
           await db
             .insert(tariffPrices)
-            .values({
-              tariffId: input.tariffId,
-              // Floored to the hour: a curve with prices at 13:07 would never
-              // match the hourly lookup and would silently do nothing.
-              hourStart: new Date(Math.floor(p.hourStart.getTime() / 3_600_000) * 3_600_000),
-              importPrice: p.importPrice,
-              exportPrice: p.exportPrice ?? null,
-              source: input.source,
-            })
+            .values(values.slice(i, i + 500))
             .onDuplicateKeyUpdate({
-              set: { importPrice: p.importPrice, exportPrice: p.exportPrice ?? null, source: input.source },
+              set: {
+                importPrice: sql`values(import_price)`,
+                exportPrice: sql`values(export_price)`,
+                source: sql`values(source)`,
+              },
             });
         }
-        return { imported: input.prices.length };
+        return { imported: values.length };
       }),
   }),
 
