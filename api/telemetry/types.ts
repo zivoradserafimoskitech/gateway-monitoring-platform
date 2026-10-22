@@ -189,5 +189,20 @@ export interface TelemetryStore {
     bucketSec: number,
     keys: string[],
   ): Promise<MetricSeriesBucket[]>;
+  /**
+   * §9.14: remove every stored sample for these devices — raw rows AND every
+   * rollup built from them, since an aggregate of a deleted tenant's data is
+   * still that tenant's data. Counts are what the purge log reports.
+   */
+  deleteMeterData(meterIds: number[]): Promise<{ raw: number; rollups: number }>;
+  /** Raw samples stored for these devices since `since` — the gateway
+   *  diagnostics' "messages per minute". */
+  sampleCount(meterIds: number[], since: Date): Promise<number>;
+  /**
+   * §9.14: every stored column of the raw rows for these devices in
+   * [from, to], oldest first, a page at a time. Rows are passed through as the
+   * store holds them: an export is the tenant's data, not a summary of it.
+   */
+  exportRaw(meterIds: number[], from: Date, to: Date, pageSize?: number): AsyncIterable<Record<string, unknown>[]>;
   close(): Promise<void>;
 }

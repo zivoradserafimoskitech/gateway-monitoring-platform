@@ -597,6 +597,83 @@ export class TimescaleTelemetryStore implements TelemetryStore {
     }));
   }
 
+  async deleteMeterData(meterIds: number[]): Promise<{ raw: number; rollups: number }> {
+    if (meterIds.length === 0) return { raw: 0, rollups: 0 };
+    // Raw rows, compressed chunks included: TimescaleDB 2.11+ deletes from
+    // those directly, and segmenting by meter_id makes each one whole segments.
+    // Counted first rather than read off the DELETE: when whole compressed
+    // batches are dropped, the reported row count is not something to put in
+    // a deletion record.
+    const before = await this.pool.query(
+      "select count(*)::bigint as n from telemetry where meter_id = any($1::bigint[])",
+      [meterIds],
+    );
+    await this.pool.query("delete from telemetry where meter_id = any($1::bigint[])", [meterIds]);
+    // The continuous aggregates are not refreshed to get rid of the rest —
+    // refreshing a range whose raw chunks retention has already dropped wipes
+    // that range from the aggregate for EVERY meter. The rows are deleted
+    // from each aggregate's materialization hypertable instead, by meter.
+    let rollups = 0;
+    const { rows: caggs } = await this.pool.query(
+      `select materialization_hypertable_schema as s, materialization_hypertable_name as n
+         from timescaledb_information.continuous_aggregates
+        where hypertable_name = 'telemetry'`,
+    );
+    const ident = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    for (const c of caggs as Array<{ s: string; n: string }>) {
+      const r = await this.pool.query(`delete from ${ident(c.s)}.${ident(c.n)} where meter_id = any($1::bigint[])`, [
+        meterIds,
+      ]);
+      rollups += r.rowCount ?? 0;
+    }
+    return { raw: Number(before.rows[0]?.n ?? 0), rollups };
+  }
+
+  async sampleCount(meterIds: number[], since: Date): Promise<number> {
+    if (meterIds.length === 0) return 0;
+    const { rows } = await this.pool.query(
+      "select count(*)::bigint as n from telemetry where meter_id = any($1::bigint[]) and ts >= $2::timestamptz",
+      [meterIds, since],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async *exportRaw(meterIds: number[], from: Date, to: Date, pageSize = 5_000): AsyncGenerator<Record<string, unknown>[]> {
+    if (meterIds.length === 0) return;
+    // A server-side cursor rather than keyset pages: this table has no id
+    // column and (meter_id, ts) is not unique — at-least-once ingestion can
+    // store the same sample twice — so a keyset page boundary that falls
+    // between duplicates would silently skip one. The cursor reads one
+    // consistent snapshot, in order, a page at a time.
+    const client = await this.pool.connect();
+    let finished = false;
+    try {
+      await client.query("begin read only");
+      await client.query(
+        `declare export_cur no scroll cursor for
+           select * from telemetry
+            where meter_id = any($1::bigint[]) and ts >= $2::timestamptz and ts <= $3::timestamptz
+            order by ts asc, meter_id asc`,
+        [meterIds, from, to],
+      );
+      for (;;) {
+        const { rows } = await client.query(`fetch forward ${Math.max(1, Math.floor(pageSize))} from export_cur`);
+        if (rows.length === 0) break;
+        yield rows;
+      }
+      await client.query("commit");
+      finished = true;
+    } finally {
+      // Also reached when the caller stops iterating early. A client handed
+      // back to the pool inside an open transaction would run the next
+      // caller's queries in it, so it is rolled back first — and destroyed
+      // rather than reused if even that fails.
+      let broken = false;
+      if (!finished) broken = await client.query("rollback").then(() => false, () => true);
+      client.release(broken);
+    }
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

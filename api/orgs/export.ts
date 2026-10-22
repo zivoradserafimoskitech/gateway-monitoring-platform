@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import {
   alarms,
@@ -28,6 +28,7 @@ import {
   users,
 } from "@db/schema";
 import { withLease } from "../lib/leader";
+import { getTelemetryStore } from "../telemetry";
 
 const SWEEP_MS = 15_000;
 /** Rows per query while streaming a table out. Bounded so one export cannot
@@ -150,32 +151,17 @@ export async function buildExport(exportId: number): Promise<void> {
     counts.commands = commandRows.length;
 
     if (job.includeTelemetry && meterIds.length > 0 && job.rangeFrom && job.rangeTo) {
-      // Paged by (ts, id) rather than OFFSET: the table is being written to
-      // while this runs, and an offset page skips or repeats rows whenever
-      // something is inserted between queries.
+      // Every column: an export that silently dropped voltage and current
+      // would be a summary, and the point is that the tenant gets their data
+      // rather than our idea of the interesting parts of it. Read through the
+      // store: production keeps telemetry in TimescaleDB, where the MySQL
+      // table the first version queried is empty, so every export came back
+      // with no telemetry in it and a row count of zero that looked like fact.
       let total = 0;
       stream.write(`${JSON.stringify({ _table: "telemetry", _rows: "streamed" })}\n`);
-      let afterTs = job.rangeFrom;
-      let afterId = 0;
-      for (;;) {
-        const page: Array<Record<string, unknown>> = await db.execute(
-          // Every column: an export that silently dropped voltage and current
-          // would be a summary, and the point is that the tenant gets their
-          // data rather than our idea of the interesting parts of it.
-          sql`select * from telemetry
-              where meter_id in (${sql.join(meterIds.map((id) => sql`${id}`), sql`, `)})
-                and ts >= ${afterTs} and ts <= ${job.rangeTo}
-                and (ts > ${afterTs} or id > ${afterId})
-              order by ts asc, id asc
-              limit ${PAGE}`,
-        ).then((r) => (r as unknown as [Array<Record<string, unknown>>])[0]);
-        if (page.length === 0) break;
+      for await (const page of getTelemetryStore().exportRaw(meterIds, job.rangeFrom, job.rangeTo, PAGE)) {
         for (const row of page) stream.write(`${JSON.stringify(row)}\n`);
         total += page.length;
-        const last = page[page.length - 1];
-        afterTs = new Date(String(last.ts));
-        afterId = Number(last.id);
-        if (page.length < PAGE) break;
       }
       stream.write(`${JSON.stringify({ _table: "telemetry", _rows: total })}\n`);
       counts.telemetry = total;

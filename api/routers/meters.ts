@@ -3,7 +3,7 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { meters, gateways, telemetry, sites, alarms, deviceProfiles } from "@db/schema";
+import { meters, gateways, sites, alarms, deviceProfiles } from "@db/schema";
 import { DEFAULT_METER_PHASES } from "@contracts/modbus";
 import { DEVICE_TYPES, PRIMARY_POWER_KEY } from "@contracts/devices";
 import type { DeviceType } from "@contracts/devices";
@@ -258,7 +258,8 @@ export const metersRouter = createRouter({
     assertOrgWrite(ctx.user, await meterOrg(input.id), "Device");
     const db = getDb();
     // Cascade (v4 review #1): telemetry AND alarms, or they orphan forever.
-    await db.delete(telemetry).where(eq(telemetry.meterId, input.id));
+    // Telemetry through the store, so it is removed where it is actually kept.
+    await getTelemetryStore().deleteMeterData([input.id]);
     await db.delete(alarms).where(eq(alarms.meterId, input.id));
     await db.delete(meters).where(eq(meters.id, input.id));
     clearMeterCache(); // #16: ingestion cache must not serve the deleted row

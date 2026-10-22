@@ -2,7 +2,8 @@ import { z } from "zod";
 import { eq, desc, sql, inArray } from "drizzle-orm";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { gateways, meters, sites, commands, telemetry, alarms } from "@db/schema";
+import { gateways, meters, sites, commands, alarms } from "@db/schema";
+import { getTelemetryStore } from "../telemetry";
 import { defaultTopicPrefix, defaultTransport } from "@contracts/topics";
 import { sendReadNow, getMqttStatus, evictGatewayCache } from "../mqtt/service";
 import { clearMeterCache, isDuplicateKey } from "../mqtt/handlers";
@@ -36,19 +37,17 @@ export const gatewaysRouter = createRouter({
     const gw = gwRows[0];
     if (!gw) throw new Error("Gateway not found");
     assertOrgRead(ctx.user, gw.orgId, "Gateway");
-    const since = new Date(Date.now() - 5 * 60_000).toISOString().slice(0, 19).replace("T", " ");
-    const countRows = await db.execute(sql`
-      select count(*) as n
-      from telemetry t
-      join meters m on m.id = t.meter_id
-      where m.gateway_id = ${input.id} and t.ts >= ${since}`);
-    const samples5min = Number((countRows as unknown as [Array<{ n: number }>])[0][0]?.n ?? 0);
+    // Through the store: under TELEMETRY_STORE=timescale the MySQL table this
+    // used to count is empty, and every gateway read 0 messages a minute.
+    const gwMeterIds = (await db.select({ id: meters.id }).from(meters).where(eq(meters.gatewayId, input.id))).map(
+      (m) => m.id,
+    );
+    const samples5min = await getTelemetryStore().sampleCount(gwMeterIds, new Date(Date.now() - 5 * 60_000));
     const { getPollerStatus } = await import("../poller/service");
     const { activeOtaJobs } = await import("../ota/manager");
     let poller: ReturnType<typeof getPollerStatus>["devices"] | null = null;
     if (gw.transport === "tcp") {
-      const idRows = await db.select({ id: meters.id }).from(meters).where(eq(meters.gatewayId, input.id));
-      const ids = new Set(idRows.map((r) => r.id));
+      const ids = new Set(gwMeterIds);
       poller = getPollerStatus().devices.filter((d) => ids.has(d.id));
     }
     return {
@@ -161,10 +160,10 @@ export const gatewaysRouter = createRouter({
     const gwRows = await db.select({ uid: gateways.uid }).from(gateways).where(eq(gateways.id, input.id)).limit(1);
     const meterRows = await db.select({ id: meters.id }).from(meters).where(eq(meters.gatewayId, input.id));
     const ids = meterRows.map((m) => m.id);
+    // Telemetry through the store, so it is removed where it is actually kept.
+    await getTelemetryStore().deleteMeterData(ids);
     for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500);
-      await db.delete(telemetry).where(inArray(telemetry.meterId, chunk));
-      await db.delete(alarms).where(inArray(alarms.meterId, chunk));
+      await db.delete(alarms).where(inArray(alarms.meterId, ids.slice(i, i + 500)));
     }
     if (ids.length) await db.delete(meters).where(inArray(meters.id, ids));
     await db.delete(gateways).where(eq(gateways.id, input.id));
