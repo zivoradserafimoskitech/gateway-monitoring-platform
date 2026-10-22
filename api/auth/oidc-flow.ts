@@ -10,6 +10,8 @@ import { assertEgressAllowed } from "../lib/egress";
 import {
   buildAuthUrl,
   decideLogin,
+  idTokenKid,
+  jwksCovers,
   mayLinkAccount,
   OidcError,
   parseDomains,
@@ -29,14 +31,17 @@ const LOGIN_TTL_MS = 10 * 60_000;
  *  already waiting on anyway. */
 const jwksCache = new Map<string, { at: number; keys: Jwk[] }>();
 const JWKS_TTL_MS = 5 * 60_000;
+/** A forced refresh still reuses a set this fresh, so a burst of logins
+ *  carrying an unknown kid costs one request rather than one each. */
+const JWKS_FORCE_MIN_AGE_MS = 30_000;
 
 export function invalidateJwksCache(): void {
   jwksCache.clear();
 }
 
-async function fetchJwks(uri: string): Promise<Jwk[]> {
+async function fetchJwks(uri: string, force = false): Promise<Jwk[]> {
   const hit = jwksCache.get(uri);
-  if (hit && Date.now() - hit.at < JWKS_TTL_MS) return hit.keys;
+  if (hit && Date.now() - hit.at < (force ? JWKS_FORCE_MIN_AGE_MS : JWKS_TTL_MS)) return hit.keys;
   // The same SSRF guard as every other outbound target: an IdP URL is
   // configuration, and configuration gets edited.
   await assertEgressAllowed(uri);
@@ -163,7 +168,11 @@ export async function completeLogin(
   const tokens = (await res.json()) as { id_token?: string };
   if (!tokens.id_token) throw new OidcError("the identity provider returned no id_token");
 
-  const jwks = await fetchJwks(provider.jwksUri);
+  let jwks = await fetchJwks(provider.jwksUri);
+  // Key rotation: an IdP publishes its new key and starts signing with it,
+  // and a set cached a minute earlier does not have it yet. Without this one
+  // refresh, every login failed with "no key matches" until the cache expired.
+  if (!jwksCovers(jwks, idTokenKid(tokens.id_token))) jwks = await fetchJwks(provider.jwksUri, true);
   const claims = verifyIdToken(tokens.id_token, {
     issuer: provider.issuer,
     clientId: provider.clientId,

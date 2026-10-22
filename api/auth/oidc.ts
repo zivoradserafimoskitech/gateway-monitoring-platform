@@ -116,6 +116,26 @@ function b64urlJson(part: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * The kid an id_token's header names — read WITHOUT verifying anything, and
+ * only ever used to decide whether the cached key set is stale. Null for a
+ * header that names no key or cannot be read; verifyIdToken rejects those.
+ */
+export function idTokenKid(token: string): string | null {
+  try {
+    const header = b64urlJson(token.split(".")[0] ?? "");
+    return typeof header.kid === "string" ? header.kid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Does this key set hold a key verifyIdToken could pick for `kid`? The same
+ *  matching rule it uses: by kid when the token names one, else keyless keys. */
+export function jwksCovers(jwks: Jwk[], kid: string | null): boolean {
+  return kid ? jwks.some((k) => k.kid === kid) : jwks.some((k) => !k.kid);
+}
+
 function keyFromJwk(jwk: Jwk): crypto.KeyObject {
   try {
     return crypto.createPublicKey({ key: jwk as crypto.JsonWebKey, format: "jwk" });

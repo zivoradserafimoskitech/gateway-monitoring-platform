@@ -51,12 +51,14 @@ export async function siteFacts(siteId: number): Promise<SiteFacts | null> {
   // Effective site, the same rule as everywhere else (v6/R7): a device's own
   // binding, else its gateway's. A commissioning view that only counted
   // directly-bound devices would report an empty site for every ordinary
-  // installation, where devices inherit the gateway's site.
+  // installation, where devices inherit the gateway's site. "Else" matters: a
+  // device on this site's gateway that is bound to ANOTHER site belongs there,
+  // and counting it here would let one site's devices pass the other's checks.
   const deviceRows = gatewayIds.length
     ? await db
         .select({ id: meters.id, model: meters.model, deviceType: meters.deviceType, lastSeenAt: meters.lastSeenAt })
         .from(meters)
-        .where(or(eq(meters.siteId, siteId), inArray(meters.gatewayId, gatewayIds)))
+        .where(or(eq(meters.siteId, siteId), and(isNull(meters.siteId), inArray(meters.gatewayId, gatewayIds))))
     : await db
         .select({ id: meters.id, model: meters.model, deviceType: meters.deviceType, lastSeenAt: meters.lastSeenAt })
         .from(meters)
@@ -82,13 +84,19 @@ export async function siteFacts(siteId: number): Promise<SiteFacts | null> {
   }
 
   // Rules that cover this site: one bound to a device here, or a fleet-wide
-  // rule (null meterId), which covers every device including these.
+  // rule (null meterId), which covers every device including these. Only this
+  // org's rules and global ones, the same tenancy test the alarm engine applies
+  // (api/mqtt/handlers.ts): another tenant's fleet-wide rule never evaluates
+  // against these devices, so it must not tick this site's alarm step either.
   const ruleRows = await db
     .select({ id: alarmRules.id, meterId: alarmRules.meterId })
     .from(alarmRules)
     .where(
       and(
         eq(alarmRules.enabled, true),
+        site.orgId === null
+          ? isNull(alarmRules.orgId)
+          : or(eq(alarmRules.orgId, site.orgId), isNull(alarmRules.orgId)),
         deviceIds.length ? or(isNull(alarmRules.meterId), inArray(alarmRules.meterId, deviceIds)) : isNull(alarmRules.meterId),
       ),
     );

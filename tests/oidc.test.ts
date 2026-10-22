@@ -8,6 +8,8 @@ import crypto from "node:crypto";
 import {
   buildAuthUrl,
   decideLogin,
+  idTokenKid,
+  jwksCovers,
   mayLinkAccount,
   emailDomain,
   parseDomains,
@@ -356,5 +358,29 @@ describe("mayLinkAccount — the tenant boundary", () => {
   it("refuses a disabled account whatever the provider", () => {
     expect(mayLinkAccount(7, { ...member, disabled: true }).ok).toBe(false);
     expect(mayLinkAccount(null, { ...member, disabled: true }).ok).toBe(false);
+  });
+});
+
+describe("JWKS rotation helpers", () => {
+  const jwt = (header: object) => `${Buffer.from(JSON.stringify(header)).toString("base64url")}.e30.sig`;
+
+  it("reads the kid an id_token names, without verifying it", () => {
+    expect(idTokenKid(jwt({ alg: "RS256", kid: "2026-10" }))).toBe("2026-10");
+    expect(idTokenKid(jwt({ alg: "RS256" }))).toBeNull();
+  });
+
+  it("returns null for a header it cannot read rather than throwing", () => {
+    expect(idTokenKid("not-a-jwt")).toBeNull();
+    expect(idTokenKid("")).toBeNull();
+  });
+
+  it("knows whether the cached set can verify the token at all", () => {
+    // A kid the set does not hold is the signal to refetch once: the IdP has
+    // rotated and the cache predates the new key.
+    const set = [{ kty: "RSA", kid: "old" }];
+    expect(jwksCovers(set, "old")).toBe(true);
+    expect(jwksCovers(set, "new")).toBe(false);
+    expect(jwksCovers(set, null)).toBe(false);
+    expect(jwksCovers([{ kty: "RSA" }], null)).toBe(true);
   });
 });
