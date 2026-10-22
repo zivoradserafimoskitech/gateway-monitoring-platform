@@ -192,26 +192,32 @@ export function planArbitrage(curve: PriceHour[], limits: BatteryLimits): PlanRe
   const used = new Set<number>();
   const charge: PriceHour[] = [];
   const discharge: PriceHour[] = [];
+  const eff = Math.min(1, Math.max(0.01, limits.roundTripEfficiency));
   let gross = 0;
 
-  for (let i = 0; i < maxPairs; i++) {
-    const buy = byPrice.find((h) => !used.has(h.hourStartMs));
-    if (!buy) break;
+  // Every hour is tried as a buy, cheapest first, and an hour that cannot pair
+  // is SKIPPED rather than ending the search. The first version stopped at the
+  // first hour that failed — so a cheap hour at the very end of the horizon,
+  // with nothing after it to sell into, wiped out every profitable pair before
+  // it, and the plan came back empty with a reason that was simply false. A
+  // buy whose best later sell does not clear the spread is skipped for the
+  // same reason: a pricier hour EARLIER in the day can still have a good sell.
+  for (const buy of byPrice) {
+    if (charge.length >= maxPairs) break;
+    if (used.has(buy.hourStartMs)) continue;
     // The sell hour must come after the buy hour: stored energy cannot be
     // discharged before it was stored.
-    const sellCandidates = curve
+    const sell = curve
       .filter((h) => !used.has(h.hourStartMs) && h.hourStartMs > buy.hourStartMs)
-      .sort((a, b) => sellPrice(b) - sellPrice(a));
-    const sell = sellCandidates[0];
-    if (!sell) break;
+      .sort((a, b) => sellPrice(b) - sellPrice(a))[0];
+    if (!sell) continue;
     const spread = sellPrice(sell) - buy.price.importPrice;
-    if (spread <= minProfitableSpread(limits, buy.price.importPrice)) break;
+    if (spread <= minProfitableSpread(limits, buy.price.importPrice)) continue;
     used.add(buy.hourStartMs);
     used.add(sell.hourStartMs);
     charge.push(buy);
     discharge.push(sell);
-    const delivered = perHourKwh * Math.min(1, Math.max(0.01, limits.roundTripEfficiency));
-    gross += delivered * sellPrice(sell) - perHourKwh * buy.price.importPrice;
+    gross += perHourKwh * eff * sellPrice(sell) - perHourKwh * buy.price.importPrice;
   }
 
   if (charge.length === 0) {
@@ -229,9 +235,16 @@ export function planArbitrage(curve: PriceHour[], limits: BatteryLimits): PlanRe
     return empty("plan does not clear its own wear once losses are counted");
   }
 
+  // Discharge at what the charge actually left in the battery, not at what was
+  // bought: round-trip losses mean an hour charged at P kW gives back P × eff.
+  // Commanding the full P would ask for energy that is not there, and the hour
+  // would end early against the SoC guard — the guard is a safety limit, not
+  // something a plan should lean on in normal operation. It also makes the
+  // setpoints match the margin arithmetic above, which already counted P × eff.
+  const dischargeKw = perHourKwh * eff;
   const setpoints: PlanSetpoint[] = [
     ...charge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: -perHourKwh })),
-    ...discharge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: perHourKwh })),
+    ...discharge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: dischargeKw })),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
   return { setpoints, grossMargin: gross, wearCost, netMargin: net, reason: null };

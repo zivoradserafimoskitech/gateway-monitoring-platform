@@ -210,6 +210,35 @@ describe("planArbitrage", () => {
     expect(r.wearCost).toBeCloseTo(5, 10);
     expect(r.netMargin).toBeCloseTo(r.grossMargin - r.wearCost, 10);
   });
+
+  it("a cheap hour at the end of the horizon does not wipe out the plan", () => {
+    // 23:00 is the cheapest hour and has nothing after it to sell into. The
+    // first version stopped searching there, so the good 02:00 → 18:00 pair
+    // was never tried and the plan came back empty.
+    const r = planArbitrage([hour(2, 0.1), hour(18, 0.5), hour(23, 0.01)], limits({ maxPowerKw: 80 }));
+    expect(r.reason).toBeNull();
+    expect(r.setpoints.map((s) => new Date(s.ts).getUTCHours())).toEqual([2, 18]);
+    expect(r.netMargin).toBeGreaterThan(0);
+  });
+
+  it("skips a buy whose best sell is too thin and keeps looking", () => {
+    // The cheapest hour (20:00) can only sell into 22:00, a spread that does
+    // not cover the round-trip loss. A pricier hour earlier in the day still
+    // has a good sell, and that pair must be found.
+    const curve = [hour(3, 0.08), hour(18, 0.5), hour(20, 0.02), hour(22, 0.021)];
+    const r = planArbitrage(curve, limits({ maxPowerKw: 80 }));
+    expect(r.reason).toBeNull();
+    expect(r.setpoints.map((s) => new Date(s.ts).getUTCHours())).toEqual([3, 18]);
+  });
+
+  it("discharges what the charge left in the battery, not what was bought", () => {
+    // 30 kW in at 90% round trip gives back 27 kW for the hour. Commanding 30
+    // would run the battery into its SoC floor before the hour is out.
+    const r = planArbitrage([hour(2, 0.05), hour(18, 0.5)], limits({ maxPowerKw: 30 }));
+    expect(r.setpoints.map((s) => s.kw)).toEqual([-30, 27]);
+    // And the margin is counted on the same 27 kWh.
+    expect(r.grossMargin).toBeCloseTo(27 * 0.5 - 30 * 0.05, 10);
+  });
 });
 
 describe("sellPrice", () => {
