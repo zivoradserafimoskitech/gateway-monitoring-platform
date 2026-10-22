@@ -8,6 +8,7 @@ import {
   BatteryCharging,
   CloudUpload,
   FileBarChart,
+  ClipboardCheck,
   Settings,
   ShieldCheck,
   Zap,
@@ -127,6 +128,7 @@ export function Layout() {
     { to: "/ems", icon: BatteryCharging, label: t.nav.ems },
     { to: "/ota", icon: CloudUpload, label: t.nav.ota },
     { to: "/reports", icon: FileBarChart, label: t.nav.reports },
+    { to: "/commissioning", icon: ClipboardCheck, label: t.nav.commissioning },
     { to: "/settings", icon: Settings, label: t.nav.settings },
   ];
   // Administration is admin-only. In demo mode (no auth) there is no user

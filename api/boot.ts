@@ -82,6 +82,17 @@ try {
   startExportLoop();
   const { startDeletionLoop } = await import("./orgs/purge");
   startDeletionLoop();
+  // §9.5: battery state of health and cycle counting. Leased — two replicas
+  // walking the same cursor would each book part of the throughput, and the
+  // fleet would quietly under-count how hard its batteries had been worked.
+  const { startSohLoop } = await import("./ems/soh-tracker");
+  startSohLoop();
+  // §9.3: tariff-aware planning. Writes ems_plans through the existing
+  // Contract A path, so the controller, the SoC guard, the whitelist and the
+  // audit trail are unchanged — and leased, because two replicas each writing
+  // a plan would leave the controller executing whichever landed last.
+  const { startOptimizerLoop } = await import("./ems/optimizer");
+  startOptimizerLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }
@@ -172,6 +183,56 @@ app.use("/api/trpc/*", async (c) => {
 // v7/C11: public REST API (Bearer API-key auth — see api/rest/v1.ts).
 const { restV1 } = await import("./rest/v1");
 app.route("/api/v1", restV1);
+
+// §9.12: OIDC single sign-on. Plain HTTP routes rather than tRPC, because the
+// browser is REDIRECTED through them by the identity provider — a tRPC
+// procedure cannot be a redirect target.
+//
+// Disabled unless a provider row says otherwise, and password login is never
+// removed: this is the one §9 item that cannot be proved end to end in CI
+// (there is no identity provider on a runner), so it ships behind a flag with
+// the parts that decide trust covered by unit tests instead.
+app.get("/api/auth/oidc/:providerId/start", async (c) => {
+  const { startLogin } = await import("./auth/oidc-flow");
+  const id = Number(c.req.param("providerId"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid provider" }, 400);
+  try {
+    const redirectUri = new URL("/api/auth/oidc/callback", c.req.url).toString();
+    const url = await startLogin(id, redirectUri, c.req.query("redirectTo") ?? null);
+    return c.redirect(url, 302);
+  } catch (e) {
+    console.warn("[oidc] start failed:", e instanceof Error ? e.message : e);
+    return c.json({ error: e instanceof Error ? e.message : "single sign-on is unavailable" }, 400);
+  }
+});
+
+app.get("/api/auth/oidc/callback", async (c) => {
+  const { completeLogin, safeRedirect } = await import("./auth/oidc-flow");
+  const state = c.req.query("state") ?? "";
+  const code = c.req.query("code") ?? "";
+  // The IdP reports its own failures here. Surfacing its message verbatim
+  // would reflect attacker-controlled text onto our own origin.
+  const idpError = c.req.query("error");
+  if (idpError) {
+    console.warn(`[oidc] provider returned error: ${idpError}`);
+    return c.redirect("/?sso=failed", 302);
+  }
+  if (!state || !code) return c.redirect("/?sso=failed", 302);
+  try {
+    const redirectUri = new URL("/api/auth/oidc/callback", c.req.url).toString();
+    const result = await completeLogin(state, code, redirectUri);
+    const secure = c.req.header("x-forwarded-proto") === "https" || c.req.url.startsWith("https:");
+    const base = `et_session=${encodeURIComponent(result.sessionToken)}; Path=/; HttpOnly; Expires=${result.expiresAt.toUTCString()}`;
+    c.header("set-cookie", secure ? `${base}; SameSite=None; Secure; Partitioned` : `${base}; SameSite=Lax`);
+    return c.redirect(safeRedirect(result.redirectTo), 302);
+  } catch (e) {
+    // Logged in full, shown as a generic failure: the reasons a login was
+    // refused ("no account exists for this address") are an account-existence
+    // oracle on an unauthenticated endpoint.
+    console.warn("[oidc] callback failed:", e instanceof Error ? e.message : e);
+    return c.redirect("/?sso=failed", 302);
+  }
+});
 
 // §9.14: export download. A plain HTTP route rather than a tRPC procedure
 // because the archive is a file — tens of millions of rows for a year of

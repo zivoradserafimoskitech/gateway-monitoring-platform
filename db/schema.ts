@@ -1217,3 +1217,262 @@ export const otaRolloutTargets = mysqlTable(
   ],
 );
 export type OtaRolloutTarget = typeof otaRolloutTargets.$inferSelect;
+
+// ─── §9.5: battery state of health and cycle counting ────────────────────────
+// A BESS is the most expensive thing on most of these sites and the only one
+// that wears out by being used. Nothing measured that: the platform knew a
+// battery's SoC at any instant and nothing about how much life had been taken
+// out of it. Warranties are written in equivalent full cycles and in retained
+// capacity, so an installation could not answer the two questions its own
+// contract is about.
+//
+// One row per battery, updated by a sweep over ordinary telemetry — SoC and
+// battery power — because that is all these devices report.
+export const batteryHealth = mysqlTable(
+  "battery_health",
+  {
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).primaryKey(),
+    // Usable nameplate energy. Set by a human: it is a fact about the hardware,
+    // not something telemetry can reveal, and every figure below is a ratio
+    // against it.
+    nameplateKwh: double("nameplate_kwh"),
+    // Equivalent full cycles: total SoC travelled ÷ 200, the unit warranties
+    // are written in. Counting "times it reached 100%" would score a battery
+    // cycling between 40% and 60% all day as having done nothing.
+    efc: double("efc").notNull().default(0),
+    throughputDischargedKwh: double("throughput_discharged_kwh").notNull().default(0),
+    throughputChargedKwh: double("throughput_charged_kwh").notNull().default(0),
+    // Exponentially blended across accepted measurement windows. Capacity does
+    // not jump, so one odd window nudges this rather than redefining it.
+    sohPct: double("soh_pct"),
+    sohSamples: int("soh_samples").notNull().default(0),
+    lastEstimateAt: timestamp("last_estimate_at"),
+    // Sweep cursor and the previous sample, so an accumulation resumes across
+    // restarts instead of re-counting or skipping a stretch.
+    lastTs: timestamp("last_ts"),
+    lastSocPct: double("last_soc_pct"),
+    lastPowerKw: double("last_power_kw"),
+    // The discharge window currently being followed, if any.
+    windowSocStart: double("window_soc_start"),
+    windowKwh: double("window_kwh"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("battery_health_org_idx").on(t.orgId)],
+);
+export type BatteryHealth = typeof batteryHealth.$inferSelect;
+
+// Every accepted capacity measurement, kept rather than folded away. A single
+// SoH number with no working behind it is not something an operator can argue
+// with a supplier about, and a warranty claim is exactly an argument.
+export const batteryCapacityEstimates = mysqlTable(
+  "battery_capacity_estimates",
+  {
+    id: serial("id").primaryKey(),
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).notNull(),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at").notNull(),
+    socStart: double("soc_start").notNull(),
+    socEnd: double("soc_end").notNull(),
+    dischargedKwh: double("discharged_kwh").notNull(),
+    estimatedKwh: double("estimated_kwh").notNull(),
+    sohPct: double("soh_pct"),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("battery_cap_meter_idx").on(t.meterId), index("battery_cap_org_idx").on(t.orgId)],
+);
+export type BatteryCapacityEstimate = typeof batteryCapacityEstimates.$inferSelect;
+
+// ─── §9.10: commissioning sign-off ───────────────────────────────────────────
+// The commissioning checklist is almost entirely DERIVED — every step that can
+// be verified from the system's own data is re-checked on every view and
+// cannot be ticked by hand, because a checklist that only records opinions is
+// a form rather than a tool (see contracts/commissioning.ts).
+//
+// This table holds the one thing no query can establish: that a human walked
+// the site, saw it working, and put their name to it. One row per site, so a
+// re-sign replaces the previous one rather than accumulating a history nobody
+// reads — and `signedByName` is free text on purpose, since the person signing
+// is often a subcontractor who has no account here.
+export const commissioningSignoffs = mysqlTable(
+  "commissioning_signoffs",
+  {
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).primaryKey(),
+    signedByName: varchar("signed_by_name", { length: 255 }).notNull(),
+    // The account that recorded it, which is a different fact from who signed.
+    recordedBy: bigint("recorded_by", { mode: "number", unsigned: true }),
+    note: varchar("note", { length: 1000 }),
+    // What the checklist looked like at the moment of signing. Kept because
+    // the derived steps keep re-evaluating: without a snapshot, a site that
+    // was complete at handover and has since lost a gateway would read as
+    // though it was signed off in that state.
+    stepsSnapshot: json("steps_snapshot"),
+    signedAt: timestamp("signed_at").notNull().defaultNow(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+  },
+  (t) => [index("commissioning_signoff_org_idx").on(t.orgId)],
+);
+export type CommissioningSignoff = typeof commissioningSignoffs.$inferSelect;
+
+// ─── §9.3: tariffs and tariff-aware optimisation ─────────────────────────────
+// The EMS could discharge on a schedule and shave a peak. Neither knows what
+// electricity costs, so the thing a battery is actually bought for on a
+// commercial site — buy cheap, use dear — had to be approximated by a human
+// writing time windows by hand and editing them whenever the contract changed.
+export const tariffs = mysqlTable(
+  "tariffs",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Null = the org's default tariff; a site-bound tariff wins over it.
+    siteId: bigint("site_id", { mode: "number", unsigned: true }),
+    currency: varchar("currency", { length: 8 }).notNull().default("EUR"),
+    // Periods are read in the site's local clock, because a contract's
+    // "peak 17:00–21:00" is local time, not UTC, and gets it wrong twice a
+    // year otherwise.
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    enabled: boolean("enabled").notNull().default(true),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("tariffs_org_idx").on(t.orgId), index("tariffs_site_idx").on(t.siteId)],
+);
+export type Tariff = typeof tariffs.$inferSelect;
+
+// Time-of-use periods: what most industrial supply contracts are. Same window
+// shape as ems_schedules so an operator learns one convention, not three.
+export const tariffPeriods = mysqlTable(
+  "tariff_periods",
+  {
+    id: serial("id").primaryKey(),
+    tariffId: bigint("tariff_id", { mode: "number", unsigned: true }).notNull(),
+    label: varchar("label", { length: 64 }),
+    dayOfWeekMask: int("day_of_week_mask").notNull().default(127),
+    startMin: int("start_min").notNull().default(0),
+    endMin: int("end_min").notNull().default(0),
+    // Per kWh, in the tariff's currency.
+    importPrice: double("import_price").notNull(),
+    // What export earns. NULL means export is not paid, which is NOT the same
+    // as zero in the optimiser's arithmetic.
+    exportPrice: double("export_price"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("tariff_periods_tariff_idx").on(t.tariffId)],
+);
+export type TariffPeriod = typeof tariffPeriods.$inferSelect;
+
+// An imported hourly curve: what a market-exposed site needs. An explicit
+// price for an hour always beats the time-of-use schedule for that hour — the
+// schedule is the contract's shape, this is what the market actually did.
+export const tariffPrices = mysqlTable(
+  "tariff_prices",
+  {
+    id: serial("id").primaryKey(),
+    tariffId: bigint("tariff_id", { mode: "number", unsigned: true }).notNull(),
+    hourStart: timestamp("hour_start").notNull(),
+    importPrice: double("import_price").notNull(),
+    exportPrice: double("export_price"),
+    // Where the number came from, so a surprising plan can be traced back to
+    // the feed that justified it.
+    source: varchar("source", { length: 64 }).notNull().default("manual"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("tariff_price_hour_unique").on(t.tariffId, t.hourStart)],
+);
+export type TariffPrice = typeof tariffPrices.$inferSelect;
+
+// Per-battery economics. Separate from battery_health because that table is
+// measured and this one is configured — mixing what the system observed with
+// what a human asserted is how a figure nobody can source ends up in a
+// contract conversation.
+export const batteryEconomics = mysqlTable(
+  "battery_economics",
+  {
+    meterId: bigint("meter_id", { mode: "number", unsigned: true }).primaryKey(),
+    maxPowerKw: double("max_power_kw").notNull(),
+    roundTripEfficiency: double("round_trip_efficiency").notNull().default(0.9),
+    minSocPct: double("min_soc_pct").notNull().default(20),
+    maxSocPct: double("max_soc_pct").notNull().default(90),
+    // What one equivalent full cycle costs in wear. The number that decides
+    // whether arbitrage is worth doing at all: a battery has a finite number
+    // of cycles in it, and spending one to capture a spread smaller than the
+    // wear it costs loses money while every chart calls the plan a success.
+    // Zero is legitimate for a leased asset but has to be chosen.
+    cycleCost: double("cycle_cost").notNull().default(0),
+    // Off by default. A planner that starts commanding a battery because
+    // somebody filled in a price table is not a planner anybody asked for.
+    optimizerEnabled: boolean("optimizer_enabled").notNull().default(false),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("battery_econ_org_idx").on(t.orgId)],
+);
+export type BatteryEconomics = typeof batteryEconomics.$inferSelect;
+
+// ─── §9.12: OIDC single sign-on ──────────────────────────────────────────────
+// A procurement blocker rather than a feature: industrial customers hand over
+// their SSO requirements before they will discuss anything else, and "we have
+// our own login form" ends the conversation.
+//
+// Per-provider and disabled by default, and password login is never removed —
+// this is the one item in §9 that cannot be proved end to end in CI, because
+// there is no identity provider on a runner. What IS proved there is every
+// decision that makes a token trustworthy (api/auth/oidc.ts and its tests);
+// the untested part is the network round trip.
+export const oidcProviders = mysqlTable(
+  "oidc_providers",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // Compared EXACTLY against the id_token's iss. A prefix or suffix test
+    // would let "https://issuer.example.evil.com" through.
+    issuer: varchar("issuer", { length: 500 }).notNull(),
+    clientId: varchar("client_id", { length: 255 }).notNull(),
+    // AES-256-GCM at rest, through the same helper as the TOTP secrets: the
+    // client secret authenticates this system to the IdP, so a database dump
+    // must not be enough to impersonate it.
+    clientSecretEnc: varchar("client_secret_enc", { length: 1000 }),
+    authorizationEndpoint: varchar("authorization_endpoint", { length: 500 }).notNull(),
+    tokenEndpoint: varchar("token_endpoint", { length: 500 }).notNull(),
+    jwksUri: varchar("jwks_uri", { length: 500 }).notNull(),
+    scopes: varchar("scopes", { length: 255 }).notNull().default("openid email profile"),
+    // Domains allowed to sign in. Auto-provisioning with an EMPTY list is
+    // refused rather than read as "any domain" — against a public IdP that
+    // would hand an account to the entire internet.
+    allowedDomains: json("allowed_domains"),
+    autoProvision: boolean("auto_provision").notNull().default(false),
+    // The role a provisioned account gets. Never taken from the token: group
+    // mapping depends on the customer's group hygiene being perfect, and the
+    // failure mode is somebody granting themselves administration of a system
+    // that controls plant.
+    defaultRole: mysqlEnum("default_role", ["admin", "operator", "viewer"]).notNull().default("viewer"),
+    enabled: boolean("enabled").notNull().default(false),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("oidc_providers_org_idx").on(t.orgId)],
+);
+export type OidcProvider = typeof oidcProviders.$inferSelect;
+
+// In-flight logins. In the DATABASE rather than in process memory because the
+// callback can land on a different replica from the one that started the flow
+// — the same reason the login lockout and the pending MFA challenge moved out
+// of memory earlier in this branch.
+export const oidcLogins = mysqlTable(
+  "oidc_logins",
+  {
+    state: varchar("state", { length: 64 }).primaryKey(),
+    providerId: bigint("provider_id", { mode: "number", unsigned: true }).notNull(),
+    nonce: varchar("nonce", { length: 64 }).notNull(),
+    codeVerifier: varchar("code_verifier", { length: 128 }).notNull(),
+    // Where to send the browser afterwards. Validated as a local path before
+    // use: an open redirect on a login callback is how a phishing page borrows
+    // somebody else's domain.
+    redirectTo: varchar("redirect_to", { length: 500 }),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("oidc_logins_expiry_idx").on(t.expiresAt)],
+);
+export type OidcLogin = typeof oidcLogins.$inferSelect;

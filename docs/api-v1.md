@@ -436,6 +436,62 @@ sites, users, export archives, and finally the organization — and logs the
 per-table counts. That log line is the only record afterwards, which is
 precisely why it exists.
 
+## Single sign-on (§9.12)
+
+Not part of the REST API — it is a browser flow — but it is the question that
+arrives with every procurement checklist, so it is documented here.
+
+OpenID Connect, Authorization Code with PKCE. No implicit or hybrid flow: an
+id_token in a redirect fragment is a credential in a URL.
+
+**Setup.** Settings → Security → Single sign-on. Register this redirect URI
+with your provider:
+
+```
+https://<your-host>/api/auth/oidc/callback
+```
+
+Then supply the issuer, client id and secret, the authorization and token
+endpoints and the JWKS URI. A provider is created **disabled**; enable it once
+the values are checked.
+
+**What is enforced on every sign-in.**
+
+- `alg` must be RS256/384/512 or ES256/384. `none` is refused, and so is HS256:
+  an HMAC id_token is verified with the *client secret*, so accepting both
+  symmetric and asymmetric algorithms lets an attacker who holds the secret
+  sign their own tokens.
+- The signature must verify against a key published in your JWKS, matched by
+  `kid`. There is no "use the only RSA key" fallback.
+- `iss` must equal the configured issuer **exactly**.
+- `aud` must contain the configured client id.
+- `exp`/`iat` are checked with 60 seconds of skew.
+- `nonce` must match the one minted for that login attempt.
+- `email` must be present and `email_verified` must be true. Accounts here are
+  keyed by email: an unverified address would let anyone who can register one
+  at your IdP claim the matching account.
+
+**What SSO does not do.** It proves who somebody is; it grants nothing. The
+role is never read from the token — no `groups`, `roles` or `role` claim is
+consulted — because group-to-admin mapping depends on your group hygiene being
+perfect and the failure mode is self-granted administration of a system that
+controls plant. New accounts get the provider's configured default role, and
+admin stays a local decision. A disabled account stays disabled.
+
+Automatic provisioning requires an allowed-domain list. An empty list is
+refused rather than read as "any domain", which against a public IdP would
+hand an account to the internet.
+
+**The caveat.** This is the one feature in the system that cannot be verified
+end to end in CI, because a build runner has no identity provider. Everything
+that decides whether a token is trusted — signature, algorithm, issuer,
+audience, expiry, nonce, and the provisioning rules — is covered by
+`tests/oidc.test.ts`, which generates its own RSA and EC keys, signs its own
+tokens and asserts that each tampering is refused. The round trip to your
+provider is not covered. Test against a staging tenant before enabling it in
+front of users, and note that password login is never removed: a misconfigured
+provider must not become an outage.
+
 ## Notes
 
 - Alarm **webhooks**: prefer the signed, retried subscriptions above (§9.15).
