@@ -19,6 +19,11 @@ export interface SocSample {
   batteryPowerKw: number | null;
 }
 
+/** A usable reading: present and finite. */
+function isReading(v: number | null): v is number {
+  return v !== null && Number.isFinite(v);
+}
+
 // ─── Cycle counting ──────────────────────────────────────────────────────────
 /**
  * Equivalent full cycles from SoC movement.
@@ -57,9 +62,12 @@ export function throughputDelta(
   maxGapMs = 15 * 60_000,
 ): { dischargedKwh: number; chargedKwh: number } {
   const zero = { dischargedKwh: 0, chargedKwh: 0 };
-  if (prev.batteryPowerKw === null || next.batteryPowerKw === null) return zero;
+  // Non-finite readings count as missing. One NaN here would be summed into
+  // the battery's lifetime throughput, the row could no longer be written, and
+  // the sweep would re-read the same page every tick without ever moving on.
+  if (!isReading(prev.batteryPowerKw) || !isReading(next.batteryPowerKw)) return zero;
   const dtMs = next.ts.getTime() - prev.ts.getTime();
-  if (dtMs <= 0 || dtMs > maxGapMs) return zero;
+  if (!(dtMs > 0) || dtMs > maxGapMs) return zero;
   const hours = dtMs / 3_600_000;
   const avgKw = (prev.batteryPowerKw + next.batteryPowerKw) / 2;
   // A sign change inside one interval makes the average meaningless in either
@@ -161,8 +169,8 @@ export function windowStep(
   sample: SocSample,
   maxGapMs = 15 * 60_000,
 ): WindowStep {
-  const soc = sample.socPercent;
-  const power = sample.batteryPowerKw;
+  const soc = isReading(sample.socPercent) ? sample.socPercent : null;
+  const power = isReading(sample.batteryPowerKw) ? sample.batteryPowerKw : null;
   if (soc === null || power === null) {
     // Unknown state: abandon any open window rather than carry it across a
     // blind stretch. Closed with ZERO energy and no span on purpose — with an
@@ -178,6 +186,17 @@ export function windowStep(
   if (!state) {
     return discharging ? { kind: "open", next: { socStart: soc, dischargedKwh: 0 } } : { kind: "idle", next: null };
   }
+  const gap = prev ? sample.ts.getTime() - prev.ts.getTime() : 0;
+  if (prev && !(gap <= maxGapMs)) {
+    // A hole in the data mid-window: the integral is no longer a complete
+    // account of the energy, so the window is abandoned rather than reported.
+    // This has to come BEFORE the end-of-discharge check. A battery that kept
+    // discharging through the hole and was resting by the time data came back
+    // would otherwise close normally — the whole SoC drop divided by only the
+    // energy seen before the hole, which reads as a battery that has lost most
+    // of its capacity.
+    return { kind: "close", next: null, window: { socStart: state.socStart, socEnd: soc, dischargedKwh: 0 } };
+  }
   if (!discharging) {
     return {
       kind: "close",
@@ -185,12 +204,86 @@ export function windowStep(
       window: { socStart: state.socStart, socEnd: soc, dischargedKwh: state.dischargedKwh },
     };
   }
-  const gap = prev ? sample.ts.getTime() - prev.ts.getTime() : 0;
-  if (prev && gap > maxGapMs) {
-    // A hole in the data mid-discharge: the integral is no longer a complete
-    // account of the energy, so the window is abandoned rather than reported.
-    return { kind: "close", next: null, window: { socStart: state.socStart, socEnd: soc, dischargedKwh: 0 } };
-  }
   const add = prev ? throughputDelta(prev, sample, maxGapMs).dischargedKwh : 0;
   return { kind: "accumulate", next: { socStart: state.socStart, dischargedKwh: state.dischargedKwh + add } };
+}
+
+// ─── Reading telemetry ───────────────────────────────────────────────────────
+/** The grain the tracker reads telemetry at. Gateways publish about once a
+ *  minute, so in practice one bucket is one sample. */
+export const SOH_BUCKET_MS = 60_000;
+
+/** Buckets to read, by bucket start, both ends inclusive. */
+export interface ReadRange {
+  firstBucketMs: number;
+  lastBucketMs: number;
+}
+
+/**
+ * The buckets the next sweep reads, or null when there is nothing new yet.
+ *
+ * Only CLOSED buckets. A bucket still filling would be read as a partial
+ * average and then never read again, because the cursor has already moved
+ * past it; `graceMs` holds the boundary back further still, for telemetry
+ * that reaches the store a little after its own timestamp.
+ *
+ * Nothing older than `oldestMs` — the raw-retention cutoff — is read. A new
+ * battery starts there, and one whose cursor has fallen behind it skips to it
+ * rather than paging through months of history that has already been purged.
+ */
+export function sohReadRange(
+  cursorMs: number | null,
+  nowMs: number,
+  oldestMs: number,
+  opts: { graceMs?: number; maxBuckets?: number } = {},
+): ReadRange | null {
+  const B = SOH_BUCKET_MS;
+  const graceMs = opts.graceMs ?? 2 * 60_000;
+  const maxBuckets = Math.max(1, opts.maxBuckets ?? 5_000);
+  // Bucket b covers [b, b + B), so it is closed once b + B <= now - grace.
+  const lastClosed = Math.floor((nowMs - graceMs) / B) * B - B;
+  const oldest = Math.floor(oldestMs / B) * B;
+  const first = cursorMs === null ? oldest : Math.max(oldest, Math.floor(cursorMs / B) * B + B);
+  if (!Number.isFinite(first) || first > lastClosed) return null;
+  return { firstBucketMs: first, lastBucketMs: Math.min(lastClosed, first + (maxBuckets - 1) * B) };
+}
+
+/**
+ * The store's buckets as samples, limited to the range that was asked for.
+ *
+ * The store's time range is inclusive at both ends, so the tracker asks up to
+ * the START of the bucket after its last one and drops anything that lands in
+ * it here. A bucket is read whole or left for the next sweep, never half, and
+ * that holds whatever precision the store keeps its timestamps at.
+ */
+export function samplesFromBuckets(
+  buckets: ReadonlyArray<{ bucketStartSec: number; values: Record<string, number | null> }>,
+  range: ReadRange,
+): SocSample[] {
+  const reading = (v: number | null | undefined): number | null => (v != null && Number.isFinite(v) ? v : null);
+  return buckets
+    .map((b) => ({ ms: b.bucketStartSec * 1000, values: b.values }))
+    .filter((b) => b.ms >= range.firstBucketMs && b.ms <= range.lastBucketMs)
+    .sort((a, b) => a.ms - b.ms)
+    .map((b) => ({
+      ts: new Date(b.ms),
+      socPercent: reading(b.values.socPercent),
+      batteryPowerKw: reading(b.values.batteryPowerKw),
+    }));
+}
+
+/**
+ * Where the cursor goes when a read came back empty, or null to stay put.
+ *
+ * Staying put is right for a short silence: the next sample still has to be
+ * integrated from the last one, and an open discharge window is still alive.
+ * But a cursor that never moves while nothing arrives would re-read the same
+ * empty page every sweep — and a battery that has been offline for longer
+ * than a page would never get past the hole at all. Once the silence is
+ * longer than `maxGapMs` nothing is lost by moving on: the next sample will
+ * be too far from the last for either the integral or the window to survive.
+ */
+export function cursorAfterSilence(cursorMs: number | null, range: ReadRange, maxGapMs = 15 * 60_000): number | null {
+  if (cursorMs === null || range.lastBucketMs - cursorMs > maxGapMs) return range.lastBucketMs;
+  return null;
 }

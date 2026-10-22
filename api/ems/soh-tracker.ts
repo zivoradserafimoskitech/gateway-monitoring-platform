@@ -8,23 +8,35 @@
 // or a backfill must not double-count throughput or skip a stretch, and both
 // mistakes are invisible in the output — they just quietly make a battery look
 // more or less worn than it is.
+//
+// Samples come from the telemetry store, never from a table directly. The
+// first version queried the MySQL telemetry table, and a production install
+// keeps its telemetry in TimescaleDB, where that table is empty: every sweep
+// found nothing, so no battery ever got a cycle count or a health figure, and
+// nothing anywhere said so.
 import { eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { batteryCapacityEstimates, batteryHealth, meters } from "@db/schema";
 import { withLease } from "../lib/leader";
+import { getTelemetryStore } from "../telemetry";
+import { retentionCutoff } from "../telemetry/retention";
 import {
   blendSoh,
   capacityFromWindow,
+  cursorAfterSilence,
   efcDelta,
+  samplesFromBuckets,
   sohPercent,
+  sohReadRange,
   throughputDelta,
   windowStep,
+  SOH_BUCKET_MS,
   type SocSample,
   type WindowState,
 } from "./soh";
 
 const SWEEP_MS = 5 * 60_000;
-/** Samples processed per battery per sweep. Bounded so a long backlog is
+/** Buckets processed per battery per sweep. Bounded so a long backlog is
  *  worked off over several ticks instead of in one very long query. */
 const PAGE = 5_000;
 
@@ -44,40 +56,35 @@ interface HealthRow {
   orgId: number | null;
 }
 
-/** Read one battery's new samples. SoC and battery power live in values_json
- *  for BESS profiles, which is why this is raw SQL rather than a column read. */
-async function loadSamples(meterId: number, after: Date | null, limit: number): Promise<SocSample[]> {
-  const db = getDb();
-  const rows = await db
-    .execute(
-      after
-        ? sql`select ts,
-                     json_extract(values_json, '$.socPercent') as soc,
-                     json_extract(values_json, '$.batteryPowerKw') as pwr
-              from telemetry where meter_id = ${meterId} and ts > ${after}
-              order by ts asc limit ${limit}`
-        : sql`select ts,
-                     json_extract(values_json, '$.socPercent') as soc,
-                     json_extract(values_json, '$.batteryPowerKw') as pwr
-              from telemetry where meter_id = ${meterId}
-              order by ts asc limit ${limit}`,
-    )
-    .then((r) => (r as unknown as [Array<Record<string, unknown>>])[0]);
-  return rows.map((r) => ({
-    ts: new Date(String(r.ts)),
-    socPercent: r.soc === null || r.soc === undefined ? null : Number(r.soc),
-    batteryPowerKw: r.pwr === null || r.pwr === undefined ? null : Number(r.pwr),
-  }));
-}
-
 /** Advance one battery's health figures. */
 export async function trackBattery(row: HealthRow): Promise<void> {
   const db = getDb();
-  const samples = await loadSamples(row.meterId, row.lastTs, PAGE);
-  if (samples.length === 0) return;
+  const cursorMs = row.lastTs?.getTime() ?? null;
+  const range = sohReadRange(cursorMs, Date.now(), retentionCutoff().getTime(), { maxBuckets: PAGE });
+  if (!range) return;
+  const buckets = await getTelemetryStore().metricSeries(
+    row.meterId,
+    new Date(range.firstBucketMs),
+    // Up to the start of the next bucket; samplesFromBuckets drops that one.
+    new Date(range.lastBucketMs + SOH_BUCKET_MS),
+    SOH_BUCKET_MS / 1000,
+    ["socPercent", "batteryPowerKw"],
+  );
+  const samples = samplesFromBuckets(buckets, range);
+  if (samples.length === 0) {
+    const moveTo = cursorAfterSilence(cursorMs, range);
+    if (moveTo === null) return;
+    // Long enough without data that neither the integral nor an open window
+    // can survive it, so both are dropped along with the last reading.
+    await db
+      .update(batteryHealth)
+      .set({ lastTs: new Date(moveTo), lastSocPct: null, lastPowerKw: null, windowSocStart: null, windowKwh: null })
+      .where(eq(batteryHealth.meterId, row.meterId));
+    return;
+  }
 
   let prev: SocSample | null =
-    row.lastTs && row.lastSocPct !== null
+    row.lastTs && (row.lastSocPct !== null || row.lastPowerKw !== null)
       ? { ts: row.lastTs, socPercent: row.lastSocPct, batteryPowerKw: row.lastPowerKw }
       : null;
   let window: WindowState | null =
