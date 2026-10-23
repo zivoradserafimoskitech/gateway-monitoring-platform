@@ -677,6 +677,60 @@ export class MySqlTelemetryStore implements TelemetryStore {
     }));
   }
 
+  async deleteMeterData(meterIds: number[]): Promise<{ raw: number; rollups: number }> {
+    const db = getDb();
+    const affected = (res: unknown) =>
+      Number(((Array.isArray(res) ? res[0] : res) as { affectedRows?: number } | undefined)?.affectedRows ?? 0);
+    let raw = 0;
+    let rollups = 0;
+    // Chunked: one statement with tens of thousands of ids in an IN list is a
+    // query nobody wants to be the first to run against production.
+    for (let i = 0; i < meterIds.length; i += 500) {
+      const ids = sql.join(meterIds.slice(i, i + 500).map((id) => sql`${id}`), sql`, `);
+      raw += affected(await db.execute(sql`delete from telemetry where meter_id in (${ids})`));
+      rollups += affected(await db.execute(sql`delete from telemetry_hourly where meter_id in (${ids})`));
+    }
+    return { raw, rollups };
+  }
+
+  async sampleCount(meterIds: number[], since: Date): Promise<number> {
+    if (meterIds.length === 0) return 0;
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const ids = sql.join(meterIds.map((id) => sql`${id}`), sql`, `);
+    const res = await getDb().execute(
+      sql`select count(*) as n from telemetry where meter_id in (${ids}) and ts >= ${utcStr(since)}`,
+    );
+    return Number((res as unknown as [Array<{ n: number }>])[0][0]?.n ?? 0);
+  }
+
+  async *exportRaw(meterIds: number[], from: Date, to: Date, pageSize = 5_000): AsyncGenerator<Record<string, unknown>[]> {
+    if (meterIds.length === 0) return;
+    const db = getDb();
+    const utcStr = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+    const ids = sql.join(meterIds.map((id) => sql`${id}`), sql`, `);
+    // Paged by (ts, id) rather than OFFSET: the table is being written to
+    // while this runs, and an offset page skips or repeats rows whenever
+    // something is inserted between queries.
+    let afterTs = from;
+    let afterId = 0;
+    for (;;) {
+      const res = await db.execute(sql`
+        select * from telemetry
+        where meter_id in (${ids})
+          and ts >= ${utcStr(afterTs)} and ts <= ${utcStr(to)}
+          and (ts > ${utcStr(afterTs)} or id > ${afterId})
+        order by ts asc, id asc
+        limit ${pageSize}`);
+      const page = (res as unknown as [Array<Record<string, unknown>>])[0];
+      if (page.length === 0) return;
+      yield page;
+      if (page.length < pageSize) return;
+      const last = page[page.length - 1];
+      afterTs = last.ts instanceof Date ? last.ts : new Date(String(last.ts));
+      afterId = Number(last.id);
+    }
+  }
+
   async close(): Promise<void> {
     // MySQL pool lifecycle is owned by api/queries/connection
   }

@@ -8,23 +8,35 @@
 // or a backfill must not double-count throughput or skip a stretch, and both
 // mistakes are invisible in the output — they just quietly make a battery look
 // more or less worn than it is.
-import { eq, inArray, sql } from "drizzle-orm";
+//
+// Samples come from the telemetry store, never from a table directly. The
+// first version queried the MySQL telemetry table, and a production install
+// keeps its telemetry in TimescaleDB, where that table is empty: every sweep
+// found nothing, so no battery ever got a cycle count or a health figure, and
+// nothing anywhere said so.
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { batteryCapacityEstimates, batteryHealth, meters } from "@db/schema";
 import { withLease } from "../lib/leader";
+import { getTelemetryStore } from "../telemetry";
+import { retentionCutoff } from "../telemetry/retention";
 import {
   blendSoh,
   capacityFromWindow,
+  cursorAfterSilence,
   efcDelta,
+  samplesFromBuckets,
   sohPercent,
+  sohReadRange,
   throughputDelta,
   windowStep,
+  SOH_BUCKET_MS,
   type SocSample,
   type WindowState,
 } from "./soh";
 
 const SWEEP_MS = 5 * 60_000;
-/** Samples processed per battery per sweep. Bounded so a long backlog is
+/** Buckets processed per battery per sweep. Bounded so a long backlog is
  *  worked off over several ticks instead of in one very long query. */
 const PAGE = 5_000;
 
@@ -41,48 +53,54 @@ interface HealthRow {
   lastPowerKw: number | null;
   windowSocStart: number | null;
   windowKwh: number | null;
+  windowStartedAt: Date | null;
   orgId: number | null;
-}
-
-/** Read one battery's new samples. SoC and battery power live in values_json
- *  for BESS profiles, which is why this is raw SQL rather than a column read. */
-async function loadSamples(meterId: number, after: Date | null, limit: number): Promise<SocSample[]> {
-  const db = getDb();
-  const rows = await db
-    .execute(
-      after
-        ? sql`select ts,
-                     json_extract(values_json, '$.socPercent') as soc,
-                     json_extract(values_json, '$.batteryPowerKw') as pwr
-              from telemetry where meter_id = ${meterId} and ts > ${after}
-              order by ts asc limit ${limit}`
-        : sql`select ts,
-                     json_extract(values_json, '$.socPercent') as soc,
-                     json_extract(values_json, '$.batteryPowerKw') as pwr
-              from telemetry where meter_id = ${meterId}
-              order by ts asc limit ${limit}`,
-    )
-    .then((r) => (r as unknown as [Array<Record<string, unknown>>])[0]);
-  return rows.map((r) => ({
-    ts: new Date(String(r.ts)),
-    socPercent: r.soc === null || r.soc === undefined ? null : Number(r.soc),
-    batteryPowerKw: r.pwr === null || r.pwr === undefined ? null : Number(r.pwr),
-  }));
 }
 
 /** Advance one battery's health figures. */
 export async function trackBattery(row: HealthRow): Promise<void> {
   const db = getDb();
-  const samples = await loadSamples(row.meterId, row.lastTs, PAGE);
-  if (samples.length === 0) return;
+  const cursorMs = row.lastTs?.getTime() ?? null;
+  const range = sohReadRange(cursorMs, Date.now(), retentionCutoff().getTime(), { maxBuckets: PAGE });
+  if (!range) return;
+  const buckets = await getTelemetryStore().metricSeries(
+    row.meterId,
+    new Date(range.firstBucketMs),
+    // Up to the start of the next bucket; samplesFromBuckets drops that one.
+    new Date(range.lastBucketMs + SOH_BUCKET_MS),
+    SOH_BUCKET_MS / 1000,
+    ["socPercent", "batteryPowerKw"],
+  );
+  const samples = samplesFromBuckets(buckets, range);
+  if (samples.length === 0) {
+    const moveTo = cursorAfterSilence(cursorMs, range);
+    if (moveTo === null) return;
+    // Long enough without data that neither the integral nor an open window
+    // can survive it, so both are dropped along with the last reading.
+    await db
+      .update(batteryHealth)
+      .set({
+        lastTs: new Date(moveTo),
+        lastSocPct: null,
+        lastPowerKw: null,
+        windowSocStart: null,
+        windowKwh: null,
+        windowStartedAt: null,
+      })
+      .where(eq(batteryHealth.meterId, row.meterId));
+    return;
+  }
 
   let prev: SocSample | null =
-    row.lastTs && row.lastSocPct !== null
+    row.lastTs && (row.lastSocPct !== null || row.lastPowerKw !== null)
       ? { ts: row.lastTs, socPercent: row.lastSocPct, batteryPowerKw: row.lastPowerKw }
       : null;
   let window: WindowState | null =
     row.windowSocStart !== null ? { socStart: row.windowSocStart, dischargedKwh: row.windowKwh ?? 0 } : null;
-  let windowStartedAt: Date | null = row.windowSocStart !== null ? (row.lastTs ?? samples[0].ts) : null;
+  // A window opened before window_started_at existed has no stored start; the
+  // previous cursor is the best that row can offer.
+  let windowStartedAt: Date | null =
+    row.windowSocStart !== null ? (row.windowStartedAt ?? row.lastTs ?? samples[0].ts) : null;
 
   let efc = row.efc;
   let discharged = row.throughputDischargedKwh;
@@ -154,6 +172,7 @@ export async function trackBattery(row: HealthRow): Promise<void> {
       lastPowerKw: last.batteryPowerKw,
       windowSocStart: window?.socStart ?? null,
       windowKwh: window?.dischargedKwh ?? null,
+      windowStartedAt: window ? windowStartedAt : null,
     })
     .where(eq(batteryHealth.meterId, row.meterId));
 }
@@ -188,7 +207,12 @@ async function ensureRows(): Promise<void> {
 export async function sohSweep(): Promise<{ tracked: number }> {
   await ensureRows();
   const db = getDb();
-  const rows = await db.select().from(batteryHealth).limit(200);
+  // Furthest-behind first. A bare limit with no order is whatever 200 rows the
+  // database hands back first — on a fleet of more than 200 batteries, the
+  // same 200 every sweep, and the rest never tracked at all. Ordered by
+  // cursor, every battery that is processed moves to the back of the queue,
+  // and a new one (no cursor yet; NULL sorts first) starts on the next sweep.
+  const rows = await db.select().from(batteryHealth).orderBy(asc(batteryHealth.lastTs)).limit(200);
   let tracked = 0;
   for (const r of rows) {
     try {
@@ -205,6 +229,7 @@ export async function sohSweep(): Promise<{ tracked: number }> {
         lastPowerKw: r.lastPowerKw,
         windowSocStart: r.windowSocStart,
         windowKwh: r.windowKwh,
+        windowStartedAt: r.windowStartedAt,
         orgId: r.orgId,
       });
       tracked++;
@@ -221,8 +246,11 @@ export function startSohLoop(): void {
   timer = setInterval(() => {
     // Leased: two replicas walking the same cursor would both advance it and
     // each would book part of the throughput, so the fleet would quietly
-    // under-count how hard its batteries had been worked.
-    withLease("battery-soh", () => sohSweep()).catch((e) =>
+    // under-count how hard its batteries had been worked. The lease outlives
+    // the interval: at the 90 s default it lapsed between five-minute ticks,
+    // so whichever replica ticked next took it, and a sweep that ran past
+    // 90 s could be joined halfway through by another.
+    withLease("battery-soh", () => sohSweep(), 2 * SWEEP_MS).catch((e) =>
       console.warn("[soh] sweep failed:", e instanceof Error ? e.message : e),
     );
   }, SWEEP_MS);

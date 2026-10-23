@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   minProfitableSpread,
+  pickTariff,
   planArbitrage,
   priceAt,
   priceCurve,
@@ -210,6 +211,35 @@ describe("planArbitrage", () => {
     expect(r.wearCost).toBeCloseTo(5, 10);
     expect(r.netMargin).toBeCloseTo(r.grossMargin - r.wearCost, 10);
   });
+
+  it("a cheap hour at the end of the horizon does not wipe out the plan", () => {
+    // 23:00 is the cheapest hour and has nothing after it to sell into. The
+    // first version stopped searching there, so the good 02:00 → 18:00 pair
+    // was never tried and the plan came back empty.
+    const r = planArbitrage([hour(2, 0.1), hour(18, 0.5), hour(23, 0.01)], limits({ maxPowerKw: 80 }));
+    expect(r.reason).toBeNull();
+    expect(r.setpoints.map((s) => new Date(s.ts).getUTCHours())).toEqual([2, 18]);
+    expect(r.netMargin).toBeGreaterThan(0);
+  });
+
+  it("skips a buy whose best sell is too thin and keeps looking", () => {
+    // The cheapest hour (20:00) can only sell into 22:00, a spread that does
+    // not cover the round-trip loss. A pricier hour earlier in the day still
+    // has a good sell, and that pair must be found.
+    const curve = [hour(3, 0.08), hour(18, 0.5), hour(20, 0.02), hour(22, 0.021)];
+    const r = planArbitrage(curve, limits({ maxPowerKw: 80 }));
+    expect(r.reason).toBeNull();
+    expect(r.setpoints.map((s) => new Date(s.ts).getUTCHours())).toEqual([3, 18]);
+  });
+
+  it("discharges what the charge left in the battery, not what was bought", () => {
+    // 30 kW in at 90% round trip gives back 27 kW for the hour. Commanding 30
+    // would run the battery into its SoC floor before the hour is out.
+    const r = planArbitrage([hour(2, 0.05), hour(18, 0.5)], limits({ maxPowerKw: 30 }));
+    expect(r.setpoints.map((s) => s.kw)).toEqual([-30, 27]);
+    // And the margin is counted on the same 27 kWh.
+    expect(r.grossMargin).toBeCloseTo(27 * 0.5 - 30 * 0.05, 10);
+  });
 });
 
 describe("sellPrice", () => {
@@ -223,5 +253,43 @@ describe("sellPrice", () => {
 
   it("handles an unpaid export", () => {
     expect(sellPrice(hour(18, 0.4, null))).toBe(0.4);
+  });
+});
+
+describe("pickTariff", () => {
+  const t = (id: number, siteId: number | null, orgId: number | null) => ({ id, siteId, orgId });
+
+  it("prefers the site's own tariff, then the org default, then a global one", () => {
+    const rows = [t(1, null, null), t(2, null, 7), t(3, 40, 7)];
+    expect(pickTariff(rows, 40, 7)?.id).toBe(3);
+    expect(pickTariff(rows.slice(0, 2), 40, 7)?.id).toBe(2);
+    expect(pickTariff(rows.slice(0, 1), 40, 7)?.id).toBe(1);
+  });
+
+  it("does not depend on the order the rows came back in", () => {
+    // The first version took the first org-or-global row it met, so the org
+    // default and a global one swapped places with the database's row order.
+    const a = [t(1, null, null), t(2, null, 7)];
+    expect(pickTariff(a, 40, 7)?.id).toBe(2);
+    expect(pickTariff([...a].reverse(), 40, 7)?.id).toBe(2);
+  });
+
+  it("takes the most recent of several at the same level", () => {
+    expect(pickTariff([t(5, 40, 7), t(9, 40, 7), t(6, 40, 7)], 40, 7)?.id).toBe(9);
+  });
+
+  it("never applies another site's or another org's tariff", () => {
+    expect(pickTariff([t(1, 41, 7)], 40, 7)).toBeNull();
+    expect(pickTariff([t(1, null, 8)], 40, 7)).toBeNull();
+    expect(pickTariff([t(1, 40, 8)], 40, 7)).toBeNull();
+  });
+
+  it("gives a device with no site or org only the global default", () => {
+    expect(pickTariff([t(1, null, 7), t(2, null, null)], null, null)?.id).toBe(2);
+    expect(pickTariff([t(1, 40, null)], null, null)).toBeNull();
+  });
+
+  it("returns null when nothing applies", () => {
+    expect(pickTariff([], 40, 7)).toBeNull();
   });
 });

@@ -192,26 +192,32 @@ export function planArbitrage(curve: PriceHour[], limits: BatteryLimits): PlanRe
   const used = new Set<number>();
   const charge: PriceHour[] = [];
   const discharge: PriceHour[] = [];
+  const eff = Math.min(1, Math.max(0.01, limits.roundTripEfficiency));
   let gross = 0;
 
-  for (let i = 0; i < maxPairs; i++) {
-    const buy = byPrice.find((h) => !used.has(h.hourStartMs));
-    if (!buy) break;
+  // Every hour is tried as a buy, cheapest first, and an hour that cannot pair
+  // is SKIPPED rather than ending the search. The first version stopped at the
+  // first hour that failed — so a cheap hour at the very end of the horizon,
+  // with nothing after it to sell into, wiped out every profitable pair before
+  // it, and the plan came back empty with a reason that was simply false. A
+  // buy whose best later sell does not clear the spread is skipped for the
+  // same reason: a pricier hour EARLIER in the day can still have a good sell.
+  for (const buy of byPrice) {
+    if (charge.length >= maxPairs) break;
+    if (used.has(buy.hourStartMs)) continue;
     // The sell hour must come after the buy hour: stored energy cannot be
     // discharged before it was stored.
-    const sellCandidates = curve
+    const sell = curve
       .filter((h) => !used.has(h.hourStartMs) && h.hourStartMs > buy.hourStartMs)
-      .sort((a, b) => sellPrice(b) - sellPrice(a));
-    const sell = sellCandidates[0];
-    if (!sell) break;
+      .sort((a, b) => sellPrice(b) - sellPrice(a))[0];
+    if (!sell) continue;
     const spread = sellPrice(sell) - buy.price.importPrice;
-    if (spread <= minProfitableSpread(limits, buy.price.importPrice)) break;
+    if (spread <= minProfitableSpread(limits, buy.price.importPrice)) continue;
     used.add(buy.hourStartMs);
     used.add(sell.hourStartMs);
     charge.push(buy);
     discharge.push(sell);
-    const delivered = perHourKwh * Math.min(1, Math.max(0.01, limits.roundTripEfficiency));
-    gross += delivered * sellPrice(sell) - perHourKwh * buy.price.importPrice;
+    gross += perHourKwh * eff * sellPrice(sell) - perHourKwh * buy.price.importPrice;
   }
 
   if (charge.length === 0) {
@@ -229,9 +235,16 @@ export function planArbitrage(curve: PriceHour[], limits: BatteryLimits): PlanRe
     return empty("plan does not clear its own wear once losses are counted");
   }
 
+  // Discharge at what the charge actually left in the battery, not at what was
+  // bought: round-trip losses mean an hour charged at P kW gives back P × eff.
+  // Commanding the full P would ask for energy that is not there, and the hour
+  // would end early against the SoC guard — the guard is a safety limit, not
+  // something a plan should lean on in normal operation. It also makes the
+  // setpoints match the margin arithmetic above, which already counted P × eff.
+  const dischargeKw = perHourKwh * eff;
   const setpoints: PlanSetpoint[] = [
     ...charge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: -perHourKwh })),
-    ...discharge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: perHourKwh })),
+    ...discharge.map((h) => ({ ts: new Date(h.hourStartMs).toISOString(), kw: dischargeKw })),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
   return { setpoints, grossMargin: gross, wearCost, netMargin: net, reason: null };
@@ -254,4 +267,44 @@ export function sellPrice(h: PriceHour): number {
   return h.price.exportPrice !== null && h.price.exportPrice > h.price.importPrice
     ? h.price.exportPrice
     : h.price.importPrice;
+}
+
+// ─── Which tariff applies ────────────────────────────────────────────────────
+export interface TariffCandidate {
+  id: number;
+  siteId: number | null;
+  orgId: number | null;
+}
+
+/**
+ * The tariff that applies to a battery, from the enabled candidates.
+ *
+ * Most specific first: one bound to the battery's site, then its org's
+ * default (no site), then a global default (no site, no org). Among several
+ * at the same level the most recently created wins — a new contract
+ * supersedes an old one nobody switched off. The first version took whichever
+ * row the database returned first, so with two candidates the price a
+ * battery was planned against could change between sweeps without anyone
+ * touching anything.
+ *
+ * Rows bound to another site or another org never apply, whatever the query
+ * that fetched them let through.
+ */
+export function pickTariff<T extends TariffCandidate>(rows: T[], siteId: number | null, orgId: number | null): T | null {
+  const tier = (r: T): number => {
+    if (r.siteId !== null) return siteId !== null && r.siteId === siteId && (r.orgId === null || r.orgId === orgId) ? 0 : -1;
+    if (r.orgId !== null) return orgId !== null && r.orgId === orgId ? 1 : -1;
+    return 2;
+  };
+  let best: T | null = null;
+  let bestTier = Infinity;
+  for (const r of rows) {
+    const t = tier(r);
+    if (t < 0) continue;
+    if (t < bestTier || (t === bestTier && best !== null && r.id > best.id)) {
+      best = r;
+      bestTier = t;
+    }
+  }
+  return best;
 }

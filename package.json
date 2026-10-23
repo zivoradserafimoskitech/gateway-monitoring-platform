@@ -63,7 +63,7 @@
     "drizzle-orm": "^0.45.1",
     "embla-carousel-react": "^8.6.0",
     "exceljs": "^4.4.0",
-    "hono": "^4.13.7",
+    "hono": "^4.13.13",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.562.0",
     "modbus-serial": "^8.0.25",

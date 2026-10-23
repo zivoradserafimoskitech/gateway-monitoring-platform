@@ -11,12 +11,14 @@ import { sessions, users, auditLog, mfaBackupCodes, oidcProviders, orgMembership
   loginAttempts as loginAttemptsTable,
 } from "@db/schema";
 import {
-  SESSION_COOKIE,
   SESSION_TTL_MS,
+  clearCookieHeader,
+  cookieHeader,
   createSession,
   evictUserCache,
   evictUserCacheForUser,
   hashPassword,
+  isSecureReq,
   pruneExpiredSessions,
   revokeSession,
   tokenHash,
@@ -34,28 +36,10 @@ import {
   totpKeyUri,
   verifyTotp,
 } from "../lib/totp";
-import { assertOrgWrite, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
+import { assertOrgWrite, isSuper, orgWhere, stampOrg, userOrg } from "../lib/org-scope";
 import { parseEgressUrl, BlockedEgressError } from "../lib/egress";
 import { parseDomains } from "../auth/oidc";
 import { invalidateJwksCache } from "../auth/oidc-flow";
-
-// When the app is served embedded (platform preview iframe) over HTTPS, the
-// session cookie is third-party: SameSite=Lax is never sent on fetch, so the
-// user would bounce back to /login. SameSite=None requires Secure; Partitioned
-// (CHIPS) keeps it working under Chrome's third-party-cookie phase-out.
-function isSecureReq(req: Request): boolean {
-  return req.headers.get("x-forwarded-proto") === "https" || req.url.startsWith("https:");
-}
-
-function cookieHeader(token: string, expiresAt: Date, secure: boolean): string {
-  const base = `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; Expires=${expiresAt.toUTCString()}`;
-  return secure ? `${base}; SameSite=None; Secure; Partitioned` : `${base}; SameSite=Lax`;
-}
-
-function clearCookieHeader(secure: boolean): string {
-  const base = `${SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age=0`;
-  return secure ? `${base}; SameSite=None; Secure; Partitioned` : `${base}; SameSite=Lax`;
-}
 
 // ─── Audit P1-4: login rate limiting + lockout ──────────────────────────────
 // In-memory limiter with TWO independent counters per attempt — one keyed by
@@ -743,9 +727,15 @@ export const authRouter = createRouter({
         invalidateJwksCache();
         return { id: input.id };
       }
+      const orgId = stampOrg(ctx.user, null);
+      // A provider with no org can sign in ANY account (mayLinkAccount), so
+      // only a superadmin may create one — the same rule as global channels.
+      if (orgId === null && !isSuper(ctx.user)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only a superadmin may create a global sign-on provider" });
+      }
       const inserted = await db
         .insert(oidcProviders)
-        .values({ ...values, clientSecretEnc: secretEnc ?? null, orgId: stampOrg(ctx.user, null) })
+        .values({ ...values, clientSecretEnc: secretEnc ?? null, orgId })
         .$returningId();
       return { id: inserted[0].id };
     }),

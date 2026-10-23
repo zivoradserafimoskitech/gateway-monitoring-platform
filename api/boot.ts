@@ -197,7 +197,11 @@ app.get("/api/auth/oidc/:providerId/start", async (c) => {
   const id = Number(c.req.param("providerId"));
   if (!Number.isInteger(id)) return c.json({ error: "invalid provider" }, 400);
   try {
-    const redirectUri = new URL("/api/auth/oidc/callback", c.req.url).toString();
+    // From the origin the BROWSER sees, not c.req.url: behind the TLS proxy
+    // the app is spoken to over plain HTTP, and an identity provider compares
+    // redirect_uri exactly against the https:// one registered with it.
+    const { publicOrigin } = await import("./lib/auth");
+    const redirectUri = `${publicOrigin(c.req.raw)}/api/auth/oidc/callback`;
     const url = await startLogin(id, redirectUri, c.req.query("redirectTo") ?? null);
     return c.redirect(url, 302);
   } catch (e) {
@@ -219,11 +223,12 @@ app.get("/api/auth/oidc/callback", async (c) => {
   }
   if (!state || !code) return c.redirect("/?sso=failed", 302);
   try {
-    const redirectUri = new URL("/api/auth/oidc/callback", c.req.url).toString();
+    // The token exchange must send the SAME redirect_uri the authorization
+    // request carried, so it is built by the same function.
+    const { cookieHeader, isSecureReq, publicOrigin } = await import("./lib/auth");
+    const redirectUri = `${publicOrigin(c.req.raw)}/api/auth/oidc/callback`;
     const result = await completeLogin(state, code, redirectUri);
-    const secure = c.req.header("x-forwarded-proto") === "https" || c.req.url.startsWith("https:");
-    const base = `et_session=${encodeURIComponent(result.sessionToken)}; Path=/; HttpOnly; Expires=${result.expiresAt.toUTCString()}`;
-    c.header("set-cookie", secure ? `${base}; SameSite=None; Secure; Partitioned` : `${base}; SameSite=Lax`);
+    c.header("set-cookie", cookieHeader(result.sessionToken, result.expiresAt, isSecureReq(c.req.raw)));
     return c.redirect(safeRedirect(result.redirectTo), 302);
   } catch (e) {
     // Logged in full, shown as a generic failure: the reasons a login was

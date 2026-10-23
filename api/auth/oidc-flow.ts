@@ -3,13 +3,16 @@
 // ./oidc.ts and is unit-tested; this file does the network and the database.
 import { and, eq, gte, lt } from "drizzle-orm";
 import { getDb } from "../queries/connection";
-import { oidcLogins, oidcProviders, users } from "@db/schema";
+import { oidcLogins, oidcProviders, orgMemberships, users } from "@db/schema";
 import { createSession, hashPassword } from "../lib/auth";
 import { decryptSecret } from "../lib/totp";
 import { assertEgressAllowed } from "../lib/egress";
 import {
   buildAuthUrl,
   decideLogin,
+  idTokenKid,
+  jwksCovers,
+  mayLinkAccount,
   OidcError,
   parseDomains,
   pkcePair,
@@ -28,14 +31,17 @@ const LOGIN_TTL_MS = 10 * 60_000;
  *  already waiting on anyway. */
 const jwksCache = new Map<string, { at: number; keys: Jwk[] }>();
 const JWKS_TTL_MS = 5 * 60_000;
+/** A forced refresh still reuses a set this fresh, so a burst of logins
+ *  carrying an unknown kid costs one request rather than one each. */
+const JWKS_FORCE_MIN_AGE_MS = 30_000;
 
 export function invalidateJwksCache(): void {
   jwksCache.clear();
 }
 
-async function fetchJwks(uri: string): Promise<Jwk[]> {
+async function fetchJwks(uri: string, force = false): Promise<Jwk[]> {
   const hit = jwksCache.get(uri);
-  if (hit && Date.now() - hit.at < JWKS_TTL_MS) return hit.keys;
+  if (hit && Date.now() - hit.at < (force ? JWKS_FORCE_MIN_AGE_MS : JWKS_TTL_MS)) return hit.keys;
   // The same SSRF guard as every other outbound target: an IdP URL is
   // configuration, and configuration gets edited.
   await assertEgressAllowed(uri);
@@ -162,7 +168,11 @@ export async function completeLogin(
   const tokens = (await res.json()) as { id_token?: string };
   if (!tokens.id_token) throw new OidcError("the identity provider returned no id_token");
 
-  const jwks = await fetchJwks(provider.jwksUri);
+  let jwks = await fetchJwks(provider.jwksUri);
+  // Key rotation: an IdP publishes its new key and starts signing with it,
+  // and a set cached a minute earlier does not have it yet. Without this one
+  // refresh, every login failed with "no key matches" until the cache expired.
+  if (!jwksCovers(jwks, idTokenKid(tokens.id_token))) jwks = await fetchJwks(provider.jwksUri, true);
   const claims = verifyIdToken(tokens.id_token, {
     issuer: provider.issuer,
     clientId: provider.clientId,
@@ -170,27 +180,60 @@ export async function completeLogin(
     jwks,
   });
 
-  const known = await db.select({ email: users.email, id: users.id, disabled: users.disabled }).from(users);
+  // One row, looked up by email the way password login does it (stored and
+  // compared lower-case) — not a scan of every user in the installation.
+  const email = typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "";
+  const found = email
+    ? await db
+        .select({
+          id: users.id,
+          email: users.email,
+          disabled: users.disabled,
+          isSuperadmin: users.isSuperadmin,
+          orgId: users.orgId,
+        })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1)
+    : [];
+  const existing = found[0];
+  const providerOrgId = provider.orgId ?? null;
+
   const decision = decideLogin(
     claims,
     {
       allowedDomains: parseDomains(provider.allowedDomains),
       autoProvision: provider.autoProvision,
       defaultRole: provider.defaultRole,
+      providerOrgId,
     },
-    new Set(known.map((u) => u.email.toLowerCase())),
+    new Set(existing ? [existing.email.toLowerCase()] : []),
   );
   if (decision.kind === "reject") throw new OidcError(decision.reason);
 
   let userId: number;
   if (decision.kind === "link") {
-    const existing = known.find((u) => u.email.toLowerCase() === decision.email);
     if (!existing) throw new OidcError("account disappeared mid-login");
-    // A disabled account stays disabled: SSO is a way to prove who you are,
-    // not a way around having been switched off.
-    if (existing.disabled !== 0) throw new OidcError("this account is disabled");
+    // The tenant boundary. A provider is whatever its org's admin configured,
+    // so it can mint any verified email it likes — its word is only good for
+    // accounts in its own org, and never for a superadmin. See mayLinkAccount.
+    const memberships = await db
+      .select({ orgId: orgMemberships.orgId })
+      .from(orgMemberships)
+      .where(eq(orgMemberships.userId, existing.id));
+    const gate = mayLinkAccount(providerOrgId, {
+      // Truthy, not === true: the same rule as isSuper, since a raw driver
+      // hands a MySQL boolean back as 1. Erring here would let an org's IdP in.
+      isSuperadmin: Boolean(existing.isSuperadmin),
+      disabled: existing.disabled !== 0,
+      orgIds: [existing.orgId, ...memberships.map((m) => m.orgId)].filter((o): o is number => o !== null),
+    });
+    if (!gate.ok) throw new OidcError(gate.reason);
     userId = existing.id;
   } else {
+    // decideLogin refuses provisioning through a global provider, so the org
+    // is known here; the check is what lets the type say so.
+    if (providerOrgId === null) throw new OidcError("a global provider cannot create accounts");
     const inserted = await db
       .insert(users)
       .values({
@@ -201,10 +244,16 @@ export async function completeLogin(
         // here would create a password-login hole beside the SSO one.
         passwordHash: hashPassword(crypto.randomBytes(32).toString("base64url")),
         role: decision.role,
-        orgId: provider.orgId ?? null,
+        orgId: providerOrgId,
       })
       .$returningId();
     userId = inserted[0].id;
+    // §9.11: an account exists in an org through a membership row. Without it
+    // the account works but the org switcher shows it belonging to nothing.
+    await db
+      .insert(orgMemberships)
+      .values({ userId, orgId: providerOrgId, role: decision.role })
+      .onDuplicateKeyUpdate({ set: { role: decision.role } });
   }
 
   const session = await createSession(userId);
@@ -212,9 +261,6 @@ export async function completeLogin(
     sessionToken: session.token,
     expiresAt: session.expiresAt,
     redirectTo: safeRedirect(login.redirectTo),
-    // No "reject" check here: the throw above narrowed it away, and the
-    // compiler says so. A guard the types already prove is dead code that
-    // reads like a safety net.
     email: decision.email,
   };
 }

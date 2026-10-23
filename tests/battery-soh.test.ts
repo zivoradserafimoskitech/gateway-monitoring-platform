@@ -5,11 +5,15 @@ import { describe, it, expect } from "vitest";
 import {
   blendSoh,
   capacityFromWindow,
+  cursorAfterSilence,
   efcDelta,
+  samplesFromBuckets,
   sohPercent,
+  sohReadRange,
   throughputDelta,
   windowStep,
   MIN_SOC_SPAN_PCT,
+  SOH_BUCKET_MS,
   type SocSample,
 } from "../api/ems/soh";
 
@@ -81,6 +85,20 @@ describe("throughputDelta", () => {
   it("books nothing when either sample has no power reading", () => {
     expect(throughputDelta(at(0, 90, null), at(5, 89, 10)).dischargedKwh).toBe(0);
     expect(throughputDelta(at(0, 90, 10), at(5, 89, null)).dischargedKwh).toBe(0);
+  });
+
+  it("books nothing for a non-finite reading, so the lifetime total stays a number", () => {
+    // One NaN summed into the stored throughput would make the row unwritable
+    // and leave the sweep re-reading the same page forever.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(throughputDelta(at(0, 50, bad), at(6, 49, 10))).toEqual({ dischargedKwh: 0, chargedKwh: 0 });
+      expect(throughputDelta(at(0, 50, 10), at(6, 49, bad))).toEqual({ dischargedKwh: 0, chargedKwh: 0 });
+    }
+  });
+
+  it("books nothing when a timestamp is not a time", () => {
+    const broken: SocSample = { ts: new Date(Number.NaN), socPercent: 50, batteryPowerKw: 10 };
+    expect(throughputDelta(broken, at(6, 49, 10))).toEqual({ dischargedKwh: 0, chargedKwh: 0 });
   });
 
   it("books nothing for a zero or negative interval", () => {
@@ -177,6 +195,24 @@ describe("windowStep", () => {
     expect(s.kind === "close" && s.window.dischargedKwh).toBe(0);
   });
 
+  it("abandons a window with a hole in it even when the battery is resting afterwards", () => {
+    // 40 kWh seen before a two-hour hole, SoC down to 30% by the time data
+    // comes back with the battery at rest. Closing normally would divide the
+    // whole 95 → 30 drop by only the 40 kWh seen, and report a battery that has
+    // lost most of its capacity.
+    const s = windowStep({ socStart: 95, dischargedKwh: 40 }, at(0, 60, 10), at(120, 30, 0));
+    expect(s.kind).toBe("close");
+    expect(s.kind === "close" && s.window.dischargedKwh).toBe(0);
+    expect(s.kind === "close" && capacityFromWindow(s.window)).toBeNull();
+  });
+
+  it("treats a non-finite reading as unknown", () => {
+    expect(windowStep(null, null, at(0, Number.NaN, 10)).kind).toBe("idle");
+    const s = windowStep({ socStart: 95, dischargedKwh: 40 }, at(0, 60, 10), at(5, 55, Number.POSITIVE_INFINITY));
+    expect(s.kind).toBe("close");
+    expect(s.kind === "close" && s.window.dischargedKwh).toBe(0);
+  });
+
   it("abandons a window when SoC goes unknown, instead of inventing an endpoint", () => {
     const s = windowStep({ socStart: 95, dischargedKwh: 40 }, at(0, 60, 10), at(5, null, 10));
     expect(s.kind).toBe("close");
@@ -203,5 +239,98 @@ describe("windowStep", () => {
     expect(closed).not.toBeNull();
     expect(closed!.dischargedKwh).toBeCloseTo(100, 6);
     expect(capacityFromWindow(closed!)).toBeCloseTo(166.67, 1);
+  });
+});
+
+describe("sohReadRange", () => {
+  const MIN = SOH_BUCKET_MS;
+  const NOW = T0.getTime() + 600 * MIN; // 10:00
+  const OLDEST = T0.getTime() - 90 * 86_400_000;
+
+  it("starts a new battery at the retention cutoff", () => {
+    const r = sohReadRange(null, NOW, OLDEST);
+    expect(r?.firstBucketMs).toBe(OLDEST);
+  });
+
+  it("resumes at the bucket after the last one consumed", () => {
+    const r = sohReadRange(T0.getTime() + 500 * MIN, NOW, OLDEST);
+    expect(r?.firstBucketMs).toBe(T0.getTime() + 501 * MIN);
+  });
+
+  it("resumes after a cursor that sits inside a bucket", () => {
+    // A cursor written by an older version holds a raw sample time.
+    const r = sohReadRange(T0.getTime() + 500 * MIN + 27_000, NOW, OLDEST);
+    expect(r?.firstBucketMs).toBe(T0.getTime() + 501 * MIN);
+  });
+
+  it("reads only closed buckets, held back by the grace period", () => {
+    // At 10:00 with two minutes of grace, 09:57 is the last bucket that has
+    // closed (it ended at 09:58).
+    const r = sohReadRange(T0.getTime() + 500 * MIN, NOW, OLDEST, { graceMs: 2 * MIN });
+    expect(r?.lastBucketMs).toBe(T0.getTime() + 597 * MIN);
+  });
+
+  it("returns nothing when no new bucket has closed", () => {
+    expect(sohReadRange(T0.getTime() + 597 * MIN, NOW, OLDEST, { graceMs: 2 * MIN })).toBeNull();
+  });
+
+  it("caps one sweep at a page", () => {
+    const r = sohReadRange(null, NOW, OLDEST, { maxBuckets: 100 });
+    expect(r).toEqual({ firstBucketMs: OLDEST, lastBucketMs: OLDEST + 99 * MIN });
+  });
+
+  it("skips history that retention has already purged", () => {
+    const r = sohReadRange(OLDEST - 30 * 86_400_000, NOW, OLDEST);
+    expect(r?.firstBucketMs).toBe(OLDEST);
+  });
+});
+
+describe("samplesFromBuckets", () => {
+  const range = { firstBucketMs: T0.getTime(), lastBucketMs: T0.getTime() + 2 * SOH_BUCKET_MS };
+  const bucket = (min: number, values: Record<string, number | null>) => ({
+    bucketStartSec: (T0.getTime() + min * 60_000) / 1000,
+    values,
+  });
+
+  it("keeps the range and drops the bucket after it", () => {
+    // The store is asked up to the start of the next bucket; whatever lands in
+    // it is left for the next sweep rather than read half-full now.
+    const out = samplesFromBuckets(
+      [bucket(0, { socPercent: 90, batteryPowerKw: 5 }), bucket(2, { socPercent: 88, batteryPowerKw: 5 }), bucket(3, { socPercent: 87, batteryPowerKw: 5 })],
+      range,
+    );
+    expect(out.map((s) => s.ts.getTime())).toEqual([T0.getTime(), T0.getTime() + 2 * 60_000]);
+  });
+
+  it("orders by time", () => {
+    const out = samplesFromBuckets([bucket(2, { socPercent: 88, batteryPowerKw: 5 }), bucket(0, { socPercent: 90, batteryPowerKw: 5 })], range);
+    expect(out.map((s) => s.socPercent)).toEqual([90, 88]);
+  });
+
+  it("turns missing and non-finite readings into null", () => {
+    const out = samplesFromBuckets([bucket(0, { socPercent: Number.NaN }), bucket(1, { batteryPowerKw: null })], range);
+    expect(out).toEqual([
+      { ts: new Date(T0.getTime()), socPercent: null, batteryPowerKw: null },
+      { ts: new Date(T0.getTime() + 60_000), socPercent: null, batteryPowerKw: null },
+    ]);
+  });
+});
+
+describe("cursorAfterSilence", () => {
+  const MIN = 60_000;
+  const range = (lastMin: number) => ({ firstBucketMs: T0.getTime() + MIN, lastBucketMs: T0.getTime() + lastMin * MIN });
+
+  it("stays put through a short silence, so the next sample still joins up", () => {
+    expect(cursorAfterSilence(T0.getTime(), range(5))).toBeNull();
+  });
+
+  it("moves past a silence too long for anything to survive", () => {
+    // Without this, a battery offline for longer than a page would re-read
+    // the same empty page every sweep and never get past the hole.
+    expect(cursorAfterSilence(T0.getTime(), range(30))).toBe(T0.getTime() + 30 * MIN);
+  });
+
+  it("moves a new battery's cursor through empty history", () => {
+    expect(cursorAfterSilence(null, range(5))).toBe(T0.getTime() + 5 * MIN);
   });
 });

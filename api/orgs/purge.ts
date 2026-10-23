@@ -15,37 +15,57 @@
 // And it is ordered and counted. Children go before parents so nothing is
 // orphaned, and every table reports how many rows it removed — "we deleted
 // your data" is a claim somebody may later have to substantiate.
-import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, or } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import {
+  alarmBreachState,
   alarmNotifications,
   alarmRules,
   alarmSuppressions,
   alarms,
   apiKeys,
+  batteryCapacityEstimates,
+  batteryEconomics,
+  batteryHealth,
   commands,
+  commissioningSignoffs,
   curtailmentAssets,
   dataExports,
   deviceRegistrations,
+  emsPeakShaving,
   emsPlans,
   emsSchedules,
+  firmwareReleases,
   gateways,
   gridLimits,
   maintenanceWindows,
   meters,
+  mfaBackupCodes,
+  mfaPendingChallenges,
   notificationChannels,
+  oidcLogins,
+  oidcProviders,
   onCallShifts,
   orgInvites,
   orgMemberships,
   orgs,
   otaJobs,
+  otaRolloutTargets,
+  otaRollouts,
   reportSchedules,
+  sessions,
   sites,
+  tariffPeriods,
+  tariffPrices,
+  tariffs,
   users,
   webhookDeliveries,
   webhookSubscriptions,
 } from "@db/schema";
+import { evictUserCacheForUser } from "../lib/auth";
 import { withLease } from "../lib/leader";
+import { getTelemetryStore } from "../telemetry";
+import { planUserRemoval } from "./purge-users";
 
 const SWEEP_MS = 60_000;
 
@@ -81,26 +101,89 @@ export async function purgeOrg(orgId: number): Promise<PurgeCounts> {
 
   const meterRows = await db.select({ id: meters.id }).from(meters).where(eq(meters.orgId, orgId));
   const meterIds = meterRows.map((m) => m.id);
-  const gatewayRows = await db.select({ id: gateways.id }).from(gateways).where(eq(gateways.orgId, orgId));
+  const gatewayRows = await db.select({ id: gateways.id, uid: gateways.uid }).from(gateways).where(eq(gateways.orgId, orgId));
   const gatewayIds = gatewayRows.map((g) => g.id);
 
   if (meterIds.length > 0) {
     // Raw telemetry and its rollups: the largest thing here by a wide margin,
     // and the reason this runs in a background sweep rather than in a request.
-    const ids = sql.join(meterIds.map((id) => sql`${id}`), sql`, `);
-    counts.telemetry = affected(await db.execute(sql`delete from telemetry where meter_id in (${ids})`));
-    counts.telemetryHourly = affected(
-      await db.execute(sql`delete from telemetry_hourly where meter_id in (${ids})`),
-    );
+    // Through the store, never the MySQL table by name: a production install
+    // keeps telemetry in TimescaleDB, and the first version of this deleted
+    // from a table that was empty there — every purge reported success and
+    // left the tenant's entire measurement history in place.
+    const removed = await getTelemetryStore().deleteMeterData(meterIds);
+    counts.telemetry = removed.raw;
+    counts.telemetryRollups = removed.rollups;
     counts.alarms = affected(await db.delete(alarms).where(inArray(alarms.meterId, meterIds)));
     counts.commands = affected(await db.delete(commands).where(inArray(commands.meterId, meterIds)));
     await db.delete(emsSchedules).where(inArray(emsSchedules.meterId, meterIds));
     await db.delete(emsPlans).where(inArray(emsPlans.meterId, meterIds));
     await db.delete(curtailmentAssets).where(inArray(curtailmentAssets.meterId, meterIds));
+    await db.delete(alarmBreachState).where(inArray(alarmBreachState.meterId, meterIds));
+    // §9.3/§9.5: battery health, the measurements behind it, and economics.
+    // By device rather than by org, like everything else keyed by device.
+    counts.batteryCapacityEstimates = affected(
+      await db.delete(batteryCapacityEstimates).where(inArray(batteryCapacityEstimates.meterId, meterIds)),
+    );
+    counts.batteryHealth = affected(await db.delete(batteryHealth).where(inArray(batteryHealth.meterId, meterIds)));
+    counts.batteryEconomics = affected(
+      await db.delete(batteryEconomics).where(inArray(batteryEconomics.meterId, meterIds)),
+    );
   }
   if (gatewayIds.length > 0) {
     await db.delete(otaJobs).where(inArray(otaJobs.gatewayId, gatewayIds));
+    await db.delete(otaRolloutTargets).where(inArray(otaRolloutTargets.gatewayId, gatewayIds));
   }
+
+  // Children of org-owned parents, found through the parent.
+  const tariffIds = (await db.select({ id: tariffs.id }).from(tariffs).where(eq(tariffs.orgId, orgId))).map((t) => t.id);
+  if (tariffIds.length > 0) {
+    counts.tariffPrices = affected(await db.delete(tariffPrices).where(inArray(tariffPrices.tariffId, tariffIds)));
+    await db.delete(tariffPeriods).where(inArray(tariffPeriods.tariffId, tariffIds));
+  }
+  const rolloutIds = (await db.select({ id: otaRollouts.id }).from(otaRollouts).where(eq(otaRollouts.orgId, orgId))).map(
+    (r) => r.id,
+  );
+  if (rolloutIds.length > 0) {
+    await db.delete(otaRolloutTargets).where(inArray(otaRolloutTargets.rolloutId, rolloutIds));
+  }
+  const providerIds = (
+    await db.select({ id: oidcProviders.id }).from(oidcProviders).where(eq(oidcProviders.orgId, orgId))
+  ).map((p) => p.id);
+  if (providerIds.length > 0) {
+    await db.delete(oidcLogins).where(inArray(oidcLogins.providerId, providerIds));
+  }
+
+  // Accounts, decided before the memberships they are decided FROM go away.
+  const memberIds = (
+    await db.select({ userId: orgMemberships.userId }).from(orgMemberships).where(eq(orgMemberships.orgId, orgId))
+  ).map((m) => m.userId);
+  const affectedUsers = await db
+    .select({ id: users.id, orgId: users.orgId, role: users.role, isSuperadmin: users.isSuperadmin })
+    .from(users)
+    .where(memberIds.length > 0 ? or(eq(users.orgId, orgId), inArray(users.id, memberIds)) : eq(users.orgId, orgId));
+  const affectedIds = affectedUsers.map((u) => u.id);
+  const theirMemberships = affectedIds.length
+    ? await db
+        .select({ userId: orgMemberships.userId, orgId: orgMemberships.orgId, role: orgMemberships.role })
+        .from(orgMemberships)
+        .where(inArray(orgMemberships.userId, affectedIds))
+    : [];
+  const disposition = planUserRemoval(
+    orgId,
+    // Truthy, the same rule as isSuper: a raw driver hands a boolean back as 1.
+    affectedUsers.map((u) => ({ ...u, isSuperadmin: Boolean(u.isSuperadmin) })),
+    theirMemberships,
+  );
+  for (const m of disposition.move) {
+    await db.update(users).set({ orgId: m.orgId, role: m.role }).where(eq(users.id, m.userId));
+  }
+  if (disposition.detach.length > 0) {
+    await db.update(users).set({ orgId: null }).where(inArray(users.id, disposition.detach));
+  }
+  for (const id of [...disposition.move.map((m) => m.userId), ...disposition.detach]) evictUserCacheForUser(id);
+  counts.usersMoved = disposition.move.length;
+  counts.usersDetached = disposition.detach.length;
 
   // Everything that carries the org directly.
   const byOrg: Array<[string, () => Promise<unknown>]> = [
@@ -117,6 +200,15 @@ export async function purgeOrg(orgId: number): Promise<PurgeCounts> {
     ["deviceRegistrations", () => db.delete(deviceRegistrations).where(eq(deviceRegistrations.orgId, orgId))],
     ["otaJobs", () => db.delete(otaJobs).where(eq(otaJobs.orgId, orgId))],
     ["apiKeys", () => db.delete(apiKeys).where(eq(apiKeys.orgId, orgId))],
+    ["emsPeakShaving", () => db.delete(emsPeakShaving).where(eq(emsPeakShaving.orgId, orgId))],
+    ["commissioningSignoffs", () => db.delete(commissioningSignoffs).where(eq(commissioningSignoffs.orgId, orgId))],
+    ["tariffs", () => db.delete(tariffs).where(eq(tariffs.orgId, orgId))],
+    ["otaRollouts", () => db.delete(otaRollouts).where(eq(otaRollouts.orgId, orgId))],
+    ["firmwareReleases", () => db.delete(firmwareReleases).where(eq(firmwareReleases.orgId, orgId))],
+    // The org's own sign-on provider. Left behind, it would still sign people
+    // in — mayLinkAccount checks the provider's org, and that org would be
+    // gone — and its client secret would outlive the tenant it belonged to.
+    ["oidcProviders", () => db.delete(oidcProviders).where(eq(oidcProviders.orgId, orgId))],
     // §9.11: memberships and outstanding invites. An invite that outlived its
     // org is a link that creates an account in a tenant that no longer exists.
     ["orgInvites", () => db.delete(orgInvites).where(eq(orgInvites.orgId, orgId))],
@@ -124,12 +216,31 @@ export async function purgeOrg(orgId: number): Promise<PurgeCounts> {
     ["meters", () => db.delete(meters).where(eq(meters.orgId, orgId))],
     ["gateways", () => db.delete(gateways).where(eq(gateways.orgId, orgId))],
     ["sites", () => db.delete(sites).where(eq(sites.orgId, orgId))],
-    ["users", () => db.delete(users).where(eq(users.orgId, orgId))],
   ];
   for (const [name, run] of byOrg) {
     const res = await run();
     counts[name] = affected(res);
   }
+
+  // The ingestion path caches gateway and device rows for minutes. Without
+  // this, a deleted tenant's gateway that is still publishing keeps writing
+  // telemetry under the ids just deleted, on this replica, until it expires.
+  const { evictGatewayCache } = await import("../mqtt/service");
+  const { clearMeterCache } = await import("../mqtt/handlers");
+  for (const g of gatewayRows) evictGatewayCache(g.uid);
+  clearMeterCache();
+
+  // Only the accounts that belong nowhere else, and their credentials with
+  // them. The audit log is kept on purpose: it is the platform's record, this
+  // deletion included, not the tenant's data.
+  const removeIds = disposition.remove;
+  if (removeIds.length > 0) {
+    await db.delete(sessions).where(inArray(sessions.userId, removeIds));
+    await db.delete(mfaBackupCodes).where(inArray(mfaBackupCodes.userId, removeIds));
+    await db.delete(mfaPendingChallenges).where(inArray(mfaPendingChallenges.userId, removeIds));
+    await db.delete(orgMemberships).where(inArray(orgMemberships.userId, removeIds));
+  }
+  counts.users = removeIds.length > 0 ? affected(await db.delete(users).where(inArray(users.id, removeIds))) : 0;
 
   // The export archives last, and their files with them: an export of a
   // deleted tenant is exactly the copy nobody meant to keep.

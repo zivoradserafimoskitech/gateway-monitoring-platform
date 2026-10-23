@@ -89,6 +89,15 @@ d("TimescaleDB continuous aggregates", () => {
     await applyFile(pool, "db/timescale/001_init.sql");
     await applyFile(pool, "db/timescale/002_hourly_energy_rollup.sql");
     await applyFile(pool, "db/timescale/003_hourly_chart_columns.sql");
+    // The fixture day is far in the past on purpose, which is exactly what the
+    // retention and compression policies act on — and they are background
+    // jobs that start within moments of being created: a CI log showed the
+    // compression policy at work on these chunks while the suite was still
+    // reading them, and retention would drop the fixture outright. What is
+    // under test is the SQL and the aggregate math, not the job scheduler, so
+    // the two policies are removed once the files have been applied.
+    await pool.query("select remove_retention_policy('telemetry', if_exists => true)");
+    await pool.query("select remove_compression_policy('telemetry', if_exists => true)");
 
     for (const s of fixture()) {
       await pool.query(
@@ -250,5 +259,105 @@ d("TimescaleDB continuous aggregates", () => {
     const total = quarter.reduce((a, b) => a + (b.importKwh ?? 0), 0);
     const hourlyTotal = hourly.reduce((a, b) => a + (b.importKwh ?? 0), 0);
     expect(total).toBeCloseTo(hourlyTotal, 2);
+  });
+});
+
+// §9.14: a tenant's telemetry has to be deletable and exportable where
+// production actually keeps it. The first version of both talked to the MySQL
+// telemetry table, which is empty under TELEMETRY_STORE=timescale — a purge
+// reported success and deleted nothing, and an export carried no telemetry.
+d("TimescaleDB store: deleting and exporting a tenant's telemetry", () => {
+  const GONE = 5151;
+  const KEPT = 5252;
+  const COMPRESSED = 5353;
+  // Recent, so neither the retention nor the compression policy can touch the
+  // fixture while the suite runs; compression is applied explicitly below.
+  const T = Math.floor(Date.now() / H) * H - 48 * H;
+  let pool: Pool;
+  let store: TimescaleTelemetryStore;
+
+  const count = async (from: string, meter: number) =>
+    (await pool.query(`select count(*)::int as n from ${from} where meter_id = $1`, [meter])).rows[0].n as number;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: URL });
+    for (const meter of [GONE, KEPT, COMPRESSED]) {
+      for (let i = 0; i < 8; i++) {
+        await pool.query(
+          `insert into telemetry (ts, meter_id, active_power_kw, energy_import_kwh, values_json)
+           values ($1, $2, $3, $4, $5)`,
+          [new Date(T + i * 15 * 60_000), meter, 1 + i, i * 0.25, JSON.stringify({ socPercent: 50 + i })],
+        );
+      }
+    }
+    // The same sample twice, as at-least-once ingestion can store it. An
+    // export paged by (ts, meter) would lose one of them at a page boundary.
+    await pool.query("insert into telemetry (ts, meter_id, active_power_kw) values ($1, $2, 1)", [new Date(T), GONE]);
+    await pool.query("call refresh_continuous_aggregate('telemetry_hourly', null, null)");
+    await pool.query("call refresh_continuous_aggregate('telemetry_daily', null, null)");
+    store = new TimescaleTelemetryStore(URL!);
+  }, 120_000);
+
+  afterAll(async () => {
+    await store?.close();
+    await pool?.end();
+  });
+
+  it("exports every raw row in time order, duplicates included, a page at a time", async () => {
+    const pages: Record<string, unknown>[][] = [];
+    for await (const page of store.exportRaw([GONE], new Date(T), new Date(T + 2 * H), 3)) pages.push(page);
+    expect(pages.map((p) => p.length)).toEqual([3, 3, 3]);
+    const rows = pages.flat();
+    expect(rows.every((r) => Number(r.meter_id) === GONE)).toBe(true);
+    const times = rows.map((r) => new Date(r.ts as string | Date).getTime());
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    // Every stored column comes through, the open values map included.
+    expect(rows.some((r) => (r.values_json as { socPercent?: number } | null)?.socPercent === 57)).toBe(true);
+  });
+
+  it("gives its connection back when the caller stops reading early", async () => {
+    // The pool holds ten clients. One left behind per abandoned export — or
+    // handed back inside its open transaction — would stall this loop.
+    for (let i = 0; i < 12; i++) {
+      for await (const page of store.exportRaw([KEPT], new Date(T), new Date(T + 2 * H), 2)) {
+        expect(page).toHaveLength(2);
+        break;
+      }
+    }
+    const { rows } = await pool.query("select 1 as ok");
+    expect(rows[0].ok).toBe(1);
+  });
+
+  it("deletes the raw rows and every rollup built from them, for those devices only", async () => {
+    expect(await count("telemetry_hourly", GONE)).toBeGreaterThan(0);
+    expect(await count("telemetry_daily", GONE)).toBeGreaterThan(0);
+    const keptHourly = await count("telemetry_hourly", KEPT);
+    const keptDaily = await count("telemetry_daily", KEPT);
+
+    const removed = await store.deleteMeterData([GONE]);
+    expect(removed.raw).toBe(9);
+    expect(removed.rollups).toBeGreaterThan(0);
+
+    expect(await count("telemetry", GONE)).toBe(0);
+    expect(await count("telemetry_hourly", GONE)).toBe(0);
+    expect(await count("telemetry_daily", GONE)).toBe(0);
+    // Somebody else's history is untouched.
+    expect(await count("telemetry", KEPT)).toBe(8);
+    expect(await count("telemetry_hourly", KEPT)).toBe(keptHourly);
+    expect(await count("telemetry_daily", KEPT)).toBe(keptDaily);
+  });
+
+  it("deletes from compressed chunks as well", async () => {
+    // Production compresses everything older than a week, which is most of
+    // any tenant's history.
+    await pool.query("select compress_chunk(c, true) from show_chunks('telemetry') c");
+    const { rows } = await pool.query(
+      "select count(*)::int as n from timescaledb_information.chunks where hypertable_name = 'telemetry' and is_compressed",
+    );
+    expect(rows[0].n).toBeGreaterThan(0);
+    const removed = await store.deleteMeterData([COMPRESSED]);
+    expect(removed.raw).toBe(8);
+    expect(await count("telemetry", COMPRESSED)).toBe(0);
+    expect(await count("telemetry", KEPT)).toBe(8);
   });
 });
