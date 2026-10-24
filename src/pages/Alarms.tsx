@@ -188,8 +188,10 @@ function RulesTable() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [metric, setMetric] = useState<string>("voltageL1");
-  const [operator, setOperator] = useState<"gt" | "lt" | "stuck">("gt");
+  const [operator, setOperator] = useState<"gt" | "lt" | "stuck" | "roc" | "composite">("gt");
   const [threshold, setThreshold] = useState("253");
+  const [deadband, setDeadband] = useState("");
+  const [conditions, setConditions] = useState('{"op":"and","terms":[{"metric":"socPercent","operator":"lt","threshold":10},{"metric":"activePowerKw","operator":"gt","threshold":50}]}');
   const [severity, setSeverity] = useState<"info" | "warning" | "critical">("warning");
   const [meterId, setMeterId] = useState<string>("all");
   const metricOptions = useMetricOptions(meterId, meters.data);
@@ -297,7 +299,7 @@ function RulesTable() {
                 </div>
                 <div className="space-y-2">
                   <Label>{t.alarms.operator}</Label>
-                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt" | "stuck")}>
+                  <Select value={operator} onValueChange={(v) => setOperator(v as "gt" | "lt" | "stuck" | "roc" | "composite")}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -305,6 +307,8 @@ function RulesTable() {
                       <SelectItem value="gt">&gt; {t.alarms.gt}</SelectItem>
                       <SelectItem value="lt">&lt; {t.alarms.lt}</SelectItem>
                       <SelectItem value="stuck">{t.alarms.stuck}</SelectItem>
+                      <SelectItem value="roc">{t.alarms.roc}</SelectItem>
+                      <SelectItem value="composite">{t.alarms.composite}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -315,6 +319,12 @@ function RulesTable() {
                   <Input type="number" value={threshold} onChange={(e) => setThreshold(e.target.value)} />
                   {operator === "stuck" ? (
                     <p className="text-xs text-muted-foreground">{t.alarms.stuckHint}</p>
+                  ) : null}
+                  {operator !== "stuck" ? (
+                    <>
+                      <Label>{t.alarms.deadband}</Label>
+                      <Input type="number" min={0} value={deadband} onChange={(e) => setDeadband(e.target.value)} />
+                    </>
                   ) : null}
                 </div>
                 <div className="space-y-2">
@@ -331,6 +341,17 @@ function RulesTable() {
                   </Select>
                 </div>
               </div>
+              {operator === "composite" ? (
+                <div className="space-y-2">
+                  <Label>{t.alarms.conditions}</Label>
+                  <textarea
+                    className="min-h-20 w-full rounded-md border bg-background p-2 font-mono text-xs"
+                    value={conditions}
+                    onChange={(e) => setConditions(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">{t.alarms.conditionsHint}</p>
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label>{t.alarms.appliesTo}</Label>
                 <Select value={meterId} onValueChange={setMeterId}>
@@ -359,9 +380,11 @@ function RulesTable() {
                     name: name.trim(),
                     metric,
                     operator,
-                    threshold: Number(threshold),
+                    threshold: operator === "composite" ? 0 : Number(threshold),
                     severity,
                     meterId: meterId === "all" ? null : Number(meterId),
+                    deadband: deadband === "" ? null : Number(deadband),
+                    conditions: operator === "composite" ? safeJson(conditions) : undefined,
                   })
                 }
               >
@@ -373,4 +396,12 @@ function RulesTable() {
       </CardContent>
     </Card>
   );
+}
+
+function safeJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }

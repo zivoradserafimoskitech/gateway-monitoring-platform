@@ -202,9 +202,16 @@ export const alarmRules = mysqlTable(
     // quality: the value has not CHANGED for `threshold` seconds, which is the
     // failure the other two are blind to — a frozen register stays inside its
     // limits forever while the device reports as perfectly healthy.
-    operator: mysqlEnum("operator", ["gt", "lt", "stuck"]).notNull(),
-    // For gt/lt a value in the metric's own unit; for "stuck", seconds.
+    // "roc" = rate of change (|Δ| per minute > threshold); "composite" =
+    // AND/OR of gt/lt terms in `conditions` (api/alarms/conditions.ts).
+    operator: mysqlEnum("operator", ["gt", "lt", "stuck", "roc", "composite"]).notNull(),
+    // For gt/lt a value in the metric's own unit; for "stuck", seconds; for
+    // "roc", units per minute; ignored for "composite".
     threshold: double("threshold").notNull(),
+    // Hysteresis: once raised, clears only when back past threshold ∓ deadband.
+    deadband: double("deadband"),
+    // composite: { op: "and"|"or", terms: [{ metric, operator, threshold }] }
+    conditions: json("conditions"),
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).notNull().default("warning"),
     // null meterId => applies to all meters
     meterId: bigint("meter_id", { mode: "number", unsigned: true }),
@@ -720,7 +727,9 @@ export const notificationChannels = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     // webhook = POST JSON to target URL (also serves the public-API webhook
     // integration, v7 C11); telegram = bot "token:chatId"; email = SMTP env
-    type: mysqlEnum("type", ["webhook", "telegram", "email"]).notNull(),
+    // sms = E.164 number (provider from env), webpush = PushSubscription
+    // JSON, teams = Teams incoming-webhook / Workflows URL.
+    type: mysqlEnum("type", ["webhook", "telegram", "email", "sms", "webpush", "teams"]).notNull(),
     target: varchar("target", { length: 1000 }).notNull(),
     // escalation=true channels only receive re-notifications of unacknowledged
     // alarms; escalation=false receive the initial breach notification.

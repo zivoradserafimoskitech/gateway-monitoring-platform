@@ -11,6 +11,15 @@ import { parseResponse, decodeRegisters, registerSpan, buildBlocks } from "../mo
 import { shiftedAddress } from "@contracts/modbus";
 import { isInMaintenance, notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
 import { alarmTransition } from "../alarms/hysteresis";
+import {
+  compositeBreached,
+  describeComposite,
+  ratePerMinute,
+  rocBreached,
+  thresholdBreached,
+  validateComposite,
+  type RocSample,
+} from "../alarms/conditions";
 import { confirmStuck, stuckStep, type StuckRecord } from "../alarms/stuck";
 import { telemetryValueRejected, telemetryValueDecoded, c30FrameUndecodable } from "../lib/observability";
 import { matchOutstanding, stampResponded, confirmVerifiedWrite } from "./c30-outstanding";
@@ -342,6 +351,9 @@ export function invalidateBreachCache(): void {
 // survive a restart: the in-memory run dies with the process, the telemetry
 // rows do not.
 const stuckRuns = new Map<string, StuckRecord>();
+// Rate-of-change rules: previous sample per (rule, meter). In-memory on
+// purpose — after a restart the first sample has no rate and keeps state.
+const rocPrev = new Map<string, RocSample>();
 
 /** Drop cached stuck runs (rule edits, tests). */
 export function invalidateStuckRuns(): void {
@@ -398,18 +410,40 @@ async function evaluateAlarmRules(
     // created it and must not evaluate against another tenant's meters. A
     // NULL-org rule is a global/system rule and applies everywhere.
     if (rule.orgId != null && rule.orgId !== (meter.orgId ?? null)) continue;
-    const value = values[rule.metric];
+    const composite = rule.operator === "composite" ? validateComposite(rule.conditions) : null;
+    if (typeof composite === "string") continue; // malformed conditions: never guess
+    const value = composite
+      ? composite.terms.map((t) => values[t.metric]).find((v) => v !== undefined && v !== null)
+      : values[rule.metric];
     if (value === undefined || value === null) continue;
 
     const now = Date.now();
-    const breached =
-      rule.operator === "stuck"
-        ? await isStuck(rule.id, meter.id, rule.metric, value, rule.threshold, now)
-        : rule.operator === "gt"
-          ? value > rule.threshold
-          : value < rule.threshold;
+    let breached: boolean;
+    let rec: BreachRecord;
+    if (rule.operator === "stuck") {
+      breached = await isStuck(rule.id, meter.id, rule.metric, value, rule.threshold, now);
+      rec = await loadBreachState(rule.id, meter.id, breached);
+    } else {
+      // Deadband / roc / composite need the PREVIOUS state to decide.
+      const rocKey = `${rule.id}:${meter.id}`;
+      const rate = rule.operator === "roc" ? ratePerMinute(rocPrev.get(rocKey), value, now) : null;
+      if (rule.operator === "roc") rocPrev.set(rocKey, { value, at: now });
+      const first =
+        composite ? compositeBreached(composite, values, false, 0) ?? false
+        : rule.operator === "roc" ? rocBreached(rate, rule.threshold, false, 0)
+        : thresholdBreached(rule.operator as "gt" | "lt", value, rule.threshold, false, 0);
+      rec = await loadBreachState(rule.id, meter.id, first);
+      if (composite) {
+        const c = compositeBreached(composite, values, rec.breached, rule.deadband);
+        if (c === null) continue; // undecidable on this sample: keep state
+        breached = c;
+      } else if (rule.operator === "roc") {
+        breached = rocBreached(rate, rule.threshold, rec.breached, rule.deadband);
+      } else {
+        breached = thresholdBreached(rule.operator as "gt" | "lt", value, rule.threshold, rec.breached, rule.deadband);
+      }
+    }
     const durationMs = (rule.durationSec ?? 0) * 1000;
-    const rec = await loadBreachState(rule.id, meter.id, breached);
     const decision = alarmTransition(rec, breached, now, durationMs);
 
     if (decision.action === "none") {
@@ -444,8 +478,11 @@ async function evaluateAlarmRules(
             value,
             threshold: rule.threshold,
             severity: rule.severity,
-            message:
-              rule.operator === "stuck"
+            message: composite
+              ? `${rule.name}: ${describeComposite(composite)}` + (durationMs > 0 ? ` for ${Math.round(durationMs / 60_000)} min` : "")
+              : rule.operator === "roc"
+                ? `${rule.name}: ${rule.metric} changing faster than ${rule.threshold}/min (now ${value})`
+                : rule.operator === "stuck"
                 ? `${rule.name}: ${rule.metric} has not changed from ${value} for ` +
                   `${Math.round(rule.threshold / 60)} min`
                 : `${rule.name}: ${rule.metric} = ${value} ` +

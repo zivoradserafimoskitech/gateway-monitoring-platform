@@ -2,6 +2,7 @@
 // escalation for unacknowledged alarms, maintenance-window suppression.
 // §9.8 adds targeted suppression (rule / device / site, with a reason) and an
 // on-call rota; the decisions themselves are pure and live in contracts/oncall.
+import { E164, isTeamsWebhookUrl, parsePushSubscription, sendWebPush, smsProviderFromEnv, smsText, teamsCard } from "./channels";
 import { and, eq, inArray, isNull, lte, gte, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import {
@@ -77,6 +78,23 @@ async function dispatch(
     // address afterwards.
     await assertEgressAllowed(channel.target);
     await postJson(channel.target, payload);
+    return;
+  }
+  if (channel.type === "sms") {
+    if (!E164.test(channel.target)) throw new Error("sms target must be an E.164 number, e.g. +38970123456");
+    await smsProviderFromEnv().send(channel.target, smsText(payload));
+    return;
+  }
+  if (channel.type === "teams") {
+    if (!isTeamsWebhookUrl(channel.target)) throw new Error("teams target must be a Teams incoming-webhook or Workflows URL");
+    await assertEgressAllowed(channel.target);
+    await postJson(channel.target, teamsCard(payload));
+    return;
+  }
+  if (channel.type === "webpush") {
+    const sub = parsePushSubscription(channel.target);
+    if (!sub) throw new Error("webpush target must be a PushSubscription JSON with an https endpoint");
+    await sendWebPush(sub);
     return;
   }
   if (channel.type === "telegram") {
