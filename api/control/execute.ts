@@ -33,10 +33,21 @@ import { crc16, buildReadRequest } from "../modbus";
 import { registerOutstanding, attachVerifyCommand } from "../mqtt/c30-outstanding";
 import type { Meter } from "@db/schema";
 import { emit } from "../webhooks/dispatch";
+import {
+  buildWriteMultipleRequest,
+  encodeRegisters,
+  EncodeError,
+  REGISTER_COUNT,
+  wordsEqual,
+  type RegisterType,
+  type WordOrder,
+} from "./registers";
 
 export interface ControllableDef {
   address: number;
-  fc?: 6 | 16; // only 6 supported for now (single register); 16 reserved
+  fc?: 6 | 16; // 6 = single register; 16 = write multiple (32-bit / float setpoints)
+  type?: RegisterType; // default uint16; 32-bit types need fc 16
+  wordOrder?: WordOrder; // 32-bit word order, default "big" (high word first)
   min: number;
   max: number;
   scale?: number; // register value = round(setpoint × scale), e.g. 10 → 0.1 units
@@ -91,6 +102,40 @@ function buildWriteRequest(slave: number, address: number, value: number): Buffe
   body.copy(frame, 0);
   frame.writeUInt16LE(crc, 6);
   return frame;
+}
+
+export interface WritePlan {
+  fc: 6 | 16;
+  raw: number;
+  words: number[];
+}
+
+/**
+ * Scale + encode a validated setpoint into the register words to write.
+ * Integer types are rounded after scaling; float32 is written as-is. A value
+ * that does not fit its type is refused (never wrapped). FC6 is only legal
+ * for a single register; anything wider is written with FC16.
+ */
+export function planWrite(def: ControllableDef, value: number): WritePlan {
+  const type: RegisterType = def.type ?? "uint16";
+  const scaled = value * (def.scale ?? 1);
+  const raw = type === "float32" ? scaled : Math.round(scaled);
+  let words: number[];
+  try {
+    words = encodeRegisters(raw, type, def.wordOrder ?? "big");
+  } catch (e) {
+    if (e instanceof EncodeError) {
+      throw new ControlError(
+        type === "uint16" ? `scaled value ${raw} does not fit a 16-bit register` : `scaled value ${raw}: ${e.message}`,
+      );
+    }
+    throw e;
+  }
+  if (def.fc === 6 && REGISTER_COUNT[type] > 1) {
+    throw new ControlError(`${type} needs ${REGISTER_COUNT[type]} registers — set fc: 16 in the profile`);
+  }
+  const fc: 6 | 16 = def.fc === 16 || words.length > 1 ? 16 : 6;
+  return { fc, raw, words };
 }
 
 /** The statuses the commands audit table can hold — what actually reached plant. */
@@ -197,12 +242,8 @@ export async function executeControl(
   if (!Number.isFinite(value) || value < def.min || value > def.max) {
     throw new ControlError(`value ${value} out of range for '${key}' [${def.min}..${def.max}]`);
   }
-  if (def.fc && def.fc !== 6) throw new ControlError(`fc${def.fc} writes not supported yet (FC6 only)`);
-  const scale = def.scale ?? 1;
-  const registerValue = Math.round(value * scale);
-  if (registerValue < 0 || registerValue > 0xffff) {
-    throw new ControlError(`scaled value ${registerValue} does not fit a 16-bit register`);
-  }
+  const plan = planWrite(def, value);
+  const registerValue = plan.words[0];
 
   if (opts.dryRun) {
     // Everything above this line is the real path: whitelist, verification
@@ -213,7 +254,7 @@ export async function executeControl(
       status: "preview",
       detail:
         `would write ${value}${def.unit ? ` ${def.unit}` : ""} to register ${def.address} ` +
-        `(scaled ${registerValue}) on ${meter.name}` +
+        `(FC${plan.fc}, scaled ${plan.raw} → [${plan.words.join(", ")}]) on ${meter.name}` +
         (stopped
           ? ` — BUT the device is under an emergency stop${stopped.reason ? ` (${stopped.reason})` : ""}, so a real command would be refused`
           : ""),
@@ -230,13 +271,14 @@ export async function executeControl(
       await client.connectTCP(meter.host, { port });
       client.setID(unitId);
       client.setTimeout(8000);
-      await client.writeRegister(def.address, registerValue);
-      const read = await client.readHoldingRegisters(def.address, 1);
-      const actual = read.data?.[0];
-      if (actual !== registerValue) {
-        return withWarn({ status: "failed", detail: `read-back mismatch: wrote ${registerValue} but register ${def.address} reads ${actual}` });
+      if (plan.fc === 16) await client.writeRegisters(def.address, plan.words);
+      else await client.writeRegister(def.address, registerValue);
+      const read = await client.readHoldingRegisters(def.address, plan.words.length);
+      const actual = (read.data ?? []).slice(0, plan.words.length);
+      if (!wordsEqual(actual, plan.words)) {
+        return withWarn({ status: "failed", detail: `read-back mismatch: wrote [${plan.words.join(", ")}] but register ${def.address} reads [${actual.join(", ")}]` });
       }
-      return withWarn({ status: "ok", detail: `wrote ${value}${def.unit ? ` ${def.unit}` : ""} (register ${def.address} = ${registerValue}) — verified by read-back` });
+      return withWarn({ status: "ok", detail: `wrote ${value}${def.unit ? ` ${def.unit}` : ""} (FC${plan.fc} register ${def.address} = [${plan.words.join(", ")}]) — verified by read-back` });
     } catch (err) {
       return withWarn({ status: "failed", detail: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -258,25 +300,26 @@ export async function executeControl(
   const { sendControlFrame } = await import("../mqtt/service");
   const slave = meter.unitId ?? meter.modbusAddress;
   if (slave < 1 || slave > 255) return withWarn({ status: "failed", detail: `bus address ${slave} out of Modbus range` });
-  const frame = buildWriteRequest(slave, def.address, registerValue);
+  const frame = plan.fc === 16 ? buildWriteMultipleRequest(slave, def.address, plan.words) : buildWriteRequest(slave, def.address, registerValue);
   await sendControlFrame(gateway, frame);
   // Wave 4 / T4: read-back verification through the T1 correlation machinery.
   // The FC6 echo alone proves nothing on a transparent bus — issue an FC3 read
   // of the written register and register it as outstanding; the correlated
   // response (or the 30 s sweep) flips the commands row to ok/failed.
-  const readFrame = buildReadRequest(slave, 3, def.address, 1);
+  const readFrame = buildReadRequest(slave, 3, def.address, plan.words.length);
   await sendControlFrame(gateway, readFrame);
   registerOutstanding({
     gatewayId: gateway.id,
     slave,
     fc: 3,
     start: def.address,
-    quantity: 1,
+    quantity: plan.words.length,
     verifyExpected: registerValue,
+    verifyExpectedWords: plan.words.length > 1 ? plan.words : undefined,
   });
   return withWarn({
     status: "sent",
-    detail: `FC6 frame sent to ${gateway.uid} downlink (register ${def.address} = ${registerValue}) — read-back verification pending (30s)`,
+    detail: `FC${plan.fc} frame sent to ${gateway.uid} downlink (register ${def.address} = [${plan.words.join(", ")}]) — read-back verification pending (30s)`,
     verify: { gatewayId: gateway.id, slave, fc: 3 },
   });
 }

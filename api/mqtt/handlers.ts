@@ -692,7 +692,9 @@ export async function handleC30Frame(
     if (matched.verifyExpected !== undefined) {
       // T4: control write read-back — compare the first register and mark the
       // control command row ok/failed. Telemetry decode below still runs.
-      await confirmVerifiedWrite(matched, parsed.data.readUInt16BE(0));
+      const words: number[] = [];
+      for (let i = 0; i + 1 < parsed.data.length; i += 2) words.push(parsed.data.readUInt16BE(i));
+      await confirmVerifiedWrite(matched, parsed.data.readUInt16BE(0), words);
     }
   } else {
     // (b) Unsolicited frame: attribute only when exactly one block of the

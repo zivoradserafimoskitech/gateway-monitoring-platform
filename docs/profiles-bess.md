@@ -178,3 +178,29 @@ most dangerous profile errors — inverted sign and register-range `min`/`max`
 - [ ] 32-bit setpoint / FC16 needed? → flag as not implemented (§4.4)
 - [ ] Vendor watchdog present, timeout < 5 min? → flag conflict with anti-chatter suppression (§4.5)
 - [ ] Bench verification completed (Settings → Device profiles → Verify) → `bench_verified`
+
+## FC16 multi-register setpoints and command sequences
+
+A `controllable` entry may now declare a wider register type:
+
+```jsonc
+"activePowerW": { "address": 256, "fc": 16, "type": "int32", "wordOrder": "big", "min": -200000, "max": 200000, "unit": "W" }
+```
+
+| Field | Values | Default |
+|---|---|---|
+| `fc` | `6` (single register) or `16` (write multiple) | `6`; 32-bit types are always written with FC16 |
+| `type` | `uint16`, `int16`, `uint32`, `int32`, `float32` | `uint16` |
+| `wordOrder` | `big` (high word first) or `little` | `big` |
+
+Values are scaled (`scale`), rounded for integer types, and refused if they do
+not fit the type — never wrapped. A 32-bit type with `fc: 6` is a profile error
+and is refused. Read-back verifies **every** written register (direct TCP:
+synchronous; C30 transparent bus: correlated FC3 read of N registers).
+
+**Sequences** (`control.sequence` tRPC, operator): up to 20 ordered steps
+`{ key, value, delayMs? }` on one device. All steps are validated first through
+the real chokepoint (whitelist, verification, emergency stop, range, encoding);
+if any would be refused nothing is written. Execution stops at the first
+failed step and reports the rest as `skipped`. `dryRun: true` returns the
+validation only. No schema migration is needed: `controllable` is JSON.

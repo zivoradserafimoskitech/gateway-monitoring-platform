@@ -7,6 +7,7 @@ import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { commands, meters } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog, executeControl, verificationForModel } from "../control/execute";
+import { executeSequence, SEQUENCE_MAX_DELAY_MS, SEQUENCE_MAX_STEPS } from "../control/sequence";
 import { assertOrgRead, assertOrgWrite, meterOrg } from "../lib/org-scope";
 
 export const controlRouter = createRouter({
@@ -63,6 +64,40 @@ export const controlRouter = createRouter({
         if (err instanceof ControlError) {
           throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
         }
+        throw err;
+      }
+    }),
+
+  // FC16 / command sequences: ordered writes to one device. Every step is
+  // validated through the real chokepoint before anything is written; the
+  // run stops at the first failure. dryRun returns the validation only.
+  sequence: operator
+    .input(
+      z.object({
+        meterId: z.number(),
+        dryRun: z.boolean().default(false),
+        steps: z
+          .array(
+            z.object({
+              key: z.string().min(1).max(64),
+              value: z.number().finite(),
+              delayMs: z.number().int().min(0).max(SEQUENCE_MAX_DELAY_MS).optional(),
+            }),
+          )
+          .min(1)
+          .max(SEQUENCE_MAX_STEPS),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const rows = await db.select().from(meters).where(eq(meters.id, input.meterId)).limit(1);
+      const meter = rows[0];
+      if (!meter) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
+      assertOrgWrite(ctx.user, meter.orgId, "Device");
+      try {
+        return await executeSequence(meter, input.steps, ctx.user?.id ?? null, { dryRun: input.dryRun });
+      } catch (err) {
+        if (err instanceof ControlError) throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
         throw err;
       }
     }),
