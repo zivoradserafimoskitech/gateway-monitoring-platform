@@ -51,6 +51,9 @@ startMqttService().catch((err) => {
 // Start the Modbus TCP poller (direct-connected inverters / BESS). No-op when
 // no devices carry host/port.
 try {
+  // Installer / O&M org tree snapshot used by org-scope (api/lib/org-tree.ts).
+  const { startOrgTreeLoop } = await import("./lib/org-tree");
+  startOrgTreeLoop();
   startPollerService();
   startEscalationLoop(); // v7/C2
   // v7/C5: retention + downsampling (MySQL store only — TimescaleDB uses

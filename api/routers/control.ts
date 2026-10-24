@@ -7,6 +7,7 @@ import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { commands, meters } from "@db/schema";
 import { ControlError, controllableForModel, executeAndLog, executeControl, verificationForModel } from "../control/execute";
+import { meterSiteId, requireSitePermission } from "../lib/site-permissions";
 import { assertOrgRead, assertOrgWrite, meterOrg } from "../lib/org-scope";
 
 export const controlRouter = createRouter({
@@ -57,6 +58,8 @@ export const controlRouter = createRouter({
       const meter = rows[0];
       if (!meter) throw new TRPCError({ code: "NOT_FOUND", message: "Device not found" });
       assertOrgWrite(ctx.user, meter.orgId, "Device"); // v8/D2
+      // Fine-grained: a site-scoped user needs device.control on THIS site.
+      await requireSitePermission(ctx.user, await meterSiteId(meter.id), "device.control");
       try {
         return await executeAndLog(meter, input.key, input.value, ctx.user?.id ?? null);
       } catch (err) {

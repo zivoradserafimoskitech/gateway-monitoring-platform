@@ -590,9 +590,13 @@ export const orgs = mysqlTable(
     deletionRequestedAt: timestamp("deletion_requested_at"),
     deletionRequestedBy: bigint("deletion_requested_by", { mode: "number", unsigned: true }),
     deletionScheduledFor: timestamp("deletion_scheduled_for"),
+    // Installer / O&M hierarchy (api/lib/org-tree.ts): a parent org manages
+    // its child (customer) orgs. NULL = top level.
+    parentOrgId: bigint("parent_org_id", { mode: "number", unsigned: true }),
+    kind: mysqlEnum("kind", ["direct", "installer", "om", "customer"]).notNull().default("direct"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("orgs_name_unique").on(t.name)],
+  (t) => [uniqueIndex("orgs_name_unique").on(t.name), index("orgs_parent_idx").on(t.parentOrgId)],
 );
 export type Org = typeof orgs.$inferSelect;
 export type InsertOrg = typeof orgs.$inferInsert;
@@ -1106,6 +1110,24 @@ export const orgMemberships = mysqlTable(
   ],
 );
 export type OrgMembership = typeof orgMemberships.$inferSelect;
+
+// Per-site roles (api/lib/permissions.ts). A user with any site role in an
+// org is confined to those sites for permission checks.
+export const siteRoles = mysqlTable(
+  "site_roles",
+  {
+    id: serial("id").primaryKey(),
+    userId: bigint("user_id", { mode: "number", unsigned: true }).notNull(),
+    siteId: bigint("site_id", { mode: "number", unsigned: true }).notNull(),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }).notNull(),
+    role: mysqlEnum("role", ["site_admin", "site_operator", "field_tech", "site_viewer"]).notNull(),
+    // Optional extra permissions on top of the role.
+    extra: json("extra"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("site_roles_unique").on(t.userId, t.siteId), index("site_roles_user_idx").on(t.userId), index("site_roles_org_idx").on(t.orgId)],
+);
+export type SiteRoleRow = typeof siteRoles.$inferSelect;
 
 // Invites. The token is stored HASHED, like a session token and an API key: a
 // database dump should not hand somebody the ability to create accounts in
