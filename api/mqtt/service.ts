@@ -176,6 +176,12 @@ async function onMessage(topic: string, payload: Buffer): Promise<void> {
       await handleOtaAck(gateway, payload);
       return;
     }
+    // Remote diagnostics responses (d2g/<uid>/diag) — see diagnostics/remote.ts.
+    if (topic.startsWith("d2g/") && topic.endsWith("/diag")) {
+      const { handleDiagResponse } = await import("../diagnostics/remote");
+      handleDiagResponse(gateway, payload);
+      return;
+    }
 
     if (gateway.transport === "transparent") {
       const result = await handleC30Frame(gateway, payload);
@@ -570,4 +576,21 @@ export async function sendReadNow(gateway: Gateway, meterId: number): Promise<{ 
     hexes.push(hex);
   }
   return { topic, hex: hexes.join(" ") };
+}
+
+// Remote diagnostics request frame (JSON) on g2d/<uid>/diag.
+export async function publishDiagCmd(gateway: Gateway, frame: Record<string, unknown>): Promise<{ topic: string }> {
+  const svc = globalThis.__enertrekMqtt;
+  if (!svc) throw new Error("MQTT service not running");
+  if (!svc.client.connected) throw new Error("MQTT broker is not connected — cannot send diagnostics request");
+  const topic = `g2d/${gateway.uid}/diag`;
+  await Promise.race([
+    new Promise<void>((resolve, reject) => {
+      svc.client.publish(topic, JSON.stringify(frame), { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+    }),
+    new Promise<void>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("Timed out publishing diagnostics request (10s)")), 10_000)
+    ),
+  ]);
+  return { topic };
 }
