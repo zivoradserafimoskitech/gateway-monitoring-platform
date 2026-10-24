@@ -17,6 +17,9 @@ import { assertOrgWrite, isSuper, orgWhere, stampOrg } from "../lib/org-scope";
 import { planBatches, rolloutProgress } from "../ota/rollout";
 import { parseEgressUrl, BlockedEgressError } from "../lib/egress";
 import { and } from "drizzle-orm";
+import { gatewayGroups, gatewayGroupMembers } from "@db/schema";
+import { loadSigningKeys, requireSigned, verifyRelease } from "../ota/signing";
+import { resolveSelection } from "../fleet/select";
 
 export const otaRouter = createRouter({
   list: authed.input(z.object({ gatewayId: z.number() })).query(async ({ input, ctx }) => {
@@ -42,6 +45,9 @@ export const otaRouter = createRouter({
       const gw = await db.select({ id: gateways.id, orgId: gateways.orgId }).from(gateways).where(eq(gateways.id, input.gatewayId)).limit(1);
       if (!gw[0]) throw new TRPCError({ code: "NOT_FOUND", message: `Gateway ${input.gatewayId} not found` });
       assertOrgWrite(ctx.user, gw[0].orgId, "Gateway"); // v8/D2
+      if (input.type === "firmware" && requireSigned()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "OTA_REQUIRE_SIGNED is on: deliver firmware through a signed release rollout" });
+      }
       return createOtaJob({ gatewayId: input.gatewayId, type: input.type, payload: input.payload, createdBy: ctx.user?.id ?? null });
     }),
 
@@ -75,6 +81,9 @@ export const otaRouter = createRouter({
         url: z.string().min(1).max(1000),
         // Optional but strongly wanted: the gateway verifies before flashing.
         sha256: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
+        // Ed25519 signature (base64) + key id, see api/ota/signing.ts.
+        signature: z.string().max(256).optional(),
+        signingKeyId: z.string().max(64).optional(),
         notes: z.string().max(1000).optional(),
       }),
     )
@@ -87,6 +96,16 @@ export const otaRouter = createRouter({
           message: e instanceof BlockedEgressError ? e.message : "The firmware URL must be a valid URL",
         });
       }
+      if (input.signature || requireSigned()) {
+        let keys;
+        try {
+          keys = loadSigningKeys();
+        } catch (e) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `OTA_SIGNING_PUBLIC_KEYS misconfigured: ${e instanceof Error ? e.message : e}` });
+        }
+        const check = verifyRelease({ model: input.model, version: input.version, sha256: input.sha256, signature: input.signature, keyId: input.signingKeyId }, keys);
+        if (!check.ok) throw new TRPCError({ code: "BAD_REQUEST", message: `Firmware signature rejected: ${check.reason}` });
+      }
       const inserted = await getDb()
         .insert(firmwareReleases)
         .values({
@@ -94,6 +113,8 @@ export const otaRouter = createRouter({
           version: input.version,
           url: input.url,
           sha256: input.sha256?.toLowerCase() ?? null,
+          signature: input.signature ?? null,
+          signingKeyId: input.signingKeyId ?? null,
           notes: input.notes ?? null,
           createdBy: ctx.user?.id ?? null,
           orgId: stampOrg(ctx.user, null),
@@ -138,6 +159,9 @@ export const otaRouter = createRouter({
         name: z.string().min(1).max(255),
         // Either an explicit list, or every gateway of the release's model.
         gatewayIds: z.array(z.number()).max(5000).optional(),
+        // Fleet selectors (AND-combined with gatewayIds).
+        groupId: z.number().optional(),
+        tags: z.array(z.string()).max(16).optional(),
         canaryCount: z.number().int().min(1).max(50).default(1),
         batchSize: z.number().int().min(1).max(500).default(10),
         failureThresholdPct: z.number().int().min(0).max(100).default(10),
@@ -151,17 +175,29 @@ export const otaRouter = createRouter({
       const rel = await db.select().from(firmwareReleases).where(eq(firmwareReleases.id, input.releaseId)).limit(1);
       if (!rel[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Firmware release not found" });
       assertOrgWrite(ctx.user, rel[0].orgId, "Firmware release");
+      if (requireSigned() && !rel[0].signature) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "OTA_REQUIRE_SIGNED is on and this release is unsigned" });
+      }
 
       const visible = orgWhere(ctx.user, gateways.orgId);
       const candidates = await db
-        .select({ id: gateways.id, orgId: gateways.orgId })
+        .select({ id: gateways.id, orgId: gateways.orgId, tags: gateways.tags })
         .from(gateways)
         .where(visible)
         .orderBy(gateways.id);
-      const allowed = new Set(candidates.map((g) => g.id));
-      const chosen = input.gatewayIds?.length
-        ? input.gatewayIds.filter((id) => allowed.has(id))
-        : candidates.map((g) => g.id);
+      let groupMemberIds: number[] | undefined;
+      if (input.groupId !== undefined) {
+        const g = await db.select().from(gatewayGroups).where(eq(gatewayGroups.id, input.groupId)).limit(1);
+        if (!g[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Group not found" });
+        assertOrgWrite(ctx.user, g[0].orgId, "Group");
+        groupMemberIds = (await db.select({ id: gatewayGroupMembers.gatewayId }).from(gatewayGroupMembers).where(eq(gatewayGroupMembers.groupId, input.groupId))).map((r) => r.id);
+      }
+      let chosen: number[];
+      try {
+        chosen = resolveSelection(candidates, { gatewayIds: input.gatewayIds, groupMemberIds, tags: input.tags });
+      } catch (e) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: e instanceof Error ? e.message : String(e) });
+      }
       if (chosen.length === 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "No gateways in scope for this rollout" });
       }

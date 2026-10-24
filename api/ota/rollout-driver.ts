@@ -109,7 +109,14 @@ export async function stepRollout(rolloutId: number): Promise<void> {
       const job = await createOtaJob({
         gatewayId,
         type: "firmware",
-        payload: { version: release.version, url: release.url, sha256: release.sha256 ?? undefined },
+        payload: {
+          version: release.version,
+          url: release.url,
+          sha256: release.sha256 ?? undefined,
+          // The gateway verifies this against its built-in public keys before flashing.
+          signature: release.signature ?? undefined,
+          signingKeyId: release.signingKeyId ?? undefined,
+        },
         createdBy: rollout.createdBy,
       });
       await db

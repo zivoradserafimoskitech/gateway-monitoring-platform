@@ -37,6 +37,8 @@ import {
   emsSchedules,
   firmwareReleases,
   gateways,
+  gatewayGroups,
+  gatewayGroupMembers,
   gridLimits,
   maintenanceWindows,
   meters,
@@ -214,6 +216,12 @@ export async function purgeOrg(orgId: number): Promise<PurgeCounts> {
     ["orgInvites", () => db.delete(orgInvites).where(eq(orgInvites.orgId, orgId))],
     ["orgMemberships", () => db.delete(orgMemberships).where(eq(orgMemberships.orgId, orgId))],
     ["meters", () => db.delete(meters).where(eq(meters.orgId, orgId))],
+    // Fleet groups: memberships of this org's gateways, then the groups.
+    ["gatewayGroupMembers", async () => {
+      const gids = gatewayRows.map((g) => g.id);
+      return gids.length ? db.delete(gatewayGroupMembers).where(inArray(gatewayGroupMembers.gatewayId, gids)) : undefined;
+    }],
+    ["gatewayGroups", () => db.delete(gatewayGroups).where(eq(gatewayGroups.orgId, orgId))],
     ["gateways", () => db.delete(gateways).where(eq(gateways.orgId, orgId))],
     ["sites", () => db.delete(sites).where(eq(sites.orgId, orgId))],
   ];
