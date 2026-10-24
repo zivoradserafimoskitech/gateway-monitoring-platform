@@ -16,7 +16,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["api/**/*.test.ts", "api/**/*.spec.ts", "tests/**/*.test.ts"],
+    include: ["api/**/*.test.ts", "api/**/*.spec.ts", "tests/**/*.test.ts", "src/lib/**/*.test.ts"],
     // D7.3: coverage gate (v8 provider). Thresholds are set ~2 points below
     // the suite's measured baseline (run `npm run test:coverage`):
     //   lines 41.63 / statements 39.90 / branches 30.70 / functions 24.54

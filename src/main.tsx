@@ -6,6 +6,9 @@ import { ThemeProvider } from "next-themes"
 import { TRPCProvider } from "@/providers/trpc"
 import { LanguageProvider } from "@/i18n"
 import App from './App.tsx'
+import { registerPwa } from "@/lib/pwa"
+
+void registerPwa()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -52,6 +52,17 @@ export const en = {
     useBackupInstead: "Use a backup code instead",
     useTotpInstead: "Use authenticator code instead",
   },
+  pwa: {
+    scan: "Scan",
+    scanHint: "Point the camera at the device label (QR, Data Matrix or barcode)",
+    scanUnsupported: "This browser cannot scan codes (no BarcodeDetector). Type the serial instead.",
+    offline: "Offline — showing the cached app. Live plant data and control need a connection.",
+    enablePush: "Enable push on this device",
+    pushCopied: "Push subscription copied — paste it into a “web push” notification channel",
+    scanDevice: "Scan a device to commission",
+    scannedNotFound: "No gateway with serial",
+    openGateway: "Open gateway",
+  },
   common: {
     online: "Online",
     offline: "Offline",

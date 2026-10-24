@@ -18,6 +18,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { OfflineBanner } from "@/components/OfflineBanner";
 import { trpc, setSessionToken } from "@/providers/trpc";
 import {
   DropdownMenu,
@@ -210,9 +211,33 @@ export function Layout() {
             </DropdownMenu>
           </div>
         </header>
-        <main className="flex-1 p-4 sm:p-6">
+        <OfflineBanner />
+        {/* pb-20 below lg leaves room for the mobile tab bar. */}
+        <main className="flex-1 p-4 pb-20 sm:p-6 sm:pb-20 lg:pb-6">
           <Outlet />
         </main>
+        {/* Mobile tab bar: the four screens a field technician uses most,
+            one thumb-tap away. Hidden on desktop where the rail is visible. */}
+        <nav
+          aria-label="mobile"
+          className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
+        >
+          {nav
+            .filter((n) => ["/", "/alarms", "/commissioning", "/gateways"].includes(n.to))
+            .map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                end={n.end}
+                className={({ isActive }) =>
+                  `flex flex-col items-center gap-0.5 py-2 text-[11px] ${isActive ? "text-primary" : "text-muted-foreground"}`
+                }
+              >
+                <n.icon className="h-5 w-5" />
+                {n.label}
+              </NavLink>
+            ))}
+        </nav>
       </div>
     </div>
   );

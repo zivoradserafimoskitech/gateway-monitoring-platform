@@ -10,6 +10,7 @@ import { useI18n } from "@/i18n";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { QrScanButton } from "@/components/QrScanner";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -67,13 +68,16 @@ export function DeviceRegistrationsCard() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="space-y-1.5">
             <Label htmlFor="reg-uid">{t.gateways.uid}</Label>
-            <Input
-              id="reg-uid"
-              className="font-mono"
-              placeholder="867156067806820"
-              value={uid}
-              onChange={(e) => setUid(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="reg-uid"
+                className="font-mono"
+                placeholder="867156067806820"
+                value={uid}
+                onChange={(e) => setUid(e.target.value)}
+              />
+              <QrScanButton onSerial={setUid} />
+            </div>
           </div>
           {isSuper && (
             <div className="space-y-1.5">
