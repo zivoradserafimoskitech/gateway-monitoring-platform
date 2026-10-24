@@ -6,6 +6,7 @@ import { StatusBadge, DeviceTypeBadge, fmt, fmtTime } from "@/components/shared"
 import { ControlPanel } from "@/components/ControlPanel";
 import { EmsPanel } from "@/components/EmsPanel";
 import { EmsPlanCard } from "@/components/EmsPlanCard";
+import { KpiCard } from "@/components/KpiCard";
 import { METRIC_UNITS } from "@contracts/modbus";
 import { EXTENDED_METRIC_UNITS, PRIMARY_POWER_KEY } from "@contracts/devices";
 import type { DeviceType } from "@contracts/devices";
@@ -225,6 +226,8 @@ export default function MeterDetail() {
           </CardContent>
         </Card>
       )}
+
+      <KpiCard meterId={meterId} />
 
       {/* #20: the series follows the device's PRIMARY_POWER_KEY (BESS →
           batteryPowerKw), surfaced by the API as `powerKw`. */}
