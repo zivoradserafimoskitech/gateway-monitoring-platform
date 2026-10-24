@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Bell, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { PushToggle } from "@/components/PushToggle";
 
 type ChannelType = "email" | "telegram" | "webhook";
 
@@ -53,6 +54,7 @@ export function NotificationChannelsCard() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        <PushToggle />
         {canWrite && (
           <div className="flex flex-wrap items-center gap-2">
             <Input className="max-w-44" placeholder={t.notif.namePlaceholder} value={name} onChange={(e) => setName(e.target.value)} />

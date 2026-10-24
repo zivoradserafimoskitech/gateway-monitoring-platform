@@ -9,6 +9,14 @@ type App = Hono<{ Bindings: HttpBindings }>;
 export function serveStaticFiles(app: App) {
   const distPath = path.resolve(import.meta.dirname, "../dist/public");
 
+  // PWA: the service worker and manifest must never be cached by the browser
+  // or a proxy, or a deploy would keep serving the previous app shell.
+  app.use("*", async (c, next) => {
+    await next();
+    if (/^\/(sw\.js|push-sw\.js|manifest\.webmanifest|registerSW\.js)$/.test(c.req.path)) {
+      c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+    }
+  });
   app.use("*", serveStatic({ root: "./dist/public" }));
 
   app.notFound((c) => {

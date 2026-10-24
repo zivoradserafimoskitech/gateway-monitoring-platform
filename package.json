@@ -2,7 +2,7 @@
   "name": "volttrade-cloud",
   "private": true,
   "version": "1.0.0",
-  "description": "VoltTrade Cloud \u2014 IoT energy gateway monitoring and BESS/EMS control platform",
+  "description": "VoltTrade Cloud — IoT energy gateway monitoring and BESS/EMS control platform",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -114,6 +114,7 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
+    "vite-plugin-pwa": "^2.0.0",
     "vitest": "^4.0.16"
   },
   "overrides": {

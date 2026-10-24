@@ -12,6 +12,8 @@
 // the handover signature, because nothing in a database can attest that a
 // person walked the site.
 import { useState } from "react";
+import { QrScanButton } from "@/components/QrScanner";
+import { Link } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useI18n } from "@/i18n";
 import type { Dictionary } from "@/i18n/en";
@@ -31,6 +33,8 @@ export default function Commissioning() {
   const canWrite = !me.data?.authRequired || me.data?.user?.role === "admin" || me.data?.user?.role === "operator";
   const utils = trpc.useUtils();
   const sites = trpc.sites.list.useQuery();
+  const gateways = trpc.gateways.list.useQuery();
+  const [scanned, setScanned] = useState<{ id: number; uid: string } | null>(null);
   const [siteId, setSiteId] = useState<string>("");
   // The first site is a reasonable default: an installer opening this page is
   // almost always looking at the one they are standing on, and an empty screen
@@ -87,6 +91,26 @@ export default function Commissioning() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t.commissioning.title}</h1>
         <p className="text-sm text-muted-foreground">{t.commissioning.hint}</p>
+      </div>
+
+      <div className="flex max-w-sm flex-wrap items-center gap-2">
+        <span className="text-sm text-muted-foreground">{t.pwa.scanDevice}</span>
+        <QrScanButton
+          onSerial={(serial) => {
+            const gw = (gateways.data ?? []).find((g) => g.uid.toLowerCase() === serial.toLowerCase());
+            if (!gw) {
+              toast.error(`${t.pwa.scannedNotFound} ${serial}`);
+              return;
+            }
+            setScanned({ id: gw.id, uid: gw.uid });
+            if (gw.siteId != null) setSiteId(String(gw.siteId));
+          }}
+        />
+        {scanned ? (
+          <Link className="text-sm underline" to={`/gateways/${scanned.id}`}>
+            {t.pwa.openGateway} {scanned.uid}
+          </Link>
+        ) : null}
       </div>
 
       <div className="max-w-sm space-y-2">

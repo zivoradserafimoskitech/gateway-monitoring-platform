@@ -54,6 +54,17 @@ export const mk: Dictionary = {
     useBackupInstead: "Користи резервен код",
     useTotpInstead: "Користи код од апликацијата",
   },
+  pwa: {
+    scan: "Скенирај",
+    scanHint: "Насочете ја камерата кон етикетата на уредот (QR, Data Matrix или баркод)",
+    scanUnsupported: "Овој прелистувач не може да скенира кодови (нема BarcodeDetector). Внесете го серискиот број рачно.",
+    offline: "Без врска — се прикажува зачуваната апликација. Податоците во живо и управувањето бараат врска.",
+    enablePush: "Вклучи push известувања на овој уред",
+    pushCopied: "Push претплатата е копирана — залепете ја во канал „web push“",
+    scanDevice: "Скенирај уред за пуштање во работа",
+    scannedNotFound: "Нема gateway со сериски број",
+    openGateway: "Отвори gateway",
+  },
   common: {
     online: "На линија",
     offline: "Исклучено",
