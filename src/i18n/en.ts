@@ -1064,6 +1064,13 @@ export const en = {
     legacyReadOnly: "read-only (legacy)",
     hint: "No scopes ticked = read-only key",
   },
+  remoteDiag: {
+    title: "Remote diagnostics",
+    run: "Run",
+    lines: "Lines (default 200)",
+    host: "Host to ping",
+    empty: "No diagnostics run in the last hour.",
+  },
 };
 
 export type Dictionary = typeof en;
