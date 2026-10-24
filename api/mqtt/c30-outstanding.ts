@@ -32,6 +32,8 @@ export interface OutstandingRead {
   commandId?: number;
   /** T4: expected value of the written register (read-back verification). */
   verifyExpected?: number;
+  /** FC16: every expected register word (read-back of a multi-register write). */
+  verifyExpectedWords?: number[];
   /** T4: commands row of the CONTROL write — marked ok/failed on match/sweep. */
   verifyCommandId?: number;
 }
@@ -126,8 +128,9 @@ export async function sweepOutstanding(now = Date.now()): Promise<number> {
  * written value and update the control command row. `observed` is the first
  * register of the response payload (quantity is always 1 for verify reads).
  */
-export async function confirmVerifiedWrite(entry: OutstandingRead, observed: number): Promise<void> {
-  const ok = observed === entry.verifyExpected;
+export async function confirmVerifiedWrite(entry: OutstandingRead, observed: number, observedWords?: number[]): Promise<void> {
+  const exp = entry.verifyExpectedWords;
+  const ok = exp && observedWords ? exp.length <= observedWords.length && exp.every((w, i) => w === observedWords[i]) : observed === entry.verifyExpected;
   if (entry.verifyCommandId === undefined) return; // row id not attached yet (shouldn't happen)
   const db = getDb();
   await db

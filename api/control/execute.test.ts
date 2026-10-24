@@ -130,11 +130,34 @@ test("interlock: boundary values are in range", async () => {
   assert.equal(r0.status, "sent");
 });
 
-test("interlock: FC16 registers are refused (FC6 only)", async () => {
+test("FC16: a 32-bit setpoint is sent as one write-multiple frame with an N-register read-back", async () => {
   state.profiles = [
-    { model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 10, fc: 16 } }, verificationStatus: "bench_verified" },
+    {
+      model: "BESS-A",
+      controllable: { pW: { address: 0x100, min: -200_000, max: 200_000, fc: 16, type: "int32" } },
+      verificationStatus: "bench_verified",
+    },
   ];
-  await assert.rejects(executeControl(meter(), "x", 5), (e: Error) => e.message.includes("FC6 only"));
+  const r = await executeControl(meter(), "pW", -100_000);
+  assert.equal(r.status, "sent");
+  const f = state.sentFrames[0].frame;
+  assert.equal(f[1], 16);
+  assert.equal(f.readUInt16BE(2), 0x100);
+  assert.equal(f.readUInt16BE(4), 2); // quantity
+  assert.equal(f[6], 4); // byte count
+  assert.equal(f.readInt32BE(7), -100_000);
+  assert.equal(f.readUInt16LE(11), crc16(f.subarray(0, 11)));
+  const read = state.sentFrames[1].frame;
+  assert.equal(read[1], 3);
+  assert.equal(read.readUInt16BE(4), 2);
+});
+
+test("FC16: a 32-bit type declared as FC6 is refused before any bus traffic", async () => {
+  state.profiles = [
+    { model: "BESS-A", controllable: { x: { address: 1, min: 0, max: 10, fc: 6, type: "uint32" } }, verificationStatus: "bench_verified" },
+  ];
+  await assert.rejects(executeControl(meter(), "x", 5), (e: Error) => e.message.includes("set fc: 16"));
+  assert.equal(state.sentFrames.length, 0);
 });
 
 test("interlock: scaled values must fit a 16-bit register", async () => {
