@@ -210,6 +210,40 @@ local schedules / idle.
 | 403 | key scopes don't include `control` **and** `ems:write` (role alone is not enough — even an `admin`-role key needs the scopes) |
 | 404 | device unknown **or not in the key's org** |
 
+## Device commands (VoltTrade plant-connect)
+
+| Method | Path | Scope |
+|---|---|---|
+| `POST` | `/api/v1/devices/:id/commands` | `control` + `control:write` |
+| `GET` | `/api/v1/commands/:id` | `read` |
+| `GET` | `/api/v1/devices/:id/capabilities` | `read` |
+| `GET` | `/api/v1/devices/:id/plan-execution` | `read` |
+
+```jsonc
+// POST /api/v1/devices/42/commands
+{ "key": "p_limit_pct", "value": 60, "externalId": "vt-cmd-981" }
+// "point" is accepted as an alias of "key", "commandId" of "externalId".
+// Any "address" field is ignored — the register always comes from the
+// verified device profile, never from the caller.
+```
+
+| HTTP | `status` | Meaning |
+|---|---|---|
+| 200 | `ok` | Written and verified by read-back (direct Modbus TCP) |
+| 202 | `sent` | Written through the gateway downlink, read-back pending (≤30 s). Poll `GET /commands/:id` or subscribe to `command.confirmed` |
+| 409 | `rejected` | Refused by a safety gate: emergency stop, unverified profile, key not controllable, out of range |
+| 502 | `failed` | Write or read-back failed |
+
+`{"dryRun": true}` runs every gate and returns `status: "preview"` without
+touching plant or writing an audit row. Every real command goes through the
+same chokepoint as manual control and is audited in `commands` (tagged with the
+API key name and `externalId`).
+
+`capabilities` lists the controllable keys with ranges, the control path
+(`direct-tcp`, `gateway-downlink`, `none`) and whether read-back is synchronous.
+`plan-execution` shows which plan is in force (`origin: external | local-fallback`)
+and the last 50 plan-driven writes. See docs/ems-ownership.md.
+
 ## Rate limits (§9.13)
 
 Per **key** and per **scope**, not per key alone: a telemetry range scan, a
@@ -354,6 +388,18 @@ body.
 | `alarm.suppressed` | An alarm fired but nobody was paged, because a §9.8 suppression was in force. Published deliberately — a human deciding not to be woken is not the condition failing to occur |
 | `alarm.resolved` | The condition cleared on its own |
 | `command.executed` | A setpoint was written to plant, with its outcome — including writes *rejected* by the whitelist, the verification gate, the range clamp or an emergency stop |
+| `alarm.cleared` | Same moment as `alarm.resolved`, under the integration-contract name (both are emitted) |
+| `device.online` | A meter (`data.kind = "meter"`) or gateway (`"gateway"`) started reporting again after being offline |
+| `device.offline` | A meter or gateway stopped reporting (2.5× its poll interval) |
+| `plan.accepted` | `PUT /devices/:id/ems-plan` validated and stored a plan (`planId`, `superseded`, …) |
+| `plan.rejected` | A pushed plan failed validation (`meterId`, `error`) |
+| `plan.executed` | The EMS controller wrote a plan setpoint (once per plan step: `planId`, `setpointTs`, `kw`, `key`, `value`) |
+| `command.confirmed` | A command's read-back confirmed the written value (synchronous TCP or asynchronous C30 read-back) |
+| `energy.interval.closed` | A 15-minute energy interval closed (same fields as `GET /devices/:id/energy` buckets), ~2 min after the boundary |
+
+The signature headers keep the historical `X-VoltTrade-*` names so existing
+receivers do not break, although the product is now called Gateway Monitoring
+Platform.
 
 **Management (admin, via tRPC).**
 

@@ -140,6 +140,31 @@ export async function confirmVerifiedWrite(entry: OutstandingRead, observed: num
       respondedAt: new Date(),
     })
     .where(eq(commands.id, entry.verifyCommandId));
+  if (ok) {
+    const { emit } = await import("../webhooks/dispatch");
+    const row = await db
+      .select({ meterId: commands.meterId, gatewayId: commands.gatewayId, key: commands.controlKey, value: commands.controlValue })
+      .from(commands)
+      .where(eq(commands.id, entry.verifyCommandId))
+      .limit(1);
+    const orgId = await commandOrgId(row[0]?.meterId ?? null);
+    void emit(
+      "command.confirmed",
+      { commandId: entry.verifyCommandId, ...(row[0] ?? {}), register: entry.start, observed },
+      orgId,
+    );
+  }
+}
+
+async function commandOrgId(meterId: number | null): Promise<number | null> {
+  if (meterId === null) return null;
+  try {
+    const { meters } = await import("@db/schema");
+    const r = await getDb().select({ orgId: meters.orgId }).from(meters).where(eq(meters.id, meterId)).limit(1);
+    return r[0]?.orgId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Stamp the readNow command row whose response just arrived (T1a). */

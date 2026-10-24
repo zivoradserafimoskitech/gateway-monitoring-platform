@@ -22,6 +22,27 @@ export const WEBHOOK_EVENTS = [
   // A setpoint was written to plant, with its outcome. This is the event an
   // auditor asks for: who changed what on the equipment, and did it take.
   "command.executed",
+  // ── Gateway Monitoring Platform → VoltTrade integration events ──
+  // The gateway is the source of truth for device state and alarms; VoltTrade
+  // (money/decisions) only mirrors them. These are pushed so the ERP does not
+  // have to poll.
+  // Same moment as alarm.resolved, under the name the integration contract
+  // uses. Emitted alongside it; alarm.resolved is kept for existing receivers.
+  "alarm.cleared",
+  // A device (meter) or gateway started reporting again after being offline.
+  "device.online",
+  // A device or gateway stopped reporting (2.5x its poll interval).
+  "device.offline",
+  // An external plan (PUT /devices/:id/ems-plan) was validated and stored.
+  "plan.accepted",
+  // An external plan was refused (validation failure); data.error says why.
+  "plan.rejected",
+  // A plan setpoint was written to plant by the EMS controller.
+  "plan.executed",
+  // A command's read-back confirmed the register holds the written value.
+  "command.confirmed",
+  // A 15-minute energy interval of a device closed (settlement data).
+  "energy.interval.closed",
 ] as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];

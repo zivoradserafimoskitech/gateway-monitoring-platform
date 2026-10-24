@@ -1319,6 +1319,9 @@ export const commissioningSignoffs = mysqlTable(
 export type CommissioningSignoff = typeof commissioningSignoffs.$inferSelect;
 
 // ─── §9.3: tariffs and tariff-aware optimisation ─────────────────────────────
+// DEPRECATED (migration 0042): commercial tariffs and battery economics are
+// owned by VoltTrade. These tables remain only as the fallback TOU optimiser's
+// input — do not build new features on them. See docs/ems-ownership.md.
 // The EMS could discharge on a schedule and shave a peak. Neither knows what
 // electricity costs, so the thing a battery is actually bought for on a
 // commercial site — buy cheap, use dear — had to be approximated by a human

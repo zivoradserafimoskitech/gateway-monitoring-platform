@@ -926,6 +926,9 @@ export const en = {
     overCapacity: "Above nameplate — check the nameplate value and the battery power sign convention.",
   },
   emsPage: {
+    commercialMovedTitle: "Tariffs and battery economics are managed in VoltTrade",
+    commercialMovedBody: "Economic plans (prices, forecast, arbitrage) are pushed by VoltTrade and take precedence. The local time-of-use profile below is only a fallback used when no fresh external plan exists.",
+    fallbackProfile: "Fallback TOU profile (deprecated, advanced)",
     title: "EMS Control Center",
     subtitle: "Fleet battery automation — schedules, peak shaving, live commands and optimizer plans",
     selectMeter: "Battery device",
@@ -1061,6 +1064,7 @@ export const en = {
     control: "control",
     telemetryRead: "telemetry:read",
     emsWrite: "ems:write",
+    controlWrite: "control:write",
     legacyReadOnly: "read-only (legacy)",
     hint: "No scopes ticked = read-only key",
   },

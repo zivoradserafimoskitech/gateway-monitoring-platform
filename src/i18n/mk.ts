@@ -928,6 +928,9 @@ export const mk: Dictionary = {
     overCapacity: "Над номиналната — провери ја номиналната вредност и конвенцијата за знак на моќноста.",
   },
   emsPage: {
+    commercialMovedTitle: "Тарифите и економиката на батериите се управуваат во VoltTrade",
+    commercialMovedBody: "Економските планови (цени, прогноза, арбитража) ги праќа VoltTrade и имаат предност. Локалниот TOU профил подолу е само резерва кога нема свеж надворешен план.",
+    fallbackProfile: "Резервен TOU профил (застарено, напредно)",
     title: "EMS контролен центар",
     subtitle: "Автоматика на батериската флота — распореди, peak shaving, команди во живо и планови од оптимизер",
     selectMeter: "Батериски уред",
@@ -1063,6 +1066,7 @@ export const mk: Dictionary = {
     control: "control",
     telemetryRead: "telemetry:read",
     emsWrite: "ems:write",
+    controlWrite: "control:write",
     legacyReadOnly: "само читање (legacy)",
     hint: "Без означени опсези = клуч само за читање",
   },

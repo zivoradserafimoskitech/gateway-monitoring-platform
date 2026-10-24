@@ -93,6 +93,9 @@ try {
   // a plan would leave the controller executing whichever landed last.
   const { startOptimizerLoop } = await import("./ems/optimizer");
   startOptimizerLoop();
+  // energy.interval.closed webhooks (gateway → VoltTrade settlement data).
+  const { startEnergyIntervalLoop } = await import("./webhooks/energy-intervals");
+  startEnergyIntervalLoop();
 } catch (err) {
   console.error("[poller] failed to start:", err instanceof Error ? err.message : err);
 }

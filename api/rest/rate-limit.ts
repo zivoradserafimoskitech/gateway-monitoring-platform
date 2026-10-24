@@ -113,6 +113,7 @@ export function limitFor(scope: string): BucketLimit {
     // setpoints faster than this, and the cost of a runaway client here is
     // measured in equipment, not in database load.
     case "ems:write":
+    case "control:write":
       return { perMinute: env("RATE_EMS_WRITE_PER_MIN", 30), burst: env("RATE_EMS_WRITE_PER_MIN", 30) };
     case "control":
       return { perMinute: env("RATE_CONTROL_PER_MIN", 30), burst: env("RATE_CONTROL_PER_MIN", 30) };

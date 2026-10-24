@@ -56,7 +56,23 @@ export default function Ems() {
       {/* §9.3: prices and the planner that uses them. Fleet-wide like the
           health card — a tariff is a property of the contract, not of whichever
           battery happens to be selected below. */}
-      <TariffCard />
+      {/* Commercial tariffs and battery economics belong to VoltTrade
+          (docs/ems-ownership.md). The local TOU editor stays only as the
+          fallback optimiser's input, collapsed by default. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t.emsPage.commercialMovedTitle}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-muted-foreground">
+          <p>{t.emsPage.commercialMovedBody}</p>
+          <details>
+            <summary className="cursor-pointer select-none">{t.emsPage.fallbackProfile}</summary>
+            <div className="mt-3">
+              <TariffCard />
+            </div>
+          </details>
+        </CardContent>
+      </Card>
 
       {/* ── Fleet commands (all org devices, live) ── */}
       <Card>

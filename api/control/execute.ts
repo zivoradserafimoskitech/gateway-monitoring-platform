@@ -317,7 +317,12 @@ async function emitControl(
   );
 }
 
-export async function executeAndLog(meter: Meter, key: string, value: number, userId: number | null): Promise<ControlResult> {
+export async function executeAndLog(
+  meter: Meter,
+  key: string,
+  value: number,
+  userId: number | null,
+): Promise<ControlResult & { commandId?: number }> {
   const db = getDb();
   try {
     const result = await executeControl(meter, key, value);
@@ -353,7 +358,15 @@ export async function executeAndLog(meter: Meter, key: string, value: number, us
     // for, and it is emitted from the same place the audit row is written so
     // the two cannot disagree. Queue-only — nothing here waits on a receiver.
     void emitControl(meter, key, value, userId, result.status, result.detail, controlCommandId ?? null);
-    return result;
+    if (result.status === "ok") {
+      // Direct TCP write: read-back already verified synchronously.
+      void emit(
+        "command.confirmed",
+        { commandId: controlCommandId ?? null, meterId: meter.id, gatewayId: meter.gatewayId, key, value, detail: result.detail },
+        meter.orgId ?? null,
+      );
+    }
+    return { ...result, commandId: controlCommandId };
   } catch (err) {
     if (err instanceof ControlError) {
       await db.insert(commands).values({
