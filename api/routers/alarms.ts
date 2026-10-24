@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { and, eq, desc, isNull, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { validateComposite, type CompositeSpec } from "../alarms/conditions";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
 import { alarms, alarmRules, meters, gateways } from "@db/schema";
@@ -118,7 +119,11 @@ export const alarmsRouter = createRouter({
         // (e.g. ESMU socPercent/bmsStatusCode). Evaluation simply skips metrics
         // a device doesn't report, so any non-empty key is valid here.
         metric: z.string().min(1).max(100),
-        operator: z.enum(["gt", "lt", "stuck"]),
+        operator: z.enum(["gt", "lt", "stuck", "roc", "composite"]),
+        // Clear only when back past threshold ∓ deadband (gt/lt/roc/composite).
+        deadband: z.number().min(0).nullable().optional(),
+        // composite only: { op: "and"|"or", terms: [{ metric, operator, threshold }] }
+        conditions: z.unknown().optional(),
         threshold: z.number(),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
         meterId: z.number().nullable().optional(),
@@ -131,6 +136,12 @@ export const alarmsRouter = createRouter({
     .mutation(async ({ input, ctx }) => {
       // v8/D2: a meter-bound rule must target a device in the caller's org.
       if (input.meterId != null) assertOrgWrite(ctx.user, await meterOrg(input.meterId), "Device");
+      let conditions: CompositeSpec | null = null;
+      if (input.operator === "composite") {
+        const v = validateComposite(input.conditions);
+        if (typeof v === "string") throw new TRPCError({ code: "BAD_REQUEST", message: v });
+        conditions = v;
+      }
       const db = getDb();
       const inserted = await db
         .insert(alarmRules)
@@ -139,6 +150,8 @@ export const alarmsRouter = createRouter({
           metric: input.metric,
           operator: input.operator,
           threshold: input.threshold,
+          deadband: input.deadband ?? null,
+          conditions,
           severity: input.severity,
           meterId: input.meterId ?? null,
           durationSec: input.durationSec,

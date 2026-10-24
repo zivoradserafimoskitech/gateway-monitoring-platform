@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Bell, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-type ChannelType = "email" | "telegram" | "webhook";
+type ChannelType = "email" | "telegram" | "webhook" | "sms" | "webpush" | "teams";
 
 export function NotificationChannelsCard() {
   const { t } = useI18n();
@@ -64,11 +64,26 @@ export function NotificationChannelsCard() {
                 <SelectItem value="email">email</SelectItem>
                 <SelectItem value="telegram">telegram</SelectItem>
                 <SelectItem value="webhook">webhook</SelectItem>
+                <SelectItem value="sms">sms</SelectItem>
+                <SelectItem value="teams">teams</SelectItem>
+                <SelectItem value="webpush">web push</SelectItem>
               </SelectContent>
             </Select>
             <Input
               className="min-w-56 flex-1"
-              placeholder={type === "email" ? t.notif.targetEmail : type === "telegram" ? t.notif.targetTelegram : t.notif.targetWebhook}
+              placeholder={
+                type === "email"
+                  ? t.notif.targetEmail
+                  : type === "telegram"
+                    ? t.notif.targetTelegram
+                    : type === "sms"
+                      ? t.notif.targetSms
+                      : type === "teams"
+                        ? t.notif.targetTeams
+                        : type === "webpush"
+                          ? t.notif.targetWebpush
+                          : t.notif.targetWebhook
+              }
               value={target}
               onChange={(e) => setTarget(e.target.value)}
             />

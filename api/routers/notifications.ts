@@ -20,15 +20,28 @@ import {
   sites,
 } from "@db/schema";
 import { invalidateMaintenanceCache, parseTelegramTarget } from "../alarms/notify";
+import { E164, isTeamsWebhookUrl, parsePushSubscription } from "../alarms/channels";
 import { parseEgressUrl, BlockedEgressError } from "../lib/egress";
 import { isSuper, stampOrg, assertRowOrg, meterOrg, siteOrg, assertOrgWrite } from "../lib/org-scope";
 import type { User } from "@db/schema";
 
 // Validate a channel target for its transport. Throws a tRPC BAD_REQUEST with
 // an actionable message rather than a bare zod error.
-function validateTarget(type: "webhook" | "telegram" | "email", target: string): void {
+function validateTarget(type: "webhook" | "telegram" | "email" | "sms" | "webpush" | "teams", target: string): void {
   if (target.length > 1000) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Target is too long (max 1000 characters)" });
+  }
+  if (type === "sms") {
+    if (!E164.test(target)) throw new TRPCError({ code: "BAD_REQUEST", message: "SMS target must be an E.164 number, e.g. +38970123456" });
+    return;
+  }
+  if (type === "teams") {
+    if (!isTeamsWebhookUrl(target)) throw new TRPCError({ code: "BAD_REQUEST", message: "Teams target must be an https *.webhook.office.com or Workflows URL" });
+    return;
+  }
+  if (type === "webpush") {
+    if (!parsePushSubscription(target)) throw new TRPCError({ code: "BAD_REQUEST", message: "Web push target must be a PushSubscription JSON with an https endpoint" });
+    return;
   }
   if (type === "webhook") {
     try {
@@ -87,7 +100,7 @@ export const notificationsRouter = createRouter({
     .input(
       z.object({
         name: z.string().min(1).max(255),
-        type: z.enum(["webhook", "telegram", "email"]),
+        type: z.enum(["webhook", "telegram", "email", "sms", "webpush", "teams"]),
         target: z.string().min(1).max(1000),
         escalation: z.boolean().default(false),
         // Superadmin only: null creates a global channel.
