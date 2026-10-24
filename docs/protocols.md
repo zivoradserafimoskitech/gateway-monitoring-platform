@@ -1,6 +1,6 @@
 # Protocol integration guide (D8)
 
-How new device protocols plug into VoltTrade Cloud. The extension point is
+How new device protocols plug into the Gateway Monitoring Platform. The extension point is
 `api/protocols/adapter.ts` (`ProtocolAdapter` interface + registry); the two
 existing Modbus paths predate it and are **not** refactored — the registered
 `modbus` adapter simply delegates to them.
@@ -123,3 +123,39 @@ Integration points:
   validate without DB); documents the 40000/50000 base-block assumption and
   the int+SF decoding caveat that a future adapter should handle natively.
 - `docs/architecture.md` — where ingest/poller/control sit in the system.
+
+## IEC 60870-5-104 adapter (`iec104`)
+
+Code: `api/protocols/iec104-codec.ts` (pure codec), `iec104-client.ts` (TCP
+master), adapter in `adapter.ts`.
+
+- Supported monitor types: M_SP_NA_1, M_DP_NA_1, M_ME_NA_1, M_ME_NB_1,
+  M_ME_NC_1, M_ME_TF_1 (CP56 time), M_IT_NA_1 (energy counters). Objects with
+  bad quality (IV/NT/SB/BL/OV) are dropped.
+- Commands: C_IC_NA_1 general interrogation, C_SE_NC_1 float setpoint (direct
+  execute, success = positive activation confirmation), C_SC_NA_1 encoder.
+- Register map convention: `RegisterDef.address` = IOA, `scale`/`offset`/`min`/
+  `max` applied as usual. Common address = `unitId ?? modbusAddress`, port
+  `meters.port ?? 2404`. Controllable keys: `address` = setpoint IOA.
+- Control first runs every gate of `executeControl` in dry-run mode
+  (whitelist, verification, emergency stop, range) and only then sends the IEC
+  command.
+- Link layer: STARTDT, TESTFR answering, S-frame ack every `w`=8 I-frames,
+  t1 = 15 s. Not implemented: t2/t3 timers on long-lived connections,
+  select-before-operate, redundancy groups. One connection per poll/command.
+
+## Modbus RTU over local serial (`modbus-rtu`)
+
+Code: `api/protocols/modbus-rtu.ts`. For an edge install sitting directly on
+RS-485. A device opts in with `meters.host = "serial:/dev/ttyUSB0?baud=9600&parity=none&dataBits=8&stopBits=1"`.
+Transactions are serialised per port (half-duplex bus). Poll reads the
+profile's blocks; **control is not offered on this path yet** — writes stay on
+the audited TCP/C30 paths.
+
+## Wiring status
+
+Both adapters are registered and tested (IEC 104 against an in-process fake
+outstation), but the runtime poll loop still only drives Modbus TCP and C30.
+Selecting an adapter per device needs a `protocol` field on the device profile
+(`adapterForHost(host, profileProtocol)` is ready for it) — an owner decision
+before commissioning a real IEC 104 RTU or serial bus.
