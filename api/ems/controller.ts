@@ -97,6 +97,8 @@ import {
 
 // v10/P1-9: pure decision logic lives in ./decide (extracted unchanged for
 // unit tests); re-export the helpers that were already public from here.
+import { choosePlan, externalPlanMaxAgeMs } from "./plan-source";
+import { emit } from "../webhooks/dispatch";
 export { localClock, pickSetpointKey, scheduleDue, setpointValue } from "./decide";
 
 const TICK_S = parseInt(process.env.EMS_TICK_S || "30", 10);
@@ -548,7 +550,11 @@ interface PlanTickRow {
   // (legacy plans — behavior unchanged).
   minSoc: number | null;
   maxSoc: number | null;
+  createdAt: Date | string | null;
 }
+
+// plan.executed webhook dedup: one event per (plan, setpoint ts) per process.
+const planExecutedSent = new Map<number, string>();
 
 /**
  * Execute due plan setpoints for meters not already driven by peak shaving.
@@ -563,13 +569,23 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
   // Active plans covering now; latest created_at per meter wins (overlap is
   // already prevented by the PUT supersede semantics, this is belt & braces).
   const res = await db.execute(
-    sql`select id, meter_id as meterId, source, setpoints, min_soc as minSoc, max_soc as maxSoc from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} order by meter_id, created_at desc, id desc`,
+    sql`select id, meter_id as meterId, source, setpoints, min_soc as minSoc, max_soc as maxSoc, created_at as createdAt from ems_plans where status = 'active' and valid_from <= ${nowStr} and valid_to >= ${nowStr} order by meter_id, created_at desc, id desc`,
   );
   const plans = res[0] as unknown as PlanTickRow[];
   if (plans.length === 0) return fired;
-  const byMeter = new Map<number, PlanTickRow>();
+  // Ownership rule (api/ems/plan-source.ts): a fresh external (VoltTrade)
+  // plan beats the local fallback optimiser, whichever was written last.
+  const grouped = new Map<number, PlanTickRow[]>();
   for (const p of plans) {
-    if (!byMeter.has(p.meterId)) byMeter.set(p.meterId, p);
+    const g = grouped.get(p.meterId);
+    if (g) g.push(p);
+    else grouped.set(p.meterId, [p]);
+  }
+  const maxAge = externalPlanMaxAgeMs();
+  const byMeter = new Map<number, PlanTickRow>();
+  for (const [m, g] of grouped) {
+    const pick = choosePlan(g, now.getTime(), maxAge);
+    if (pick) byMeter.set(m, pick);
   }
   const meterMap = await loadMeters([...byMeter.keys()]);
   const wlCache = new Map<string, ControllableMap>();
@@ -623,6 +639,17 @@ async function evalPlans(now: Date, skip: Set<number>): Promise<Set<number>> {
       const value = setpointValue(mode, sel.def, Math.abs(kw));
       await send(meter, sel.key, value, `plan #${plan.id} (${plan.source}, ${kw} kW)`, `plan:${plan.source}`);
       fired.add(meterId);
+      // Webhook: once per (plan, active setpoint), so VoltTrade sees each step land.
+      const stepTs = sps.filter((s) => Date.parse(s.ts) <= now.getTime()).pop()?.ts ?? "";
+      if (planExecutedSent.get(plan.id) !== stepTs) {
+        planExecutedSent.set(plan.id, stepTs);
+        if (planExecutedSent.size > 10_000) planExecutedSent.clear();
+        void emit(
+          "plan.executed",
+          { planId: plan.id, meterId, source: plan.source, setpointTs: stepTs, kw, key: sel.key, value },
+          meter.orgId ?? null,
+        );
+      }
     } catch (err) {
       console.error(`[ems] plan ${plan.id} evaluation failed:`, err instanceof Error ? err.message : err);
     }

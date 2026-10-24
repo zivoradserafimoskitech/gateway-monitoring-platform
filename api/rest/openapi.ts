@@ -264,6 +264,79 @@ export function openApiSpec(): Record<string, unknown> {
           },
         },
       },
+      "/devices/{id}/commands": {
+        post: {
+          summary: "Send one setpoint command with read-back",
+          description:
+            "Requires the `control:write` scope IN ADDITION to `control`. `key` (alias `point`) must be a " +
+            "controllable key of the device profile; raw register addresses are never accepted. Passes the " +
+            "same safety gates as manual control (emergency stop, profile verification, range). " +
+            "200 = written and verified; 202 = sent, read-back pending (poll GET /commands/{id} or " +
+            "subscribe to `command.confirmed`); 409 = refused by a safety gate; 502 = write failed.",
+          parameters: [deviceIdParam],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["value"],
+                  properties: {
+                    key: { type: "string", maxLength: 64 },
+                    point: { type: "string", maxLength: 64, description: "Alias of key." },
+                    value: { type: "number" },
+                    externalId: { type: "string", maxLength: 64, description: "Caller's id (alias commandId), echoed back." },
+                    dryRun: { type: "boolean", default: false },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: jsonObject("`{ commandId, externalId, status: ok|preview, detail, readback }`"),
+            202: jsonObject("`{ commandId, externalId, status: sent, detail, readback: pending }`"),
+            400: errorResponse("Missing body, bad key or value."),
+            404: errorResponse("Unknown device."),
+            409: jsonObject("`{ status: rejected, detail }` — emergency stop, unverified profile or out of range."),
+            502: jsonObject("`{ status: failed, detail }` — write or read-back failed."),
+            ...common,
+          },
+        },
+      },
+      "/commands/{id}": {
+        get: {
+          summary: "Command status and read-back result",
+          parameters: [{ ...deviceIdParam, description: "Command id returned by POST /devices/{id}/commands." }],
+          responses: {
+            200: jsonObject("`{ command: { id, meterId, key, value, status, readback, result, externalId, createdAt, respondedAt } }`"),
+            404: errorResponse("Unknown command."),
+            ...common,
+          },
+        },
+      },
+      "/devices/{id}/capabilities": {
+        get: {
+          summary: "What can be controlled on this device",
+          parameters: [deviceIdParam],
+          responses: {
+            200: jsonObject("`{ deviceId, model, controlPath, controlEnabled, readback, controllable[], emsPlan }`"),
+            404: errorResponse("Unknown device."),
+            ...common,
+          },
+        },
+      },
+      "/devices/{id}/plan-execution": {
+        get: {
+          summary: "Plan in force and recent plan writes",
+          description: "Shows whether an external (VoltTrade) plan or the local fallback optimiser is in force.",
+          parameters: [deviceIdParam],
+          responses: {
+            200: jsonObject("`{ deviceId, planInForce, candidates, recentWrites[] }`"),
+            404: errorResponse("Unknown device."),
+            ...common,
+          },
+        },
+      },
       "/alarms": {
         get: {
           summary: "List alarms",

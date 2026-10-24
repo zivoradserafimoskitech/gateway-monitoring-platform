@@ -437,7 +437,12 @@ export async function notifyAlarmResolved(alarmId: number): Promise<void> {
       const m = await db.select({ name: meters.name }).from(meters).where(eq(meters.id, alarm.meterId)).limit(1);
       meterName = m[0]?.name ?? null;
     }
-    void emit("alarm.resolved", alarmEventData(alarm, meterName), await alarmOrgId(alarm));
+    {
+      const data = alarmEventData(alarm, meterName);
+      const orgId = await alarmOrgId(alarm);
+      void emit("alarm.resolved", data, orgId);
+      void emit("alarm.cleared", data, orgId);
+    }
     const r = await dispatchToChannels(
       { ...alarm, message: `CLEARED — ${alarm.message}` },
       meterName,

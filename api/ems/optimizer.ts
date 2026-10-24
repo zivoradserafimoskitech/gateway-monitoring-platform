@@ -1,5 +1,15 @@
 // §9.3: the planner that turns a tariff into an EMS plan.
 //
+// FALLBACK ONLY. Economic optimisation (prices, forecast, arbitrage, battery
+// economics) is owned by VoltTrade, which pushes plans through
+// PUT /api/v1/devices/:id/ems-plan. This local time-of-use planner runs only
+// when a device has no valid, fresh external plan (see plan-source.ts:
+// EMS_EXTERNAL_PLAN_MAX_AGE_MIN, EMS_LOCAL_OPTIMIZER=fallback|off), so a
+// device keeps a sane schedule if the link to VoltTrade is down. The tariff
+// and battery_economics tables it reads are DEPRECATED as commercial data and
+// kept only as the simple TOU profile this fallback needs
+// (docs/ems-ownership.md).
+//
 // It writes ems_plans rows through the SAME path the external optimiser uses
 // (v9 Contract A), so the controller, the fail-closed SoC guard, the
 // controllable whitelist, the verification gate and the command audit trail
@@ -17,6 +27,7 @@ import {
   tariffs,
 } from "@db/schema";
 import { withLease } from "../lib/leader";
+import { externalPlanMaxAgeMs, isFreshExternal, localOptimizerMode } from "./plan-source";
 import { pickTariff, planArbitrage, priceCurve, type BatteryLimits, type PlanResult } from "./tariff";
 
 /** How far ahead to plan. A day-ahead market publishes a day; a time-of-use
@@ -70,6 +81,26 @@ export async function optimizeBattery(meterId: number, dryRun = false, now = new
     .limit(1);
   const meter = meterRows[0];
   if (!meter) return { meterId, plan: null, skipped: "device not found" };
+
+  if (!dryRun) {
+    if (localOptimizerMode() === "off") return { meterId, plan: null, skipped: "local optimizer disabled (EMS_LOCAL_OPTIMIZER=off)" };
+    // Fallback rule: stand down while an external plan is in force.
+    const active = await db
+      .select({ id: emsPlans.id, source: emsPlans.source, createdAt: emsPlans.createdAt })
+      .from(emsPlans)
+      .where(
+        and(
+          eq(emsPlans.meterId, meterId),
+          eq(emsPlans.status, "active"),
+          lte(emsPlans.validFrom, now),
+          gte(emsPlans.validTo, now),
+        ),
+      );
+    const maxAge = externalPlanMaxAgeMs();
+    if (active.some((p) => isFreshExternal(p, now.getTime(), maxAge))) {
+      return { meterId, plan: null, skipped: "external plan in force — local optimizer is fallback only" };
+    }
+  }
 
   // Capacity comes from the MEASURED nameplate in battery_health, not from a
   // second copy here: one capacity figure, so a plan cannot be built against a

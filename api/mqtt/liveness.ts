@@ -9,7 +9,8 @@
 // because EVERY seen device was rewritten EVERY flush (8,100 rows / 5 s).
 // Now each device row is rewritten at most once per COALESCE_MS — liveness
 // granularity is ~60 s, and flush volume drops ~12x at fleet scale.
-import { inArray } from "drizzle-orm";
+import { and, inArray, ne } from "drizzle-orm";
+import { emit } from "../webhooks/dispatch";
 import { getDb } from "../queries/connection";
 import { gateways, meters } from "@db/schema";
 
@@ -57,6 +58,12 @@ async function flush(): Promise<void> {
     if (meterIds.length > 0) {
       for (let i = 0; i < meterIds.length; i += CHUNK) {
         const chunk = meterIds.slice(i, i + CHUNK);
+        // device.online webhook: only for an actual offline→online transition.
+        const back = await db
+          .select({ id: meters.id, name: meters.name, gatewayId: meters.gatewayId, orgId: meters.orgId })
+          .from(meters)
+          .where(and(inArray(meters.id, chunk), ne(meters.status, "online")));
+        for (const m of back) void emit("device.online", { kind: "meter", meterId: m.id, gatewayId: m.gatewayId, name: m.name }, m.orgId ?? null);
         await db
           .update(meters)
           .set({ status: "online", lastSeenAt: now })
@@ -72,6 +79,11 @@ async function flush(): Promise<void> {
     if (gwIds.length > 0) {
       for (let i = 0; i < gwIds.length; i += CHUNK) {
         const chunk = gwIds.slice(i, i + CHUNK);
+        const back = await db
+          .select({ id: gateways.id, uid: gateways.uid, name: gateways.name, orgId: gateways.orgId })
+          .from(gateways)
+          .where(and(inArray(gateways.id, chunk), ne(gateways.status, "online")));
+        for (const g of back) void emit("device.online", { kind: "gateway", gatewayId: g.id, uid: g.uid, name: g.name }, g.orgId ?? null);
         await db
           .update(gateways)
           .set({ status: "online", lastSeenAt: now })

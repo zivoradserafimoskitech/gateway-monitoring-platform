@@ -22,6 +22,7 @@ import { getTelemetryStats } from "../telemetry";
 import { markGatewaySeen } from "./liveness";
 import { offlineThresholdMs } from "./offline";
 import { notifyAlarmBreach, notifyAlarmResolved } from "../alarms/notify";
+import { emit } from "../webhooks/dispatch";
 import { parseDefaultOrgId, resolveProvisionTarget } from "./provision-org";
 
 const OFFLINE_AFTER_MS = 120_000;
@@ -220,6 +221,7 @@ async function offlineSweep(): Promise<void> {
     );
     for (const gw of staleGateways) {
       await db.update(gateways).set({ status: "offline" }).where(eq(gateways.id, gw.id));
+      void emit("device.offline", { kind: "gateway", gatewayId: gw.id, uid: gw.uid, name: gw.name, lastSeenAt: gw.lastSeenAt }, gw.orgId ?? null);
       // #7: an acknowledged alarm still represents an ongoing condition —
       // count it as "existing" or a restart/ack would spawn duplicates.
       const existing = await db
@@ -267,6 +269,7 @@ async function offlineSweep(): Promise<void> {
         gatewayId: meters.gatewayId,
         lastSeenAt: meters.lastSeenAt,
         pollIntervalSec: meters.pollIntervalSec,
+        orgId: meters.orgId,
       })
       .from(meters)
       .where(eq(meters.status, "online"));
@@ -288,6 +291,7 @@ async function offlineSweep(): Promise<void> {
     // same way a threshold breach is raised. The unique active_dedup_key
     // (rule:meter:gateway:metric) keeps it to one open alarm per device.
     for (const m of staleMeters) {
+      void emit("device.offline", { kind: "meter", meterId: m.id, gatewayId: m.gatewayId, name: m.name, lastSeenAt: m.lastSeenAt }, m.orgId ?? null);
       try {
         const inserted = await db
           .insert(alarms)

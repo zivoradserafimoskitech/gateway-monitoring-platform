@@ -16,10 +16,10 @@ import { toast } from "sonner";
 
 // audit wave 4: 4-scope model. No scopes ticked = read-only key (was full
 // access). Labels live in the apiKeysScopes i18n section.
-type Scope = "read" | "control" | "telemetry:read" | "ems:write";
-const ALL_SCOPES: Scope[] = ["read", "control", "telemetry:read", "ems:write"];
+type Scope = "read" | "control" | "telemetry:read" | "ems:write" | "control:write";
+const ALL_SCOPES: Scope[] = ["read", "control", "telemetry:read", "ems:write", "control:write"];
 const scopeLabelKey = (s: Scope) =>
-  s === "telemetry:read" ? "telemetryRead" : s === "ems:write" ? "emsWrite" : s;
+  s === "telemetry:read" ? "telemetryRead" : s === "ems:write" ? "emsWrite" : s === "control:write" ? "controlWrite" : s;
 
 export function ApiKeysCard() {
   const { t } = useI18n();

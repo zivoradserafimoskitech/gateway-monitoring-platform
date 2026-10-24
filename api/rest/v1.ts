@@ -8,6 +8,10 @@
 //   GET /api/v1/devices/:id/telemetry audit wave 4/Task 4: multi-metric bucketed series
 //   PUT /api/v1/devices/:id/ems-plan v9 Contract A: push an EMS plan (upsert)
 //   GET /api/v1/devices/:id/ems-plan v9 Contract A: active/next EMS plan
+//   POST /api/v1/devices/:id/commands       one whitelisted setpoint, with read-back (control:write)
+//   GET  /api/v1/commands/:id               command status / read-back result
+//   GET  /api/v1/devices/:id/capabilities   controllable keys, ranges, control path
+//   GET  /api/v1/devices/:id/plan-execution which plan is in force + recent plan writes
 //   GET /api/v1/alarms[?status=]     alarms (default: active)
 //                                    [&limit=&cursor=] opt-in keyset paging
 //
@@ -19,7 +23,9 @@
 // §9.13: every authenticated request is rate limited per (key, scope), and the
 // response carries X-RateLimit-Limit / -Remaining / -Scope. Over the limit is
 // a 429 with Retry-After.
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { emit } from "../webhooks/dispatch";
+import { registerDeviceControlRoutes } from "./v1-device-control";
 import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../queries/connection";
 import { alarms, gateways, meters, sites } from "@db/schema";
@@ -29,7 +35,7 @@ import { METRIC_KEY_RE } from "../telemetry/types";
 import { consume } from "./rate-limit-store";
 import { openApiSpec } from "./openapi";
 
-type Vars = {
+export type Vars = {
   Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null; scopes: string[] | null } };
 };
 export const restV1 = new Hono<Vars>();
@@ -41,7 +47,7 @@ export const restV1 = new Hono<Vars>();
 // constraint #3): NULL scopes = READ-ONLY (legacy keys) — was full access.
 // Role does NOT imply scope: an admin-role key without "ems:write" cannot
 // push an EMS plan.
-export type ApiScope = "read" | "control" | "telemetry:read" | "ems:write";
+export type ApiScope = "read" | "control" | "telemetry:read" | "ems:write" | "control:write";
 
 export function requiredScope(method: string): "read" | "control" {
   return method.toUpperCase() === "GET" ? "read" : "control";
@@ -52,6 +58,9 @@ export function endpointScope(method: string, path: string): ApiScope | null {
   const m = method.toUpperCase();
   if (m === "PUT" && /\/devices\/\d+\/ems-plan\/?$/.test(path)) return "ems:write";
   if (m === "GET" && /\/devices\/\d+\/telemetry\/?$/.test(path)) return "telemetry:read";
+  // Direct device commands (VoltTrade plant-connect). Separate from ems:write:
+  // pushing a schedule and poking a register are different blast radii.
+  if (m === "POST" && /\/devices\/\d+\/commands\/?$/.test(path)) return "control:write";
   return null;
 }
 
@@ -387,6 +396,13 @@ function parseSocLimit(v: unknown): number | null | "invalid" {
   return v;
 }
 
+// plan.rejected webhook: VoltTrade learns why a pushed plan did not land
+// without having to parse the HTTP error of a call it may have retried.
+function rejectPlan(c: Context<Vars>, meterId: number, org: number, body: { error: string }) {
+  void emit("plan.rejected", { meterId, error: body.error }, org);
+  return c.json(body, 400);
+}
+
 function normalizePlan(row: PlanRow) {
   return {
     ...row,
@@ -410,37 +426,37 @@ restV1.put("/devices/:id/ems-plan", async (c) => {
   try {
     body = await c.req.json();
   } catch {
-    return c.json({ error: "a JSON body is required" }, 400);
+    return rejectPlan(c, id, org, { error: "a JSON body is required" });
   }
   const b = body as { validFrom?: unknown; validTo?: unknown; source?: unknown; setpoints?: unknown };
   const fromMs = typeof b.validFrom === "string" ? Date.parse(b.validFrom) : NaN;
   const toMs = typeof b.validTo === "string" ? Date.parse(b.validTo) : NaN;
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
-    return c.json({ error: "validFrom and validTo (ISO8601) are required" }, 400);
+    return rejectPlan(c, id, org, { error: "validFrom and validTo (ISO8601) are required" });
   }
-  if (toMs <= fromMs) return c.json({ error: "validTo must be after validFrom" }, 400);
-  if (toMs - fromMs > PLAN_MAX_SPAN_MS) return c.json({ error: "plan span must not exceed 48h" }, 400);
+  if (toMs <= fromMs) return rejectPlan(c, id, org, { error: "validTo must be after validFrom" });
+  if (toMs - fromMs > PLAN_MAX_SPAN_MS) return rejectPlan(c, id, org, { error: "plan span must not exceed 48h" });
   let source = "unknown";
   if (b.source !== undefined) {
     if (typeof b.source !== "string" || b.source.length === 0 || b.source.length > 64) {
-      return c.json({ error: "source must be a string of at most 64 characters" }, 400);
+      return rejectPlan(c, id, org, { error: "source must be a string of at most 64 characters" });
     }
     source = b.source;
   }
   if (!Array.isArray(b.setpoints) || b.setpoints.length < 1 || b.setpoints.length > PLAN_MAX_SETPOINTS) {
-    return c.json({ error: `setpoints must be an array of 1..${PLAN_MAX_SETPOINTS} entries` }, 400);
+    return rejectPlan(c, id, org, { error: `setpoints must be an array of 1..${PLAN_MAX_SETPOINTS} entries` });
   }
   const setpoints: PlanSetpoint[] = [];
   let prevMs = -Infinity;
   for (const raw of b.setpoints as Array<{ ts?: unknown; kw?: unknown }>) {
     const tsMs = raw && typeof raw.ts === "string" ? Date.parse(raw.ts) : NaN;
     const kw = raw && typeof raw.kw === "number" ? raw.kw : NaN;
-    if (!Number.isFinite(tsMs)) return c.json({ error: "every setpoint needs an ISO8601 ts" }, 400);
+    if (!Number.isFinite(tsMs)) return rejectPlan(c, id, org, { error: "every setpoint needs an ISO8601 ts" });
     if (!Number.isFinite(kw) || Math.abs(kw) > PLAN_MAX_ABS_KW) {
-      return c.json({ error: `every setpoint kw must be finite with |kw| <= ${PLAN_MAX_ABS_KW}` }, 400);
+      return rejectPlan(c, id, org, { error: `every setpoint kw must be finite with |kw| <= ${PLAN_MAX_ABS_KW}` });
     }
-    if (tsMs < prevMs) return c.json({ error: "setpoints must be sorted non-descending by ts" }, 400);
-    if (tsMs < fromMs || tsMs > toMs) return c.json({ error: "every setpoint ts must lie within [validFrom, validTo]" }, 400);
+    if (tsMs < prevMs) return rejectPlan(c, id, org, { error: "setpoints must be sorted non-descending by ts" });
+    if (tsMs < fromMs || tsMs > toMs) return rejectPlan(c, id, org, { error: "every setpoint ts must lie within [validFrom, validTo]" });
     prevMs = tsMs;
     setpoints.push({ ts: new Date(tsMs).toISOString(), kw });
   }
@@ -452,10 +468,10 @@ restV1.put("/devices/:id/ems-plan", async (c) => {
   const minSoc = parseSocLimit(bb.minSoc);
   const maxSoc = parseSocLimit(bb.maxSoc);
   if (minSoc === "invalid" || maxSoc === "invalid") {
-    return c.json({ error: "minSoc/maxSoc must be numbers in [0, 100] (or null)" }, 400);
+    return rejectPlan(c, id, org, { error: "minSoc/maxSoc must be numbers in [0, 100] (or null)" });
   }
   if (minSoc !== null && maxSoc !== null && minSoc >= maxSoc) {
-    return c.json({ error: "minSoc must be less than maxSoc" }, 400);
+    return rejectPlan(c, id, org, { error: "minSoc must be less than maxSoc" });
   }
 
   // Upsert/supersede semantics: any active plan of this meter overlapping
@@ -470,6 +486,11 @@ restV1.put("/devices/:id/ems-plan", async (c) => {
     sql`insert into ems_plans (meter_id, org_id, source, valid_from, valid_to, setpoints, min_soc, max_soc, status) values (${id}, ${org}, ${source}, ${vf}, ${vt}, ${JSON.stringify(setpoints)}, ${minSoc}, ${maxSoc}, 'active')`,
   );
   const planId = Number((ins[0] as { insertId?: number }).insertId ?? 0);
+  void emit(
+    "plan.accepted",
+    { planId, meterId: id, source, validFrom: new Date(fromMs).toISOString(), validTo: new Date(toMs).toISOString(), setpoints: setpoints.length, superseded, minSoc, maxSoc },
+    org,
+  );
   return c.json({ planId, status: "active" as const, superseded, minSoc, maxSoc }, 200);
 });
 
@@ -569,3 +590,5 @@ restV1.get("/alarms", async (c) => {
     nextCursor: hasMore && last ? `${new Date(last.triggeredAt).getTime()}_${last.id}` : null,
   });
 });
+
+registerDeviceControlRoutes(restV1);

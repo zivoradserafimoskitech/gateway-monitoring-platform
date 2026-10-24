@@ -1,3 +1,10 @@
+// SAFETY CURTAILMENT ONLY. This module enforces the hard grid-connection
+// import/export limit — a physical/contractual safety limit owned by the
+// Gateway Monitoring Platform and applied ahead of every plan. Economic PV
+// curtailment (negative prices, trading decisions) is decided by VoltTrade and
+// arrives as an EMS plan or a /api/v1/devices/:id/commands setpoint; it must
+// not be added here. See docs/ems-ownership.md.
+//
 // §9.2: site-level grid import/export limit with curtailment.
 //
 // A grid connection agreement caps how much a site may draw and, more often

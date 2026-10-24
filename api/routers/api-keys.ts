@@ -41,7 +41,7 @@ export const apiKeysRouter = createRouter({
         // ("control" + "ems:write" for PUT ems-plan, "telemetry:read" for
         // GET /devices/:id/telemetry).
         expiresAt: z.string().datetime().optional(),
-        scopes: z.array(z.enum(["read", "control", "telemetry:read", "ems:write"])).optional(),
+        scopes: z.array(z.enum(["read", "control", "telemetry:read", "ems:write", "control:write"])).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
