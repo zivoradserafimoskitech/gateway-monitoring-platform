@@ -15,9 +15,13 @@ import {
   orgInvites,
   orgMemberships,
   orgs,
+  siteRoles,
   sites,
   users,
 } from "@db/schema";
+import { refreshOrgTree, validateParent } from "../lib/org-tree";
+import { can, PERMISSIONS, SITE_ROLES } from "../lib/permissions";
+import { evictSiteGrants, siteGrantsFor } from "../lib/site-permissions";
 import { DOWNLOAD_TTL_MIN, newDownloadToken } from "../orgs/export";
 import { deletionDueAt, DELETION_GRACE_DAYS } from "../orgs/purge";
 import { TELEMETRY_RAW_DAYS } from "../telemetry/retention";
@@ -32,9 +36,91 @@ import {
 } from "../orgs/invites";
 import { sendMail } from "../lib/mailer";
 import { evictGatewayCache } from "../mqtt/service";
-import { assertRowOrg, isSuper, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
+import { accessibleOrgIds, assertRowOrg, isSuper, orgWhere, siteOrg, stampOrg } from "../lib/org-scope";
 
 export const orgsRouter = createRouter({
+  // ── Installer / O&M hierarchy ─────────────────────────────────────────────
+  // The caller's org subtree (superadmin: every org) with parent links.
+  tree: authed.query(async ({ ctx }) => {
+    const rows = await getDb()
+      .select({ id: orgs.id, name: orgs.name, parentOrgId: orgs.parentOrgId, kind: orgs.kind })
+      .from(orgs)
+      .orderBy(orgs.name);
+    if (isSuper(ctx.user)) return rows;
+    const allowed = new Set(accessibleOrgIds(ctx.user!));
+    return rows.filter((r) => allowed.has(r.id));
+  }),
+
+  setParent: superadmin
+    .input(
+      z.object({
+        orgId: z.number(),
+        parentOrgId: z.number().nullable(),
+        kind: z.enum(["direct", "installer", "om", "customer"]).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      await refreshOrgTree();
+      const err = validateParent(input.orgId, input.parentOrgId);
+      if (err) throw new TRPCError({ code: "BAD_REQUEST", message: err });
+      await getDb()
+        .update(orgs)
+        .set({ parentOrgId: input.parentOrgId, ...(input.kind ? { kind: input.kind } : {}) })
+        .where(eq(orgs.id, input.orgId));
+      await refreshOrgTree();
+      return { ok: true };
+    }),
+
+  // ── Per-site roles ────────────────────────────────────────────────────────
+  siteRoles: admin.query(async ({ ctx }) => {
+    return getDb()
+      .select({ id: siteRoles.id, userId: siteRoles.userId, email: users.email, siteId: siteRoles.siteId, siteName: sites.name, role: siteRoles.role, extra: siteRoles.extra, orgId: siteRoles.orgId })
+      .from(siteRoles)
+      .innerJoin(users, eq(siteRoles.userId, users.id))
+      .innerJoin(sites, eq(siteRoles.siteId, sites.id))
+      .where(orgWhere(ctx.user, siteRoles.orgId))
+      .orderBy(sites.name, users.email);
+  }),
+
+  grantSiteRole: admin
+    .input(
+      z.object({
+        userId: z.number(),
+        siteId: z.number(),
+        role: z.enum(SITE_ROLES),
+        extra: z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const org = await siteOrg(input.siteId);
+      if (org === undefined) throw new TRPCError({ code: "NOT_FOUND", message: "Site not found" });
+      assertRowOrg(ctx.user, org, "Site");
+      const db = getDb();
+      await db
+        .insert(siteRoles)
+        .values({ userId: input.userId, siteId: input.siteId, orgId: org ?? 0, role: input.role, extra: input.extra ?? null })
+        .onDuplicateKeyUpdate({ set: { role: input.role, extra: input.extra ?? null } });
+      evictSiteGrants(input.userId);
+      return { ok: true };
+    }),
+
+  revokeSiteRole: admin.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+    const db = getDb();
+    const rows = await db.select().from(siteRoles).where(eq(siteRoles.id, input.id)).limit(1);
+    if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Site role not found" });
+    assertRowOrg(ctx.user, rows[0].orgId, "Site role");
+    await db.delete(siteRoles).where(eq(siteRoles.id, input.id));
+    evictSiteGrants(rows[0].userId);
+    return { ok: true };
+  }),
+
+  // Effective permissions of the caller on one site (drives the UI).
+  myPermissions: authed.input(z.object({ siteId: z.number().nullable() })).query(async ({ ctx, input }) => {
+    if (!ctx.user) return [...PERMISSIONS];
+    const grants = await siteGrantsFor(ctx.user.id);
+    return PERMISSIONS.filter((p) => can(ctx.user!, input.siteId, p, grants));
+  }),
+
   list: superadmin.query(async () => {
     const db = getDb();
     const rows = await db.select().from(orgs).orderBy(orgs.id);
