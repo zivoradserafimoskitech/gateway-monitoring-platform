@@ -2,7 +2,7 @@ import { z } from "zod";
 import { eq, desc, sql, inArray } from "drizzle-orm";
 import { createRouter, authed, operator } from "../middleware";
 import { getDb } from "../queries/connection";
-import { gateways, meters, sites, commands, alarms } from "@db/schema";
+import { gateways, meters, sites, commands, alarms, gatewayGroupMembers } from "@db/schema";
 import { getTelemetryStore } from "../telemetry";
 import { defaultTopicPrefix, defaultTransport } from "@contracts/topics";
 import { sendReadNow, getMqttStatus, evictGatewayCache } from "../mqtt/service";
@@ -166,6 +166,7 @@ export const gatewaysRouter = createRouter({
       await db.delete(alarms).where(inArray(alarms.meterId, ids.slice(i, i + 500)));
     }
     if (ids.length) await db.delete(meters).where(inArray(meters.id, ids));
+    await db.delete(gatewayGroupMembers).where(eq(gatewayGroupMembers.gatewayId, input.id));
     await db.delete(gateways).where(eq(gateways.id, input.id));
     // #16: drop cached rows so the ingestion path can't resurrect this gateway
     // or its meters for the remaining cache TTL.

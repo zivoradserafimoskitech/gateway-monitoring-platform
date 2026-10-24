@@ -60,6 +60,8 @@ export const gateways = mysqlTable(
     // OTA ack) and config revision (bumped on every acked config push).
     firmwareVersion: text("firmware_version"),
     configVersion: int("config_version").notNull().default(1),
+    // Fleet management: free-form lowercase tags (JSON string array).
+    tags: json("tags").$type<string[]>(),
     // v8/D2: owning org.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -1155,6 +1157,10 @@ export const firmwareReleases = mysqlTable(
     // answer months later, when the question is asked by somebody holding a
     // device that no longer boots.
     sha256: varchar("sha256", { length: 64 }),
+    // Ed25519 signature (base64) over the manifest in api/ota/signing.ts, and
+    // the id of the public key in OTA_SIGNING_PUBLIC_KEYS that verifies it.
+    signature: varchar("signature", { length: 256 }),
+    signingKeyId: varchar("signing_key_id", { length: 64 }),
     notes: varchar("notes", { length: 1000 }),
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdBy: bigint("created_by", { mode: "number", unsigned: true }),
@@ -1479,3 +1485,26 @@ export const oidcLogins = mysqlTable(
   (t) => [index("oidc_logins_expiry_idx").on(t.expiresAt)],
 );
 export type OidcLogin = typeof oidcLogins.$inferSelect;
+
+// ─── Fleet management: named gateway groups ─────────────────────────────────
+export const gatewayGroups = mysqlTable(
+  "gateway_groups",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 128 }).notNull(),
+    description: varchar("description", { length: 500 }),
+    orgId: bigint("org_id", { mode: "number", unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("gateway_groups_org_name_unique").on(t.orgId, t.name)],
+);
+export type GatewayGroup = typeof gatewayGroups.$inferSelect;
+
+export const gatewayGroupMembers = mysqlTable(
+  "gateway_group_members",
+  {
+    groupId: bigint("group_id", { mode: "number", unsigned: true }).notNull(),
+    gatewayId: bigint("gateway_id", { mode: "number", unsigned: true }).notNull(),
+  },
+  (t) => [uniqueIndex("gateway_group_members_unique").on(t.groupId, t.gatewayId), index("gateway_group_members_gw_idx").on(t.gatewayId)],
+);

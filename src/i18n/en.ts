@@ -1064,6 +1064,20 @@ export const en = {
     legacyReadOnly: "read-only (legacy)",
     hint: "No scopes ticked = read-only key",
   },
+  fleet: {
+    title: "Fleet groups and bulk config",
+    signature: "Signature (Ed25519, base64)",
+    keyId: "Signing key id",
+    newGroup: "New group name",
+    create: "Create",
+    members: "Members (gateway ids, comma-separated)",
+    save: "Save",
+    remove: "Delete",
+    bulkPayload: "Config payload (JSON)",
+    bulkApply: "Push to group",
+    bulkConfirm: "Push config to {n} gateways?",
+    queued: "Queued {n} config jobs",
+  },
 };
 
 export type Dictionary = typeof en;

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { FirmwareRolloutCard } from "@/components/FirmwareRolloutCard";
+import { FleetGroupsCard } from "@/components/FleetGroupsCard";
 import { useI18n } from "@/i18n";
 import { fmtTime } from "@/components/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -138,6 +139,7 @@ export default function Ota() {
           the tool for one device; updating a fleet with it, one row at a time,
           is the thing staged rollouts exist to stop people doing. */}
       <FirmwareRolloutCard />
+      <FleetGroupsCard />
 
       {/* Gateway selector */}
       <div className="max-w-sm space-y-2">

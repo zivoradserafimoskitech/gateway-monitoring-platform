@@ -38,6 +38,8 @@ export function FirmwareRolloutCard() {
   const [version, setVersion] = useState("");
   const [url, setUrl] = useState("");
   const [sha, setSha] = useState("");
+  const [signature, setSignature] = useState("");
+  const [keyId, setKeyId] = useState("");
 
   const [releaseId, setReleaseId] = useState("");
   const [name, setName] = useState("");
@@ -113,6 +115,14 @@ export function FirmwareRolloutCard() {
                 <Label htmlFor="fw-sha">{t.rollout.sha256}</Label>
                 <Input id="fw-sha" value={sha} onChange={(e) => setSha(e.target.value)} />
               </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="fw-sig">{t.fleet.signature}</Label>
+                <Input id="fw-sig" value={signature} onChange={(e) => setSignature(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="fw-key">{t.fleet.keyId}</Label>
+                <Input id="fw-key" value={keyId} onChange={(e) => setKeyId(e.target.value)} />
+              </div>
               <div className="flex items-end">
                 <Button
                   className="w-full"
@@ -123,6 +133,7 @@ export function FirmwareRolloutCard() {
                       version: version.trim(),
                       url: url.trim(),
                       ...(sha.trim() ? { sha256: sha.trim() } : {}),
+                      ...(signature.trim() ? { signature: signature.trim(), signingKeyId: keyId.trim() } : {}),
                     })
                   }
                 >
