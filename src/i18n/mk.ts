@@ -1066,4 +1066,12 @@ export const mk: Dictionary = {
     legacyReadOnly: "само читање (legacy)",
     hint: "Без означени опсези = клуч само за читање",
   },
+  kpis: {
+    title: "Технички KPI",
+    days: "д",
+    availability: "Достапност",
+    completeness: "Комплетност на податоци",
+    performanceRatio: "Performance ratio",
+    prHint: "Поставете врвна моќност (kWp) и сензор за зрачење на локацијата за PR.",
+  },
 };

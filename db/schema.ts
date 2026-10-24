@@ -27,6 +27,8 @@ export const sites = mysqlTable(
     // v7/C8: IANA timezone — site-scope reports bucket days at LOCAL midnight
     // (DST handled per day via Intl-computed boundaries).
     timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    // Technical KPIs: the weather/irradiance device used as the PR reference.
+    irradianceMeterId: bigint("irradiance_meter_id", { mode: "number", unsigned: true }),
     // v8/D2: owning org.
     orgId: bigint("org_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -85,6 +87,9 @@ export const meters = mysqlTable(
     siteId: bigint("site_id", { mode: "number", unsigned: true }),
     name: varchar("name", { length: 255 }).notNull(),
     model: varchar("model", { length: 128 }).notNull(),
+    // Technical KPIs: DC peak power of the PV array behind an inverter (kWp),
+    // the P_peak of the performance ratio. NULL = PR not computed.
+    peakPowerKwp: double("peak_power_kwp"),
     // §9.4 emergency stop: while set, EVERY write to this device is refused —
     // manual control and all four automatic writers (grid limit, peak shaving,
     // plans, schedules) plus the watchdog. Enforced at executeControl, the one

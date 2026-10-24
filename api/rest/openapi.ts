@@ -283,6 +283,25 @@ export function openApiSpec(): Record<string, unknown> {
           },
         },
       },
+      "/devices/{id}/kpis": {
+        get: {
+          summary: "Technical KPIs of a device",
+          description:
+            "Availability (share of 15-min intervals with data), data completeness (samples vs poll " +
+            "interval) and, for inverters with peak power and a site irradiance sensor, the performance ratio.",
+          parameters: [
+            deviceIdParam,
+            { name: "from", in: "query", required: true, schema: { type: "string", format: "date-time" } },
+            { name: "to", in: "query", required: true, schema: { type: "string", format: "date-time" }, description: "At most 93 days after `from`." },
+          ],
+          responses: {
+            200: jsonObject("`{ meterId, from, to, availability, dataCompleteness, performanceRatio, energyKwh, irradiationKwhM2 }` (ratios 0..1, null when not computable)"),
+            400: errorResponse("Bad range."),
+            404: errorResponse("Unknown device."),
+            ...common,
+          },
+        },
+      },
     },
   };
 }

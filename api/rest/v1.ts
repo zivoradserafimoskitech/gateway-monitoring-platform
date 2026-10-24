@@ -28,6 +28,7 @@ import { getTelemetryStore } from "../telemetry";
 import { METRIC_KEY_RE } from "../telemetry/types";
 import { consume } from "./rate-limit-store";
 import { openApiSpec } from "./openapi";
+import { deviceKpis, KPI_MAX_RANGE_MS } from "../kpi/service";
 
 type Vars = {
   Variables: { apiKey: { id: number; name: string; role: string; orgId: number | null; scopes: string[] | null } };
@@ -568,4 +569,24 @@ restV1.get("/alarms", async (c) => {
     alarms: items,
     nextCursor: hasMore && last ? `${new Date(last.triggeredAt).getTime()}_${last.id}` : null,
   });
+});
+
+// Technical KPIs for one device (availability, data completeness, PV
+// performance ratio). Same org scoping as every other device route.
+restV1.get("/devices/:id/kpis", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid device id" }, 400);
+  const org = c.get("apiKey").orgId ?? -1;
+  const dev = await getDb()
+    .select({ id: meters.id })
+    .from(meters)
+    .where(and(eq(meters.id, id), eq(meters.orgId, org)))
+    .limit(1);
+  if (dev.length === 0) return c.json({ error: "device not found" }, 404);
+  const fromMs = Date.parse(c.req.query("from") ?? "");
+  const toMs = Date.parse(c.req.query("to") ?? "");
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs || toMs - fromMs > KPI_MAX_RANGE_MS) {
+    return c.json({ error: "from/to (ISO8601) required, to > from, at most 93 days" }, 400);
+  }
+  return c.json(await deviceKpis(id, new Date(fromMs), new Date(toMs)));
 });

@@ -1064,6 +1064,14 @@ export const en = {
     legacyReadOnly: "read-only (legacy)",
     hint: "No scopes ticked = read-only key",
   },
+  kpis: {
+    title: "Technical KPIs",
+    days: "d",
+    availability: "Availability",
+    completeness: "Data completeness",
+    performanceRatio: "Performance ratio",
+    prHint: "Set peak power (kWp) and a site irradiance sensor to compute PR.",
+  },
 };
 
 export type Dictionary = typeof en;

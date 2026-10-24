@@ -15,6 +15,7 @@ import { emsRouter } from "./routers/ems";
 import { otaRouter } from "./routers/ota";
 import { orgsRouter } from "./routers/orgs";
 import { diagnosticsRouter } from "./routers/diagnostics";
+import { kpisRouter } from "./routers/kpis";
 
 export const appRouter = createRouter({
   ping: publicQuery.query(() => ({ ok: true, ts: Date.now() })),
@@ -35,6 +36,7 @@ export const appRouter = createRouter({
   ota: otaRouter,
   orgs: orgsRouter,
   diagnostics: diagnosticsRouter,
+  kpis: kpisRouter,
 });
 
 export type AppRouter = typeof appRouter;
